@@ -2,6 +2,7 @@ package com.onehot.aidrama.baiduyun;
 
 import com.onehot.aidrama.configs.SystemConfigService;
 import com.onehot.aidrama.dramas.Drama;
+import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.system.SystemTaskService;
@@ -209,6 +210,39 @@ class BaiduDramaScannerTest {
     }
 
     @Test
+    void skipsDramaWhenOriginalTitleAndEpisodeCountAlreadyExistOnDifferentSourcePath() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+        Drama existing = new Drama();
+        existing.setId("drama-1");
+        existing.setTitle("山风入京华");
+        existing.setSourcePath("/root/6月18日/1.山风入京华（5集）");
+        existing.setEpisodes(List.of(episode(1), episode(2), episode(3), episode(4), episode(5)));
+
+        when(baiduPanClient.listDirectory("/root/6月19日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）", "2.山风入京华（5集）", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月19日/2.山风入京华（5集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）/01.mp4", "01.mp4", false, 4L, 100),
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）/02.mp4", "02.mp4", false, 5L, 100),
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）/03.mp4", "03.mp4", false, 6L, 100),
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）/04.mp4", "04.mp4", false, 7L, 100),
+                new BaiduPanEntry("/root/6月19日/2.山风入京华（5集）/05.mp4", "05.mp4", false, 8L, 100)
+        ));
+        when(dramaRepository.findAllBySourcePath("/root/6月19日/2.山风入京华（5集）")).thenReturn(List.of());
+        when(dramaRepository.findAllByTitle("山风入京华")).thenReturn(List.of(existing));
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<Drama> imported = scanner.scanDateDirectory("/root/6月19日");
+
+        assertThat(imported).isEmpty();
+        verify(dramaRepository, never()).save(any(Drama.class));
+    }
+
+    @Test
     void repairsImportedBaiduCoverAndErrorSummaryFromExistingSourcePath() {
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
@@ -345,5 +379,12 @@ class BaiduDramaScannerTest {
         scanner.scheduledScan();
 
         assertThat(runs).hasValue(1);
+    }
+
+    private DramaEpisode episode(int episodeNo) {
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(episodeNo);
+        episode.setSourcePath("/existing/%03d.mp4".formatted(episodeNo));
+        return episode;
     }
 }

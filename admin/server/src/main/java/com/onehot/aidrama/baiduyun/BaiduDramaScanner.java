@@ -265,6 +265,9 @@ public class BaiduDramaScanner {
     private Optional<Drama> importDramaSafely(BaiduPanEntry dramaDir) {
         try {
             return Optional.of(importDrama(dramaDir));
+        } catch (DuplicateDramaException exception) {
+            LOGGER.info("Skip duplicate Baidu drama import for {}: {}", dramaDir.path(), exception.getMessage());
+            return Optional.empty();
         } catch (BaiduPanException | IllegalArgumentException exception) {
             LOGGER.warn("Skip Baidu drama import for {}: {}", dramaDir.path(), rootCauseMessage(exception));
             return Optional.empty();
@@ -281,6 +284,9 @@ public class BaiduDramaScanner {
                     planned.sourcePath(),
                     matches.stream().map(Drama::getId).toList()
             );
+        }
+        if (existing.isEmpty()) {
+            skipIfOriginalTitleAndEpisodeCountAlreadyExist(planned);
         }
         Drama drama = existing.orElseGet(Drama::new);
         if (existing.isPresent()) {
@@ -303,6 +309,22 @@ public class BaiduDramaScanner {
         drama.setCategoryIds(List.copyOf(categoryCodes));
         drama.setEpisodes(planned.episodes().stream().map(this::episodeFrom).toList());
         return dramaRepository.save(drama);
+    }
+
+    private void skipIfOriginalTitleAndEpisodeCountAlreadyExist(PlannedDrama planned) {
+        dramaRepository.findAllByTitle(planned.title()).stream()
+                .filter(drama -> episodeCount(drama) == planned.episodeCount())
+                .findFirst()
+                .ifPresent(existing -> {
+                    throw new DuplicateDramaException(
+                            "originalTitle=%s, episodeCount=%d, existingId=%s, existingSourcePath=%s"
+                                    .formatted(planned.title(), planned.episodeCount(), existing.getId(), existing.getSourcePath())
+                    );
+                });
+    }
+
+    private int episodeCount(Drama drama) {
+        return drama.getEpisodes() == null ? 0 : drama.getEpisodes().size();
     }
 
     private void mergeScannedMetadata(Drama drama, PlannedDrama planned) {
@@ -454,5 +476,11 @@ public class BaiduDramaScanner {
             String coverDownloadUrl,
             String errorMessage
     ) {
+    }
+
+    private static class DuplicateDramaException extends RuntimeException {
+        DuplicateDramaException(String message) {
+            super(message);
+        }
     }
 }
