@@ -11,6 +11,7 @@ import com.onehot.aidrama.system.SystemTaskType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -34,6 +35,7 @@ public class BaiduDramaScanner {
     private final BaiduDramaImportPlanner importPlanner = new BaiduDramaImportPlanner();
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
 
+    @Autowired
     public BaiduDramaScanner(
             BaiduPanClient baiduPanClient,
             DramaRepository dramaRepository,
