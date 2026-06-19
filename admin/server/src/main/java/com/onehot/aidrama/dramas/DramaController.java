@@ -205,20 +205,27 @@ public class DramaController {
     }
 
     @GetMapping("/api/admin/dramas/{id}/episodes/{episodeNo}/stream")
-    ResponseEntity<Resource> streamAdminEpisode(@PathVariable String id, @PathVariable int episodeNo) throws IOException {
-        getEpisode(id, episodeNo);
+    ResponseEntity<?> streamAdminEpisode(
+            @PathVariable String id,
+            @PathVariable int episodeNo,
+            @RequestHeader(value = HttpHeaders.RANGE, required = false) String range
+    ) throws IOException {
+        DramaEpisode episode = getEpisode(id, episodeNo);
         Path file = episodeFile(id, episodeNo);
-        if (!file.startsWith(downloadDir) || !Files.isRegularFile(file)) {
-            throw new BusinessException("LOCAL_EPISODE_NOT_FOUND", "本地剧集文件不存在", HttpStatus.NOT_FOUND);
+        if (file.startsWith(downloadDir) && Files.isRegularFile(file)) {
+            FileSystemResource resource = new FileSystemResource(file);
+            MediaType mediaType = MediaTypeFactory.getMediaType(resource)
+                    .orElse(MediaType.APPLICATION_OCTET_STREAM);
+            return ResponseEntity.ok()
+                    .contentType(mediaType)
+                    .contentLength(resource.contentLength())
+                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .body(resource);
         }
-        FileSystemResource resource = new FileSystemResource(file);
-        MediaType mediaType = MediaTypeFactory.getMediaType(resource)
-                .orElse(MediaType.APPLICATION_OCTET_STREAM);
-        return ResponseEntity.ok()
-                .contentType(mediaType)
-                .contentLength(resource.contentLength())
-                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                .body(resource);
+        String playUrl = baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst();
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(playUrl))
+                .build();
     }
 
     @PostMapping("/api/admin/dramas")

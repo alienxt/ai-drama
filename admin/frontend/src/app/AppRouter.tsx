@@ -12,6 +12,7 @@ import { TasksPage } from '../features/tasks/TasksPage';
 import { AiTasksPage } from '../features/ai-tasks/AiTasksPage';
 import { DesktopVersionsPage } from '../features/versions/DesktopVersionsPage';
 import { ExceptionLogsPage, RequestLogsPage } from '../features/logs/LogsPage';
+import { SystemTasksPage } from '../features/system-tasks/SystemTasksPage';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   return tokenStore.get() ? children : <Navigate to="/login" replace />;
@@ -37,6 +38,7 @@ const router = createBrowserRouter([
       { path: 'tasks', element: <TasksPage /> },
       { path: 'ai-tasks', element: <AiTasksPage /> },
       { path: 'desktop-versions', element: <DesktopVersionsPage /> },
+      { path: 'system-tasks', element: <SystemTasksPage /> },
       { path: 'request-logs', element: <RequestLogsPage /> },
       { path: 'exception-logs', element: <ExceptionLogsPage /> },
     ],

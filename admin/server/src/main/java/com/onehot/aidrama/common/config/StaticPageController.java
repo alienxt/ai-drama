@@ -16,7 +16,9 @@ public class StaticPageController {
             "/media-accounts",
             "/tasks",
             "/ai-tasks",
-            "/desktop-versions"
+            "/desktop-versions",
+            "/request-logs",
+            "/exception-logs"
     })
     public String forward() {
         return "forward:/index.html";

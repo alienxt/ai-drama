@@ -662,6 +662,57 @@ body {
   font-size: 12px;
 }
 
+.log-table .ant-table-tbody > tr > td {
+  height: 58px;
+  vertical-align: middle;
+}
+
+.log-request {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.log-request .ant-space-item:last-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.log-method-tag.ant-tag {
+  min-width: 48px;
+  margin-inline-end: 0;
+  text-align: center;
+  color: #1d4ed8;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-weight: 700;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.log-request-path,
+.log-trace-id,
+.log-muted-text,
+.log-error-code,
+.log-exception-class,
+.log-message {
+  display: block;
+  max-width: 100%;
+}
+
+.log-error-code {
+  color: #dc2626;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.log-exception-class {
+  color: #475569;
+}
+
+.log-message {
+  color: #172033;
+}
+
 .episode-player {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
@@ -712,6 +763,13 @@ body {
   color: #334155;
   font-size: 13px;
   font-weight: 760;
+}
+
+.episode-player-meta-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .episode-list-panel {
@@ -790,6 +848,15 @@ body {
   color: #2563eb;
 }
 
+.episode-icon-button.ant-btn {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  place-items: center;
+  color: #2563eb;
+}
+
 .episode-play-indicator {
   display: inline-grid;
   width: 28px;
@@ -813,6 +880,87 @@ body {
   word-break: break-word;
   background: #f8fafc;
   border: 1px solid #e5eaf0;
+  border-radius: 8px;
+}
+
+.ai-task-images {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-task-images h5.ant-typography {
+  margin: 0;
+}
+
+.ai-task-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.ai-task-image-card {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  min-height: 156px;
+  padding: 12px;
+  background: #fbfdff;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+}
+
+.ai-task-image-card > span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.ai-task-image,
+.ai-task-image .ant-image-img {
+  width: 108px !important;
+  height: 144px !important;
+  object-fit: cover;
+  border: 1px solid #e5eaf0;
+  border-radius: 8px;
+}
+
+.system-task-detail-section {
+  display: grid;
+  gap: 12px;
+}
+
+.system-task-detail-section h5.ant-typography {
+  margin: 0;
+}
+
+.system-task-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.system-task-metrics .ant-statistic {
+  min-width: 0;
+  padding: 14px;
+  background: #fbfdff;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+}
+
+.system-task-metrics .ant-statistic-title {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.system-task-metrics .ant-statistic-content {
+  color: #172033;
+  font-size: 24px;
+  font-weight: 760;
+}
+
+.system-task-drama-table .ant-table {
   border-radius: 8px;
 }
 
@@ -880,6 +1028,7 @@ body {
   .drama-detail-hero,
   .drama-detail-grid,
   .drama-cover-pair,
+  .ai-task-image-grid,
   .episode-player {
     grid-template-columns: 1fr;
   }
@@ -889,6 +1038,14 @@ body {
   }
 
   .drama-cover-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .system-task-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-task-image-card {
     grid-template-columns: 1fr;
   }
 

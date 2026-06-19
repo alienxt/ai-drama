@@ -7,6 +7,7 @@ import {
   DownloadOutlined,
   ExperimentOutlined,
   FileSearchOutlined,
+  FieldTimeOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -44,6 +45,7 @@ const navItems: NavItem[] = [
   { key: '/accounts', icon: <SolutionOutlined />, label: '管理员管理', group: '系统管理', description: '管理后台登录账号与操作权限' },
   { key: '/desktop-versions', icon: <DownloadOutlined />, label: '桌面版本', group: '系统管理', description: '管理 macOS 与 Windows 桌面端安装包发布' },
   { key: '/configs', icon: <SettingOutlined />, label: '系统配置', group: '系统管理', description: '维护云盘、分发节奏与安全配置' },
+  { key: '/system-tasks', icon: <FieldTimeOutlined />, label: '系统任务', group: '系统管理', description: '查看百度网盘扫描等后台任务结果与数据' },
   { key: '/request-logs', icon: <FileSearchOutlined />, label: '请求日志', group: '系统管理', description: '查看后台与桌面端 API 请求记录' },
   { key: '/exception-logs', icon: <WarningOutlined />, label: '异常日志', group: '系统管理', description: '查看接口异常、错误码与堆栈摘要' },
 ];

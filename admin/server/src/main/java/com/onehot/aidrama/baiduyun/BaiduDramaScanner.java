@@ -6,6 +6,8 @@ import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
+import com.onehot.aidrama.system.SystemTaskService;
+import com.onehot.aidrama.system.SystemTaskType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -13,8 +15,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -26,6 +30,7 @@ public class BaiduDramaScanner {
     private final DramaRepository dramaRepository;
     private final SystemConfigService configService;
     private final BaiduAssetStorage assetStorage;
+    private final SystemTaskService systemTaskService;
     private final BaiduDramaImportPlanner importPlanner = new BaiduDramaImportPlanner();
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
 
@@ -35,10 +40,21 @@ public class BaiduDramaScanner {
             SystemConfigService configService,
             BaiduAssetStorage assetStorage
     ) {
+        this(baiduPanClient, dramaRepository, configService, assetStorage, null);
+    }
+
+    public BaiduDramaScanner(
+            BaiduPanClient baiduPanClient,
+            DramaRepository dramaRepository,
+            SystemConfigService configService,
+            BaiduAssetStorage assetStorage,
+            SystemTaskService systemTaskService
+    ) {
         this.baiduPanClient = baiduPanClient;
         this.dramaRepository = dramaRepository;
         this.configService = configService;
         this.assetStorage = assetStorage;
+        this.systemTaskService = systemTaskService;
     }
 
     @Scheduled(
@@ -48,7 +64,25 @@ public class BaiduDramaScanner {
     public void scheduledScan() {
         boolean enabled = configService.get("baidu.scanEnabled").map(Boolean::parseBoolean).orElse(true);
         if (enabled) {
-            scanLatestConfiguredRoot();
+            if (systemTaskService == null) {
+                scanLatestConfiguredRoot();
+                return;
+            }
+            String remoteRoot = configService.get("baidu.scanRoot").orElse("/drama/真人剧/2026");
+            systemTaskService.run(
+                    SystemTaskType.BAIDU_PAN_SCAN,
+                    "定时扫描百度网盘",
+                    "scheduled",
+                    mapOf("remoteRoot", remoteRoot),
+                    this::scanLatestConfiguredRoot,
+                    dramas -> new SystemTaskService.TaskResult(
+                            "导入 %d 部短剧".formatted(dramas.size()),
+                            mapOf(
+                                    "importedCount", dramas.size(),
+                                    "dramas", dramas.stream().map(this::dramaSummary).toList()
+                            )
+                    )
+            );
         }
     }
 
@@ -268,6 +302,24 @@ public class BaiduDramaScanner {
         episode.setFsId(planned.fsId());
         episode.setSize(planned.size());
         return episode;
+    }
+
+    private Map<String, Object> dramaSummary(Drama drama) {
+        return mapOf(
+                "id", drama.getId(),
+                "title", drama.getTitle(),
+                "sourcePath", drama.getSourcePath(),
+                "episodeCount", drama.getEpisodes() == null ? 0 : drama.getEpisodes().size(),
+                "status", drama.getStatus()
+        );
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index < pairs.length; index += 2) {
+            values.put(String.valueOf(pairs[index]), pairs[index + 1]);
+        }
+        return values;
     }
 
     public record SyncResult(int requested, int succeeded, int failed, List<Drama> dramas) {

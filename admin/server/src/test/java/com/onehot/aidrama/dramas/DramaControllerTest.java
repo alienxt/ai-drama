@@ -464,12 +464,35 @@ class DramaControllerTest {
         drama.setEpisodes(List.of(episode));
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
-                .thenReturn(List.of("https://pan.baidu.com/download?token=secret"));
+                .thenReturn(List.of("https://pan.baidu.com/direct.mp4?token=secret"));
 
         DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
 
         assertThat(source.source()).isEqualTo("BAIDU");
         assertThat(source.downloaded()).isFalse();
-        assertThat(source.playUrl()).isEqualTo("https://pan.baidu.com/download?token=secret");
+        assertThat(source.playUrl()).isEqualTo("https://pan.baidu.com/direct.mp4?token=secret");
+        verify(baiduPanClient).createDownloadUrls(List.of("/短剧/002.mp4"));
+    }
+
+    @Test
+    void streamAdminEpisodeRedirectsToBaiduWhenLocalFileMissing() throws Exception {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
+                .thenReturn(List.of("https://pan.baidu.com/direct.mp4?token=secret"));
+
+        var response = controller.streamAdminEpisode("drama-1", 2, null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
+        assertThat(response.getHeaders().getLocation().toString())
+                .isEqualTo("https://pan.baidu.com/direct.mp4?token=secret");
     }
 }

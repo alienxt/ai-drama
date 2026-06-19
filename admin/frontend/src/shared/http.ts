@@ -9,10 +9,29 @@ export type ApiResponse<T> = {
   traceId?: string;
 };
 
+const tokenKey = 'ai-drama-token';
+const tokenCookie = 'ai-drama-token';
+
+function writeTokenCookie(token: string) {
+  document.cookie = `${tokenCookie}=${encodeURIComponent(token)}; path=/; max-age=2592000; SameSite=Lax`;
+}
+
 export const tokenStore = {
-  get: () => localStorage.getItem('ai-drama-token'),
-  set: (token: string) => localStorage.setItem('ai-drama-token', token),
-  clear: () => localStorage.removeItem('ai-drama-token'),
+  get: () => {
+    const token = localStorage.getItem(tokenKey);
+    if (token) {
+      writeTokenCookie(token);
+    }
+    return token;
+  },
+  set: (token: string) => {
+    localStorage.setItem(tokenKey, token);
+    writeTokenCookie(token);
+  },
+  clear: () => {
+    localStorage.removeItem(tokenKey);
+    document.cookie = `${tokenCookie}=; path=/; max-age=0; SameSite=Lax`;
+  },
 };
 
 export const http = axios.create({

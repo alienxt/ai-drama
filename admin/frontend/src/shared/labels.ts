@@ -1,4 +1,4 @@
-import type { Account, AiTask, DistributionTask, Drama, MediaAccount } from './types';
+import type { Account, AiTask, DistributionTask, Drama, MediaAccount, SystemTask } from './types';
 
 export type MediaPlatform = MediaAccount['platform'];
 export type DramaStatus = Drama['status'];
@@ -6,6 +6,8 @@ export type MediaAccountStatus = MediaAccount['status'];
 export type DistributionTaskStatus = DistributionTask['status'];
 export type AiTaskStatus = AiTask['status'];
 export type AiTaskType = AiTask['type'];
+export type SystemTaskStatus = SystemTask['status'];
+export type SystemTaskType = SystemTask['type'];
 export type AccountRole = Account['roles'][number];
 
 export const mediaPlatformLabels: Record<MediaPlatform, string> = {
@@ -133,6 +135,40 @@ export const aiTaskStatusOptions = Object.entries(aiTaskStatusLabels).map(([valu
 
 export function aiTaskStatusLabel(status: string) {
   return aiTaskStatusLabels[status as AiTaskStatus] ?? status;
+}
+
+export const systemTaskTypeLabels: Record<SystemTaskType, string> = {
+  BAIDU_PAN_SCAN: '百度网盘扫描',
+};
+
+export const systemTaskTypeOptions = Object.entries(systemTaskTypeLabels).map(([value, label]) => ({
+  value,
+  label,
+}));
+
+export function systemTaskTypeLabel(type: string) {
+  return systemTaskTypeLabels[type as SystemTaskType] ?? type;
+}
+
+export const systemTaskStatusLabels: Record<SystemTaskStatus, string> = {
+  RUNNING: '执行中',
+  SUCCEEDED: '成功',
+  FAILED: '失败',
+};
+
+export const systemTaskStatusColors: Record<SystemTaskStatus, string> = {
+  RUNNING: 'processing',
+  SUCCEEDED: 'green',
+  FAILED: 'red',
+};
+
+export const systemTaskStatusOptions = Object.entries(systemTaskStatusLabels).map(([value, label]) => ({
+  value,
+  label,
+}));
+
+export function systemTaskStatusLabel(status: string) {
+  return systemTaskStatusLabels[status as SystemTaskStatus] ?? status;
 }
 
 export const accountRoleLabels: Record<AccountRole, string> = {

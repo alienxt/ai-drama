@@ -1,5 +1,8 @@
 package com.onehot.aidrama.baiduyun;
 
+import com.onehot.aidrama.system.SystemTask;
+import com.onehot.aidrama.system.SystemTaskRepository;
+import com.onehot.aidrama.system.SystemTaskService;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -11,6 +14,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 class BaiduScanControllerTest {
     @Test
@@ -18,7 +22,7 @@ class BaiduScanControllerTest {
         BaiduDramaScanner scanner = mock(BaiduDramaScanner.class);
         BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
         List<Runnable> backgroundTasks = new ArrayList<>();
-        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTasks::add);
+        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTasks::add, systemTaskService());
         com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
         drama.setId("drama-1");
         when(scanner.scanLatestConfiguredRoot()).thenReturn(List.of(drama));
@@ -39,7 +43,7 @@ class BaiduScanControllerTest {
         BaiduDramaScanner scanner = mock(BaiduDramaScanner.class);
         BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
         AtomicReference<Runnable> backgroundTask = new AtomicReference<>();
-        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTask::set);
+        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTask::set, systemTaskService());
         com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
         drama.setId("drama-1");
         when(scanner.syncImportedAssets(List.of("drama-1", "drama-2")))
@@ -55,5 +59,11 @@ class BaiduScanControllerTest {
 
         verify(scanner).syncImportedAssets(List.of("drama-1", "drama-2"));
         verify(preparationService).prepareForDistribution(drama);
+    }
+
+    private SystemTaskService systemTaskService() {
+        SystemTaskRepository repository = mock(SystemTaskRepository.class);
+        when(repository.save(any(SystemTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        return new SystemTaskService(repository);
     }
 }

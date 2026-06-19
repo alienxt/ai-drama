@@ -128,6 +128,23 @@ export type AiTask = {
   updatedAt?: string;
 };
 
+export type SystemTask = {
+  id: string;
+  type: 'BAIDU_PAN_SCAN';
+  status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  title?: string;
+  triggerSource?: string;
+  summary?: string;
+  requestPayload?: Record<string, unknown>;
+  resultPayload?: Record<string, unknown>;
+  errorMessage?: string;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type SystemConfig = {
   key: string;
   value: string;

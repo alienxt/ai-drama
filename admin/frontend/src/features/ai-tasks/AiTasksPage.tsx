@@ -1,5 +1,5 @@
 import { EyeOutlined } from '@ant-design/icons';
-import { Button, Descriptions, Modal, Space, Tag, Typography } from 'antd';
+import { Button, Descriptions, Image, Modal, Space, Tag, Typography } from 'antd';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
@@ -15,6 +15,88 @@ import {
 } from '../../shared/labels';
 import type { AiTask } from '../../shared/types';
 
+type TaskImage = {
+  label: string;
+  src: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isImageUrl(value: string) {
+  return /^(https?:\/\/|\/)/i.test(value) && /\.(avif|gif|jpe?g|png|webp|bmp|svg)(\?.*)?$/i.test(value);
+}
+
+function toImageSrc(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  if (text.startsWith('data:image/')) {
+    return text;
+  }
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(text) && text.length > 120) {
+    return `data:image/png;base64,${text}`;
+  }
+  return isImageUrl(text) ? text : null;
+}
+
+function imageFromRecord(payload: unknown, keys: string[]): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  for (const key of keys) {
+    const direct = toImageSrc(payload[key]);
+    if (direct) {
+      return direct;
+    }
+  }
+  const data = payload.data;
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const nested: string | null = imageFromRecord(item, keys);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function originalImageFromPrompt(prompt?: string) {
+  if (!prompt) {
+    return null;
+  }
+  const match = prompt.match(/原始封面[：:]\s*(\S+)/);
+  return match ? toImageSrc(match[1]) : null;
+}
+
+function taskImages(task: AiTask): TaskImage[] {
+  const original = imageFromRecord(task.requestPayload, [
+    'originalCoverUrl',
+    'coverUrl',
+    'inputImageUrl',
+    'imageUrl',
+    'url',
+  ]) ?? originalImageFromPrompt(task.prompt);
+  const generated = imageFromRecord(task.responsePayload, [
+    'aiCoverUrl',
+    'generatedImageUrl',
+    'outputImageUrl',
+    'imageUrl',
+    'url',
+    'b64_json',
+  ]);
+  return [
+    original ? { label: '原图片', src: original } : null,
+    generated ? { label: '生成图片', src: generated } : null,
+  ].filter((image): image is TaskImage => image !== null);
+}
+
 function JsonBlock({ value }: { value?: unknown }) {
   if (value == null || value === '') {
     return <Typography.Text type="secondary">-</Typography.Text>;
@@ -25,6 +107,7 @@ function JsonBlock({ value }: { value?: unknown }) {
 export function AiTasksPage() {
   const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [active, setActive] = useState<AiTask | null>(null);
+  const activeImages = active ? taskImages(active) : [];
 
   return (
     <DataPage
@@ -93,6 +176,19 @@ export function AiTasksPage() {
               <Descriptions.Item label="耗时">{active.durationMs == null ? '-' : `${active.durationMs} ms`}</Descriptions.Item>
               <Descriptions.Item label="错误">{active.errorMessage || '-'}</Descriptions.Item>
             </Descriptions>
+            {activeImages.length ? (
+              <section className="ai-task-images">
+                <Typography.Title level={5}>图片</Typography.Title>
+                <div className="ai-task-image-grid">
+                  {activeImages.map((image) => (
+                    <div className="ai-task-image-card" key={image.label}>
+                      <span>{image.label}</span>
+                      <Image className="ai-task-image" src={image.src} alt={image.label} />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             <Typography.Title level={5}>Prompt</Typography.Title>
             <JsonBlock value={active.prompt} />
             <Typography.Title level={5}>请求</Typography.Title>

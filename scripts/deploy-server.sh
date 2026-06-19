@@ -14,7 +14,7 @@ AIDRAMA_JWT_SECRET="${AIDRAMA_JWT_SECRET:-$(openssl rand -hex 32)}"
 AIDRAMA_ADMIN_USERNAME="${AIDRAMA_ADMIN_USERNAME:-admin}"
 AIDRAMA_ADMIN_PASSWORD="${AIDRAMA_ADMIN_PASSWORD:-admin123}"
 
-ssh "$REMOTE" "mkdir -p '$REMOTE_DIR/source' '$REMOTE_DIR/uploads'"
+ssh "$REMOTE" "mkdir -p '$REMOTE_DIR/source' '$REMOTE_DIR/uploads' '$REMOTE_DIR/downloads'"
 
 ssh "$REMOTE" "test -f '$REMOTE_ENV' || cat > '$REMOTE_ENV'" <<EOF
 MONGODB_URI=$MONGODB_URI
@@ -24,8 +24,15 @@ AIDRAMA_ADMIN_PASSWORD=$AIDRAMA_ADMIN_PASSWORD
 EOF
 
 rsync -az --delete --delete-excluded \
-  --exclude-from="$ROOT_DIR/.dockerignore" \
-  --exclude='.git' \
+  --include='/Dockerfile' \
+  --include='/.dockerignore' \
+  --include='/admin/' \
+  --exclude='/admin/server/target/***' \
+  --exclude='/admin/server/uploads/***' \
+  --exclude='/admin/server/uploads-test/***' \
+  --exclude='/admin/server/backend.log' \
+  --include='/admin/server/***' \
+  --exclude='*' \
   "$ROOT_DIR/" "$REMOTE:$REMOTE_DIR/source/"
 
 ssh "$REMOTE" bash -s <<EOF
@@ -39,6 +46,7 @@ docker run -d \
   -p '$HOST_PORT:8080' \
   --env-file '$REMOTE_ENV' \
   -v '$REMOTE_DIR/uploads:/app/uploads' \
+  -v '$REMOTE_DIR/downloads:/app/downloads' \
   '$IMAGE:$TAG'
 docker ps --filter name='^/$CONTAINER$'
 EOF

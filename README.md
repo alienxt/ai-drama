@@ -70,7 +70,7 @@ mvn spring-boot:run
 
 ## Deploy
 
-后端和后台前端合并为一个 Spring Boot Docker 容器部署，不需要 nginx，也不会启动 MongoDB。
+后端以 Spring Boot Docker 容器部署，只包含后端服务，不构建也不发布后台前端。
 容器默认连接 `mongodb://172.31.39.95:27017/ai_drama`：
 
 ```bash
@@ -96,7 +96,7 @@ AIDRAMA_JWT_SECRET='replace-with-a-long-secret' \
 ./scripts/remote-status.sh
 ```
 
-发布后台前端到宿主机 nginx 目录：
+后台前端独立发布到宿主机 nginx 目录：
 
 ```bash
 ./scripts/deploy-frontend.sh

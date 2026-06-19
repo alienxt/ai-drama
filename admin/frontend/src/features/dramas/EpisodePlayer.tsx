@@ -1,4 +1,4 @@
-import { CloudOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CloudDownloadOutlined, CloudOutlined, DownloadOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Button, Empty, Spin, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { apiGet } from '../../shared/http';
@@ -12,6 +12,7 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
   const [episodes, setEpisodes] = useState<AdminEpisode[]>([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [loadingEpisodeNo, setLoadingEpisodeNo] = useState<number | null>(null);
+  const [downloadingEpisodeNo, setDownloadingEpisodeNo] = useState<number | null>(null);
   const [activeSource, setActiveSource] = useState<EpisodePlaySource | null>(null);
 
   useEffect(() => {
@@ -39,6 +40,26 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
     }
   }
 
+  async function downloadEpisode(episode: AdminEpisode) {
+    setDownloadingEpisodeNo(episode.episodeNo);
+    try {
+      const source =
+        activeSource?.episodeNo === episode.episodeNo
+          ? activeSource
+          : await apiGet<EpisodePlaySource>(`/admin/dramas/${dramaId}/episodes/${episode.episodeNo}/play-url`);
+      const link = document.createElement('a');
+      link.href = source.playUrl;
+      link.download = episode.title || `${String(episode.episodeNo).padStart(2, '0')}.mp4`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      setDownloadingEpisodeNo(null);
+    }
+  }
+
   const activeEpisode = episodes.find((episode) => episode.episodeNo === activeSource?.episodeNo);
 
   return (
@@ -61,11 +82,23 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
         )}
         <div className="episode-player-meta">
           <span>{activeEpisode ? `第 ${activeEpisode.episodeNo} 集` : '未选择剧集'}</span>
-          {activeSource ? (
-            <Tag color={activeSource.downloaded ? 'green' : 'blue'}>
-              {activeSource.downloaded ? '本地播放' : '百度云播放'}
-            </Tag>
-          ) : null}
+          <span className="episode-player-meta-actions">
+            {activeSource ? (
+              <Tag color={activeSource.downloaded ? 'green' : 'blue'}>
+                {activeSource.downloaded ? '本地播放' : '百度云播放'}
+              </Tag>
+            ) : null}
+            {activeEpisode ? (
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() => downloadEpisode(activeEpisode)}
+                loading={downloadingEpisodeNo === activeEpisode.episodeNo}
+              >
+                下载到本地
+              </Button>
+            ) : null}
+          </span>
         </div>
       </div>
 
@@ -80,11 +113,18 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
           {episodes.length ? (
             <div className="episode-list">
               {episodes.map((episode) => (
-                <button
+                <div
                   key={episode.episodeNo}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={episode.episodeNo === activeSource?.episodeNo ? 'episode-row episode-row-active' : 'episode-row'}
                   onClick={() => play(episode.episodeNo)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void play(episode.episodeNo);
+                    }
+                  }}
                 >
                   <span className="episode-row-title">
                     <PlayCircleOutlined />
@@ -98,11 +138,24 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
                       {episode.downloaded ? '已下载' : '百度云'}
                     </Tag>
                     {episode.downloaded ? null : <CloudOutlined className="episode-cloud-icon" />}
-                    <span className="episode-play-indicator">
+                    <Tooltip title="下载到本地">
+                      <Button
+                        size="small"
+                        type="text"
+                        className="episode-icon-button"
+                        icon={<CloudDownloadOutlined />}
+                        loading={downloadingEpisodeNo === episode.episodeNo}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void downloadEpisode(episode);
+                        }}
+                      />
+                    </Tooltip>
+                    <span className="episode-play-indicator" aria-label="播放">
                       {loadingEpisodeNo === episode.episodeNo ? <Spin size="small" /> : <PlayCircleOutlined />}
                     </span>
                   </span>
-                </button>
+                </div>
               ))}
             </div>
           ) : (
