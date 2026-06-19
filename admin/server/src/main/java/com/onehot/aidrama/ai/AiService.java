@@ -4,10 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.onehot.aidrama.configs.SystemConfigService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -106,14 +108,31 @@ public class AiService {
         String apiKey = configService.get("openai.apiKey")
                 .filter(value -> !value.isBlank())
                 .orElseThrow(() -> new OpenAiException("缺少 OpenAI API Key，请在系统配置中设置 openai.apiKey"));
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofSeconds(configLong("openai.connectTimeoutSeconds", 30)));
+        requestFactory.setReadTimeout(Duration.ofSeconds(configLong("openai.readTimeoutSeconds", 180)));
         return restClientBuilder
                 .baseUrl(config("openai.baseUrl", DEFAULT_BASE_URL))
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                .requestFactory(requestFactory)
                 .build();
     }
 
     private String config(String key, String defaultValue) {
         return configService.get(key).filter(value -> !value.isBlank()).orElse(defaultValue);
+    }
+
+    private long configLong(String key, long defaultValue) {
+        return configService.get(key)
+                .filter(value -> !value.isBlank())
+                .map(value -> {
+                    try {
+                        return Long.parseLong(value.trim());
+                    } catch (NumberFormatException exception) {
+                        return defaultValue;
+                    }
+                })
+                .orElse(defaultValue);
     }
 
     private String firstTextFromOutput(JsonNode response) {

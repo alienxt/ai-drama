@@ -98,6 +98,8 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.imageSize", "1024x1536", false);
         configService.putIfAbsent("openai.imageQuality", "medium", false);
         configService.putIfAbsent("openai.imageOutputFormat", "jpeg", false);
+        configService.putIfAbsent("openai.connectTimeoutSeconds", "30", false);
+        configService.putIfAbsent("openai.readTimeoutSeconds", "180", false);
         putDefaultTitlePrompt(configService);
         putDefaultCoverPrompt(configService);
     }
