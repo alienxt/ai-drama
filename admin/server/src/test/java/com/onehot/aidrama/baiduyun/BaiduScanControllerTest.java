@@ -20,9 +20,8 @@ class BaiduScanControllerTest {
     @Test
     void acceptsBaiduScanWithoutRunningScannerOnRequestThread() {
         BaiduDramaScanner scanner = mock(BaiduDramaScanner.class);
-        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
         List<Runnable> backgroundTasks = new ArrayList<>();
-        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTasks::add, systemTaskService());
+        BaiduScanController controller = new BaiduScanController(scanner, backgroundTasks::add, systemTaskService());
         com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
         drama.setId("drama-1");
         when(scanner.scanLatestConfiguredRoot()).thenReturn(List.of(drama));
@@ -35,15 +34,13 @@ class BaiduScanControllerTest {
         backgroundTasks.getFirst().run();
 
         verify(scanner).scanLatestConfiguredRoot();
-        verify(preparationService).prepareForDistribution(drama);
     }
 
     @Test
     void acceptsAssetSyncWithoutRunningScannerOnRequestThread() {
         BaiduDramaScanner scanner = mock(BaiduDramaScanner.class);
-        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
         AtomicReference<Runnable> backgroundTask = new AtomicReference<>();
-        BaiduScanController controller = new BaiduScanController(scanner, preparationService, backgroundTask::set, systemTaskService());
+        BaiduScanController controller = new BaiduScanController(scanner, backgroundTask::set, systemTaskService());
         com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
         drama.setId("drama-1");
         when(scanner.syncImportedAssets(List.of("drama-1", "drama-2")))
@@ -58,7 +55,6 @@ class BaiduScanControllerTest {
         backgroundTask.get().run();
 
         verify(scanner).syncImportedAssets(List.of("drama-1", "drama-2"));
-        verify(preparationService).prepareForDistribution(drama);
     }
 
     private SystemTaskService systemTaskService() {

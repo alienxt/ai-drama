@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -34,6 +35,24 @@ public class LocalBaiduAssetStorage implements BaiduAssetStorage {
         }
         baiduPanClient.downloadFile(remotePath, target);
         return "/uploads/covers/" + fileName;
+    }
+
+    @Override
+    public String storeCoverBytes(String remotePath, byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            throw new BaiduPanException("Cover file is empty");
+        }
+        String fileName = sha256(remotePath) + extension(remotePath);
+        Path target = uploadDir.resolve("covers").resolve(fileName);
+        try {
+            Files.createDirectories(target.getParent());
+            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
+            Files.write(temp, bytes);
+            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            return "/uploads/covers/" + fileName;
+        } catch (java.io.IOException exception) {
+            throw new BaiduPanException("Cover file save failed", exception);
+        }
     }
 
     private String extension(String remotePath) {

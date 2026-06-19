@@ -4,10 +4,14 @@ import com.onehot.aidrama.configs.SystemConfigService;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
+import com.onehot.aidrama.system.SystemTaskService;
+import com.onehot.aidrama.system.SystemTaskType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,6 +48,61 @@ class BaiduDramaScannerTest {
         assertThat(imported.getCoverUrl()).isEqualTo("/uploads/covers/cover.jpg");
         assertThat(imported.getSummary()).isEqualTo("真正的剧情简介");
         assertThat(imported.getStatus()).isEqualTo(DramaStatus.DRAFT);
+    }
+
+    @Test
+    void skipsSummaryAndCoverDownloadWhenScanDownloadAssetsIsDisabled() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+
+        when(configService.get("baidu.scanDownloadAssets")).thenReturn(Optional.of("false"));
+        when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）", "1.神医归来（80集）", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/cover.jpg", "cover.jpg", false, 2L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/简介.txt", "简介.txt", false, 3L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/01.mp4", "01.mp4", false, 4L, 100)
+        ));
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of());
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama imported = scanner.scanDateDirectory("/root/6月15日").getFirst();
+
+        assertThat(imported.getSummary()).isEqualTo("神医归来（80集）");
+        assertThat(imported.getCoverUrl()).isNull();
+        verify(baiduPanClient, never()).readTextFile(any());
+        verify(assetStorage, never()).storeCover(any(), any());
+    }
+
+    @Test
+    void skipsSingleBrokenDramaDirectoryAndContinuesScanningOthers() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+
+        when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩", "1.百度返回-9（61集）尹洋&邬倩", true, 1L, 0),
+                new BaiduPanEntry("/root/6月15日/2.正常短剧（20集）", "2.正常短剧（20集）", true, 2L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩"))
+                .thenThrow(new BaiduPanException("Baidu API error -9 for https://pan.baidu.com/rest/2.0/xpan/file?access_token=***"));
+        when(baiduPanClient.listDirectory("/root/6月15日/2.正常短剧（20集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/2.正常短剧（20集）/01.mp4", "01.mp4", false, 4L, 100)
+        ));
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/2.正常短剧（20集）")).thenReturn(List.of());
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<Drama> imported = scanner.scanDateDirectory("/root/6月15日");
+
+        assertThat(imported).hasSize(1);
+        assertThat(imported.getFirst().getSourcePath()).isEqualTo("/root/6月15日/2.正常短剧（20集）");
+        verify(dramaRepository, never()).findAllBySourcePath("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩");
     }
 
     @Test
@@ -251,5 +310,40 @@ class BaiduDramaScannerTest {
         assertThat(result.dramas()).isEmpty();
         assertThat(drama.getCoverUrl()).isEqualTo("/uploads/covers/old.jpg");
         verify(dramaRepository, never()).save(drama);
+    }
+
+    @Test
+    void scheduledScanSkipsWhenPreviousRunIsStillActive() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        SystemTaskService systemTaskService = mock(SystemTaskService.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(
+                baiduPanClient,
+                dramaRepository,
+                configService,
+                assetStorage,
+                systemTaskService
+        );
+        AtomicInteger runs = new AtomicInteger();
+        when(configService.get("baidu.scanEnabled")).thenReturn(Optional.of("true"));
+        when(configService.get("baidu.scanRoot")).thenReturn(Optional.of("/root"));
+        when(systemTaskService.run(
+                any(SystemTaskType.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+        )).thenAnswer(invocation -> {
+            runs.incrementAndGet();
+            scanner.scheduledScan();
+            return List.of();
+        });
+
+        scanner.scheduledScan();
+
+        assertThat(runs).hasValue(1);
     }
 }

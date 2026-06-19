@@ -3,15 +3,21 @@ package com.onehot.aidrama.baiduyun;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onehot.aidrama.configs.SystemConfigService;
+import okhttp3.FormBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 import org.springframework.stereotype.Component;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
+import java.net.Authenticator;
+import java.net.InetSocketAddress;
+import java.net.PasswordAuthentication;
+import java.net.Proxy;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -22,6 +28,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Component
@@ -31,9 +39,6 @@ public class BaiduPanHttpClient implements BaiduPanClient {
     private static final String XPAN_MEDIA_URL = "https://pan.baidu.com/rest/2.0/xpan/multimedia";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
     private final SystemConfigService configService;
 
     public BaiduPanHttpClient(SystemConfigService configService) {
@@ -42,14 +47,7 @@ public class BaiduPanHttpClient implements BaiduPanClient {
 
     @Override
     public List<BaiduPanEntry> listDirectory(String remotePath) {
-        Map<String, Object> payload = getJson(
-                UriComponentsBuilder.fromHttpUrl(XPAN_FILE_URL)
-                        .queryParam("method", "list")
-                        .queryParam("access_token", ensureAccessToken(false))
-                        .queryParam("dir", remotePath)
-                        .build()
-                        .toUri()
-        );
+        Map<String, Object> payload = getJson(listDirectoryUri(remotePath, ensureAccessToken(false)));
         Object rawList = payload.getOrDefault("list", List.of());
         return MAPPER.convertValue(rawList, new TypeReference<List<Map<String, Object>>>() {
                 }).stream()
@@ -73,13 +71,12 @@ public class BaiduPanHttpClient implements BaiduPanClient {
                 .map(BaiduPanEntry::fsId)
                 .toList();
         Map<String, Object> payload = getJson(
-                UriComponentsBuilder.fromHttpUrl(XPAN_MEDIA_URL)
-                        .queryParam("method", "filemetas")
-                        .queryParam("access_token", ensureAccessToken(false))
-                        .queryParam("fsids", MAPPER.valueToTree(fsIds).toString())
-                        .queryParam("dlink", "1")
-                        .build()
-                        .toUri()
+                encodedUri(XPAN_MEDIA_URL, Map.of(
+                        "method", "filemetas",
+                        "access_token", ensureAccessToken(false),
+                        "fsids", MAPPER.valueToTree(fsIds).toString(),
+                        "dlink", "1"
+                ))
         );
         List<Map<String, Object>> list = MAPPER.convertValue(payload.get("list"), new TypeReference<>() {
         });
@@ -105,44 +102,41 @@ public class BaiduPanHttpClient implements BaiduPanClient {
 
     @Override
     public String readTextFile(String remotePath) {
-        HttpRequest request = request(URI.create(createDownloadUrl(remotePath))).GET().build();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() >= 400) {
-                throw new BaiduPanException("Baidu text download HTTP " + response.statusCode());
+            try (Response response = execute(requestBuilder(URI.create(createDownloadUrl(remotePath))).get().build())) {
+                if (response.code() >= 400) {
+                    throw new BaiduPanException("Baidu text download HTTP " + response.code());
+                }
+                String body = responseBody(response).string();
+                rejectBaiduErrorBody(body, "Baidu text download failed");
+                return body;
             }
-            rejectBaiduErrorBody(response.body(), "Baidu text download failed");
-            return response.body();
         } catch (IOException exception) {
             throw new BaiduPanException("Baidu text download failed", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new BaiduPanException("Baidu text download interrupted", exception);
         }
     }
 
     @Override
     public void downloadFile(String remotePath, Path target) {
-        HttpRequest request = request(URI.create(createDownloadUrl(remotePath))).GET().build();
         try {
             Files.createDirectories(target.getParent());
             Path temp = target.resolveSibling(target.getFileName() + ".tmp");
-            HttpResponse<Path> response = httpClient.send(request, HttpResponse.BodyHandlers.ofFile(temp));
-            if (response.statusCode() >= 400) {
-                Files.deleteIfExists(temp);
-                throw new BaiduPanException("Baidu file download HTTP " + response.statusCode());
+            try (Response response = execute(requestBuilder(URI.create(createDownloadUrl(remotePath))).get().build())) {
+                if (response.code() >= 400) {
+                    Files.deleteIfExists(temp);
+                    throw new BaiduPanException("Baidu file download HTTP " + response.code());
+                }
+                ResponseBody body = responseBody(response);
+                Files.write(temp, body.bytes());
+                String contentType = response.header("Content-Type", "");
+                if (contentType.contains("application/json") || contentType.contains("text/")) {
+                    String text = Files.readString(temp, StandardCharsets.UTF_8);
+                    rejectBaiduErrorBody(text, "Baidu file download failed");
+                }
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             }
-            String contentType = response.headers().firstValue("Content-Type").orElse("");
-            if (contentType.contains("application/json") || contentType.contains("text/")) {
-                String body = Files.readString(temp, StandardCharsets.UTF_8);
-                rejectBaiduErrorBody(body, "Baidu file download failed");
-            }
-            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException exception) {
             throw new BaiduPanException("Baidu file download failed", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new BaiduPanException("Baidu file download interrupted", exception);
         }
     }
 
@@ -202,44 +196,85 @@ public class BaiduPanHttpClient implements BaiduPanClient {
     }
 
     private Map<String, Object> getJson(URI uri) {
-        HttpRequest request = request(uri).GET().build();
-        return sendJson(request);
+        return sendJson(requestBuilder(uri).get().build());
     }
 
     private Map<String, Object> postForm(URI uri, String body) {
-        HttpRequest request = request(uri)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
+        FormBody.Builder form = new FormBody.Builder(StandardCharsets.UTF_8);
+        for (String pair : body.split("&")) {
+            int equals = pair.indexOf('=');
+            if (equals > 0) {
+                form.addEncoded(pair.substring(0, equals), pair.substring(equals + 1));
+            }
+        }
+        Request request = requestBuilder(uri)
+                .post(form.build())
                 .build();
         return sendJson(request);
     }
 
-    private Map<String, Object> sendJson(HttpRequest request) {
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 400) {
-                throw new BaiduPanException("Baidu HTTP " + response.statusCode());
+    private Map<String, Object> sendJson(Request request) {
+        try (Response response = execute(request)) {
+            if (response.code() >= 400) {
+                throw new BaiduPanException("Baidu HTTP " + response.code());
             }
-            Map<String, Object> payload = MAPPER.readValue(response.body(), new TypeReference<>() {
+            Map<String, Object> payload = MAPPER.readValue(responseBody(response).string(), new TypeReference<>() {
             });
             Object errno = payload.get("errno");
             if (errno instanceof Number number && number.intValue() != 0) {
-                throw new BaiduPanException("Baidu API error " + errno + " for " + request.uri());
+                throw new BaiduPanException("Baidu API error " + errno + baiduMessage(payload) + " for " + safeUri(request.url().uri()));
             }
             return payload;
         } catch (IOException exception) {
             throw new BaiduPanException("Baidu response parse failed", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new BaiduPanException("Baidu request interrupted", exception);
         }
     }
 
-    private HttpRequest.Builder request(URI uri) {
-        return HttpRequest.newBuilder(uri)
-                .timeout(Duration.ofSeconds(20))
+    private Response execute(Request request) throws IOException {
+        return httpClient().newCall(request).execute();
+    }
+
+    private ResponseBody responseBody(Response response) {
+        ResponseBody body = response.body();
+        if (body == null) {
+            throw new BaiduPanException("Baidu response body is empty");
+        }
+        return body;
+    }
+
+    private Request.Builder requestBuilder(URI uri) {
+        return new Request.Builder()
+                .url(uri.toString())
                 .header("User-Agent", "pan.baidu.com")
                 .header("Referer", "https://pan.baidu.com/");
+    }
+
+    private OkHttpClient httpClient() {
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                .followRedirects(true)
+                .connectTimeout(Duration.ofSeconds(30))
+                .readTimeout(Duration.ofSeconds(30))
+                .writeTimeout(Duration.ofSeconds(30));
+        resolveProxySettings(configService::get).ifPresent(settings -> {
+            builder.proxy(new Proxy(
+                    Proxy.Type.SOCKS,
+                    new InetSocketAddress(settings.host(), settings.port())
+            ));
+            configureSocksAuthentication(settings);
+        });
+        return builder.build();
+    }
+
+    private void configureSocksAuthentication(ProxySettings settings) {
+        if (settings.username().isBlank() || settings.password().isBlank()) {
+            return;
+        }
+        Authenticator.setDefault(new Authenticator() {
+            @Override
+            protected PasswordAuthentication getPasswordAuthentication() {
+                return new PasswordAuthentication(settings.username(), settings.password().toCharArray());
+            }
+        });
     }
 
     private BaiduPanEntry entryFrom(Map<String, Object> item) {
@@ -261,6 +296,62 @@ public class BaiduPanHttpClient implements BaiduPanClient {
 
     private String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    static URI listDirectoryUri(String remotePath, String accessToken) {
+        return encodedUri(XPAN_FILE_URL, Map.of(
+                "method", "list",
+                "access_token", accessToken,
+                "dir", remotePath
+        ));
+    }
+
+    private static URI encodedUri(String url, Map<String, String> queryParams) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(url);
+        queryParams.forEach(builder::queryParam);
+        return builder.encode().build().toUri();
+    }
+
+    static String safeUri(URI uri) {
+        return uri.toString()
+                .replaceAll("(?i)(access_token=)[^&]+", "$1***")
+                .replaceAll("(?i)(refresh_token=)[^&]+", "$1***")
+                .replaceAll("(?i)(client_secret=)[^&]+", "$1***");
+    }
+
+    private String baiduMessage(Map<String, Object> payload) {
+        Object message = Optional.ofNullable(payload.get("errmsg"))
+                .orElseGet(() -> Optional.ofNullable(payload.get("error_msg")).orElse(payload.get("show_msg")));
+        if (message == null || String.valueOf(message).isBlank()) {
+            return "";
+        }
+        return " (" + message + ")";
+    }
+
+    static Optional<ProxySettings> resolveProxySettings(Function<String, Optional<String>> config) {
+        boolean enabled = config.apply("baidu.proxyEnabled").map(Boolean::parseBoolean).orElse(false);
+        if (!enabled) {
+            return Optional.empty();
+        }
+        String host = config.apply("baidu.proxyHost").orElse("").trim();
+        int port = config.apply("baidu.proxyPort").map(BaiduPanHttpClient::parsePort).orElse(0);
+        if (host.isBlank() || port <= 0) {
+            return Optional.empty();
+        }
+        String username = config.apply("baidu.proxyUsername").orElse("").trim();
+        String password = config.apply("baidu.proxyPassword").orElse("");
+        return Optional.of(new ProxySettings(host, port, username, password));
+    }
+
+    private static int parsePort(String value) {
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
+    }
+
+    record ProxySettings(String host, int port, String username, String password) {
     }
 
     private String appendAccessToken(String url, String accessToken) {

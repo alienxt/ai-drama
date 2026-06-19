@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class BaiduDramaScanner {
@@ -32,6 +33,7 @@ public class BaiduDramaScanner {
     private final SystemConfigService configService;
     private final BaiduAssetStorage assetStorage;
     private final SystemTaskService systemTaskService;
+    private final AtomicBoolean scheduledScanRunning = new AtomicBoolean(false);
     private final BaiduDramaImportPlanner importPlanner = new BaiduDramaImportPlanner();
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
 
@@ -64,6 +66,18 @@ public class BaiduDramaScanner {
             initialDelayString = "${aidrama.baidu.scan-initial-delay-ms:60000}"
     )
     public void scheduledScan() {
+        if (!scheduledScanRunning.compareAndSet(false, true)) {
+            LOGGER.warn("Skip Baidu scheduled scan because previous scan is still running");
+            return;
+        }
+        try {
+            runScheduledScan();
+        } finally {
+            scheduledScanRunning.set(false);
+        }
+    }
+
+    private void runScheduledScan() {
         boolean enabled = configService.get("baidu.scanEnabled").map(Boolean::parseBoolean).orElse(true);
         if (enabled) {
             if (systemTaskService == null) {
@@ -107,7 +121,8 @@ public class BaiduDramaScanner {
     public List<Drama> scanDateDirectory(String dateDirectory) {
         return baiduPanClient.listDirectory(dateDirectory).stream()
                 .filter(BaiduPanEntry::directory)
-                .map(this::importDrama)
+                .map(this::importDramaSafely)
+                .flatMap(Optional::stream)
                 .toList();
     }
 
@@ -131,11 +146,77 @@ public class BaiduDramaScanner {
             try {
                 synced.add(syncImportedDrama(drama));
             } catch (BaiduPanException | IllegalArgumentException exception) {
-                LOGGER.warn("Skip Baidu asset sync for {}: {}", drama.getSourcePath(), exception.getMessage());
+                LOGGER.warn("Skip Baidu asset sync for {}: {}", drama.getSourcePath(), rootCauseMessage(exception));
             }
         }
         int failed = requestedIds.size() - synced.size();
         return new SyncResult(requestedIds.size(), synced.size(), failed, synced);
+    }
+
+    public List<ClientAssetSyncPlan> clientAssetSyncPlans(List<String> ids) {
+        List<String> requestedIds = ids == null ? List.of() : ids.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        List<ClientAssetSyncPlan> plans = new ArrayList<>();
+        for (Drama drama : dramaRepository.findAllById(requestedIds)) {
+            try {
+                plans.add(clientAssetSyncPlan(drama));
+            } catch (BaiduPanException | IllegalArgumentException exception) {
+                plans.add(new ClientAssetSyncPlan(
+                        drama.getId(),
+                        drama.getTitle(),
+                        drama.getSourcePath(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        rootCauseMessage(exception)
+                ));
+            }
+        }
+        return plans;
+    }
+
+    public Drama applyClientAssetSync(String id, String summary, String coverPath, byte[] coverBytes) {
+        Drama drama = dramaRepository.findById(id)
+                .orElseThrow(() -> new BaiduPanException("Drama not found: " + id));
+        if (summary != null && !summary.isBlank() && !looksLikeBaiduError(summary)) {
+            drama.setSummary(summary.trim());
+        }
+        if (coverBytes != null && coverBytes.length > 0) {
+            if (coverPath == null || coverPath.isBlank()) {
+                throw new BaiduPanException("Cover path is required");
+            }
+            drama.setCoverUrl(assetStorage.storeCoverBytes(coverPath, coverBytes));
+        }
+        return dramaRepository.save(drama);
+    }
+
+    private ClientAssetSyncPlan clientAssetSyncPlan(Drama drama) {
+        if (!hasSourcePath(drama)) {
+            throw new IllegalArgumentException("Drama has no source path");
+        }
+        PlannedDrama planned = importPlanner.planDrama(
+                new BaiduPanEntry(drama.getSourcePath(), fileName(drama.getSourcePath()), true, null, 0),
+                baiduPanClient.listDirectory(drama.getSourcePath())
+        );
+        String summaryDownloadUrl = isBlank(planned.summaryPath())
+                ? null
+                : baiduPanClient.createDownloadUrl(planned.summaryPath());
+        String coverDownloadUrl = isBlank(planned.coverPath())
+                ? null
+                : baiduPanClient.createDownloadUrl(planned.coverPath());
+        return new ClientAssetSyncPlan(
+                drama.getId(),
+                drama.getTitle(),
+                drama.getSourcePath(),
+                planned.summaryPath(),
+                summaryDownloadUrl,
+                planned.coverPath(),
+                coverDownloadUrl,
+                null
+        );
     }
 
     private Drama syncImportedDrama(Drama drama) {
@@ -181,6 +262,15 @@ public class BaiduDramaScanner {
         return dramaRepository.save(drama);
     }
 
+    private Optional<Drama> importDramaSafely(BaiduPanEntry dramaDir) {
+        try {
+            return Optional.of(importDrama(dramaDir));
+        } catch (BaiduPanException | IllegalArgumentException exception) {
+            LOGGER.warn("Skip Baidu drama import for {}: {}", dramaDir.path(), rootCauseMessage(exception));
+            return Optional.empty();
+        }
+    }
+
     private Drama importDrama(BaiduPanEntry dramaDir) {
         PlannedDrama planned = importPlanner.planDrama(dramaDir, baiduPanClient.listDirectory(dramaDir.path()));
         List<Drama> matches = dramaRepository.findAllBySourcePath(planned.sourcePath());
@@ -197,8 +287,12 @@ public class BaiduDramaScanner {
             mergeScannedMetadata(drama, planned);
         } else {
             drama.setTitle(planned.title());
-            drama.setSummary(resolveSummary(planned));
-            drama.setCoverUrl(resolveCoverUrl(planned));
+            if (scanDownloadAssetsEnabled()) {
+                drama.setSummary(resolveSummary(planned));
+                drama.setCoverUrl(resolveCoverUrl(planned));
+            } else {
+                drama.setSummary(planned.summary());
+            }
         }
         drama.setSource("BAIDU_PAN");
         drama.setSourcePath(planned.sourcePath());
@@ -215,6 +309,12 @@ public class BaiduDramaScanner {
         if (isBlank(drama.getTitle())) {
             drama.setTitle(planned.title());
         }
+        if (!scanDownloadAssetsEnabled()) {
+            if (isBlank(drama.getSummary())) {
+                drama.setSummary(planned.summary());
+            }
+            return;
+        }
         if (isBlank(drama.getSummary())) {
             drama.setSummary(resolveSummary(planned));
         } else if (!isBlank(planned.summaryPath())) {
@@ -228,6 +328,12 @@ public class BaiduDramaScanner {
                 drama.setCoverUrl(coverUrl);
             }
         }
+    }
+
+    private boolean scanDownloadAssetsEnabled() {
+        return configService.get("baidu.scanDownloadAssets")
+                .map(Boolean::parseBoolean)
+                .orElse(true);
     }
 
     private String resolveSummary(PlannedDrama planned) {
@@ -256,7 +362,7 @@ public class BaiduDramaScanner {
         try {
             return assetStorage.storeCover(planned.coverPath(), baiduPanClient);
         } catch (BaiduPanException exception) {
-            LOGGER.warn("Baidu cover download failed: coverPath={}, reason={}", planned.coverPath(), exception.getMessage());
+            LOGGER.warn("Baidu cover download failed: coverPath={}, reason={}", planned.coverPath(), rootCauseMessage(exception));
             return null;
         }
     }
@@ -281,6 +387,17 @@ public class BaiduDramaScanner {
 
     private boolean isRemoteBaiduCover(String value) {
         return value != null && (value.contains("pan.baidu.com") || value.contains("baidu.com"));
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable cursor = throwable;
+        while (cursor.getCause() != null) {
+            cursor = cursor.getCause();
+        }
+        String message = cursor.getMessage();
+        return cursor == throwable
+                ? String.valueOf(message)
+                : throwable.getMessage() + " (" + cursor.getClass().getSimpleName() + ": " + message + ")";
     }
 
     private boolean hasSourcePath(Drama drama) {
@@ -325,5 +442,17 @@ public class BaiduDramaScanner {
     }
 
     public record SyncResult(int requested, int succeeded, int failed, List<Drama> dramas) {
+    }
+
+    public record ClientAssetSyncPlan(
+            String dramaId,
+            String title,
+            String sourcePath,
+            String summaryPath,
+            String summaryDownloadUrl,
+            String coverPath,
+            String coverDownloadUrl,
+            String errorMessage
+    ) {
     }
 }

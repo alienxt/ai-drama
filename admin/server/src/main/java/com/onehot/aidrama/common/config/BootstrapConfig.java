@@ -81,6 +81,13 @@ public class BootstrapConfig {
         configService.putIfAbsent("baidu.scanRoot", "/drama/真人剧/2026", false);
         configService.putIfAbsent("baidu.scanEnabled", "true", false);
         configService.putIfAbsent("baidu.scanFixedDelayMs", "600000", false);
+        configService.putIfAbsent("baidu.scanDownloadAssets", "true", false);
+        configService.putIfAbsent("baidu.prepareFailureCooldownMs", "600000", false);
+        configService.putIfAbsent("baidu.proxyEnabled", "false", false);
+        configService.putIfAbsent("baidu.proxyHost", "", false);
+        configService.putIfAbsent("baidu.proxyPort", "", false);
+        configService.putIfAbsent("baidu.proxyUsername", "", false);
+        configService.putIfAbsent("baidu.proxyPassword", "", true);
     }
 
     private void bootstrapOpenAiConfig(SystemConfigService configService) {

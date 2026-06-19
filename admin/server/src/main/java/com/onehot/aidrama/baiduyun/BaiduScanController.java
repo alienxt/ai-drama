@@ -8,9 +8,12 @@ import com.onehot.aidrama.system.SystemTaskType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.http.MediaType;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,18 +25,15 @@ public class BaiduScanController {
     private static final Logger LOGGER = LoggerFactory.getLogger(BaiduScanController.class);
 
     private final BaiduDramaScanner scanner;
-    private final BaiduDramaPreparationService preparationService;
     private final TaskExecutor taskExecutor;
     private final SystemTaskService systemTaskService;
 
     public BaiduScanController(
             BaiduDramaScanner scanner,
-            BaiduDramaPreparationService preparationService,
             TaskExecutor taskExecutor,
             SystemTaskService systemTaskService
     ) {
         this.scanner = scanner;
-        this.preparationService = preparationService;
         this.taskExecutor = taskExecutor;
         this.systemTaskService = systemTaskService;
     }
@@ -54,8 +54,7 @@ public class BaiduScanController {
                                     ? scanner.scanLatestConfiguredRoot()
                                     : scanner.scanLatestDate(remoteRoot);
                             LOGGER.info("Baidu scan finished: imported={}", dramas.size());
-                            PrepareResult prepareResult = prepareAll(dramas);
-                            return new ScanResult(dramas, prepareResult);
+                            return dramas;
                         },
                         this::scanTaskResult
                 );
@@ -83,12 +82,30 @@ public class BaiduScanController {
                         result.succeeded(),
                         result.failed()
                 );
-                prepareAll(result.dramas());
             } catch (RuntimeException exception) {
                 LOGGER.error("Baidu asset sync failed", exception);
             }
         });
         return ApiResponse.ok(new SyncAssetsAccepted(ids.size(), Instant.now()), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping("/sync-assets/client-plan")
+    ApiResponse<ClientSyncPlanResponse> clientSyncPlan(@RequestBody SyncAssetsRequest request) {
+        List<String> ids = normalizeIds(request == null ? null : request.ids());
+        List<BaiduDramaScanner.ClientAssetSyncPlan> plans = scanner.clientAssetSyncPlans(ids);
+        return ApiResponse.ok(new ClientSyncPlanResponse(plans), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping(value = "/sync-assets/client-complete/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    ApiResponse<ClientSyncCompleteResponse> clientSyncComplete(
+            @PathVariable String id,
+            @RequestParam(required = false) String summary,
+            @RequestParam(required = false) String coverPath,
+            @RequestPart(required = false) MultipartFile cover
+    ) throws IOException {
+        byte[] coverBytes = cover == null || cover.isEmpty() ? null : cover.getBytes();
+        Drama drama = scanner.applyClientAssetSync(id, summary, coverPath, coverBytes);
+        return ApiResponse.ok(new ClientSyncCompleteResponse(drama.getId(), drama.getCoverUrl(), drama.getSummary()), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
     @GetMapping("/scan-baidu/status")
@@ -111,6 +128,12 @@ public class BaiduScanController {
     public record SyncAssetsAccepted(int requested, Instant acceptedAt) {
     }
 
+    public record ClientSyncPlanResponse(List<BaiduDramaScanner.ClientAssetSyncPlan> items) {
+    }
+
+    public record ClientSyncCompleteResponse(String dramaId, String coverUrl, String summary) {
+    }
+
     private List<String> normalizeIds(List<String> ids) {
         if (ids == null) {
             return List.of();
@@ -121,50 +144,13 @@ public class BaiduScanController {
                 .toList();
     }
 
-    private PrepareResult prepareAll(List<Drama> dramas) {
-        if (dramas == null || dramas.isEmpty()) {
-            return new PrepareResult(0, 0, List.of());
-        }
-        int succeeded = 0;
-        List<Map<String, Object>> failures = new java.util.ArrayList<>();
-        for (Drama drama : dramas) {
-            try {
-                Drama prepared = preparationService.prepareForDistribution(drama);
-                succeeded++;
-                LOGGER.info(
-                        "Baidu drama preparation finished: dramaId={}, status={}, aiTitle={}, aiCoverUrl={}",
-                        drama.getId(),
-                        prepared == null ? null : prepared.getStatus(),
-                        prepared == null ? null : prepared.getAiTitle(),
-                        prepared == null ? null : prepared.getAiCoverUrl()
-                );
-            } catch (RuntimeException exception) {
-                LOGGER.error("Baidu drama preparation failed: dramaId={}", drama == null ? null : drama.getId(), exception);
-                failures.add(mapOf(
-                        "dramaId", drama == null ? null : drama.getId(),
-                        "title", drama == null ? null : drama.getTitle(),
-                        "message", exception.getMessage()
-                ));
-            }
-        }
-        return new PrepareResult(succeeded, failures.size(), failures);
-    }
-
-    private SystemTaskService.TaskResult scanTaskResult(ScanResult result) {
-        List<Drama> dramas = result.dramas() == null ? List.of() : result.dramas();
-        PrepareResult prepare = result.prepareResult();
+    private SystemTaskService.TaskResult scanTaskResult(List<Drama> dramas) {
+        dramas = dramas == null ? List.of() : dramas;
         return new SystemTaskService.TaskResult(
-                "导入 %d 部短剧，准备成功 %d 部，失败 %d 部".formatted(
-                        dramas.size(),
-                        prepare.succeeded(),
-                        prepare.failed()
-                ),
+                "导入 %d 部短剧".formatted(dramas.size()),
                 mapOf(
                         "importedCount", dramas.size(),
-                        "preparedCount", prepare.succeeded(),
-                        "prepareFailedCount", prepare.failed(),
-                        "dramas", dramas.stream().map(this::dramaSummary).toList(),
-                        "prepareFailures", prepare.failures()
+                        "dramas", dramas.stream().map(this::dramaSummary).toList()
                 )
         );
     }
@@ -187,9 +173,4 @@ public class BaiduScanController {
         return values;
     }
 
-    private record ScanResult(List<Drama> dramas, PrepareResult prepareResult) {
-    }
-
-    private record PrepareResult(int succeeded, int failed, List<Map<String, Object>> failures) {
-    }
 }

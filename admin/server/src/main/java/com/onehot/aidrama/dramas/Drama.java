@@ -19,6 +19,7 @@ public class Drama {
     private String coverUrl;
     private String aiCoverUrl;
     private boolean aiCoverGenerating;
+    private Instant aiPreparationFailedAt;
     private Integer rating = 5;
     private List<String> categoryIds = new ArrayList<>();
     private String source = "BAIDU_PAN";
@@ -44,6 +45,8 @@ public class Drama {
     public void setAiCoverUrl(String aiCoverUrl) { this.aiCoverUrl = aiCoverUrl; }
     public boolean isAiCoverGenerating() { return aiCoverGenerating; }
     public void setAiCoverGenerating(boolean aiCoverGenerating) { this.aiCoverGenerating = aiCoverGenerating; }
+    public Instant getAiPreparationFailedAt() { return aiPreparationFailedAt; }
+    public void setAiPreparationFailedAt(Instant aiPreparationFailedAt) { this.aiPreparationFailedAt = aiPreparationFailedAt; }
     public Integer getRating() { return rating == null ? 5 : rating; }
     public void setRating(Integer rating) {
         if (rating == null) {

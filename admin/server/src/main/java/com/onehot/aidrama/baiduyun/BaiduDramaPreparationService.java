@@ -4,9 +4,16 @@ import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaAiService;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
+import com.onehot.aidrama.configs.SystemConfigService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class BaiduDramaPreparationService {
@@ -14,10 +21,35 @@ public class BaiduDramaPreparationService {
 
     private final DramaRepository repository;
     private final DramaAiService aiService;
+    private final SystemConfigService configService;
+    private final AtomicBoolean preparing = new AtomicBoolean(false);
 
-    public BaiduDramaPreparationService(DramaRepository repository, DramaAiService aiService) {
+    public BaiduDramaPreparationService(DramaRepository repository, DramaAiService aiService, SystemConfigService configService) {
         this.repository = repository;
         this.aiService = aiService;
+        this.configService = configService;
+    }
+
+    @Scheduled(
+            fixedDelayString = "${aidrama.baidu.prepare-fixed-delay-ms:10000}",
+            initialDelayString = "${aidrama.baidu.prepare-initial-delay-ms:10000}"
+    )
+    public void scheduledPrepareNextPendingDrama() {
+        if (!preparing.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            prepareNextPendingDrama();
+        } finally {
+            preparing.set(false);
+        }
+    }
+
+    public Optional<Drama> prepareNextPendingDrama() {
+        return repository.findAll().stream()
+                .filter(this::needsPreparation)
+                .findFirst()
+                .map(this::prepareForDistribution);
     }
 
     public Drama prepareForDistribution(Drama drama) {
@@ -28,12 +60,18 @@ public class BaiduDramaPreparationService {
             return drama;
         }
         try {
-            aiService.generateTitle(drama.getId());
-            markCoverGenerating(drama.getId(), true);
-            Drama prepared = aiService.generateCover(drama.getId());
+            Drama prepared = drama;
+            if (isBlank(prepared.getAiTitle())) {
+                prepared = aiService.generateTitle(drama.getId());
+            }
+            if (isBlank(prepared.getAiCoverUrl())) {
+                markCoverGenerating(drama.getId(), true);
+                prepared = aiService.generateCover(drama.getId());
+            }
             if (isPrepared(prepared)) {
                 prepared.setStatus(DramaStatus.READY);
                 prepared.setAiCoverGenerating(false);
+                prepared.setAiPreparationFailedAt(null);
                 return repository.save(prepared);
             }
             return prepared;
@@ -41,6 +79,8 @@ public class BaiduDramaPreparationService {
             LOGGER.warn("Baidu drama preparation failed: dramaId={}, reason={}", drama.getId(), exception.getMessage());
             markCoverGenerating(drama.getId(), false);
             drama.setAiCoverGenerating(false);
+            drama.setAiPreparationFailedAt(Instant.now());
+            repository.save(drama);
             return drama;
         }
     }
@@ -60,5 +100,45 @@ public class BaiduDramaPreparationService {
                 && !drama.getAiCoverUrl().isBlank()
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
+    }
+
+    private boolean needsPreparation(Drama drama) {
+        if (drama == null || drama.getStatus() == DramaStatus.DISABLED || drama.isAiCoverGenerating()) {
+            return false;
+        }
+        if (drama.getEpisodes() == null || drama.getEpisodes().isEmpty()) {
+            return false;
+        }
+        if (drama.getCoverUrl() == null || drama.getCoverUrl().isBlank()) {
+            return false;
+        }
+        if (isCoolingDown(drama)) {
+            return false;
+        }
+        return drama.getAiTitle() == null || drama.getAiTitle().isBlank()
+                || drama.getAiCoverUrl() == null || drama.getAiCoverUrl().isBlank();
+    }
+
+    private boolean isCoolingDown(Drama drama) {
+        Instant failedAt = drama.getAiPreparationFailedAt();
+        if (failedAt == null) {
+            return false;
+        }
+        long cooldownMs = configService.get("baidu.prepareFailureCooldownMs")
+                .map(BaiduDramaPreparationService::parseLong)
+                .orElse(600000L);
+        return cooldownMs > 0 && failedAt.plus(Duration.ofMillis(cooldownMs)).isAfter(Instant.now());
+    }
+
+    private static long parseLong(String value) {
+        try {
+            return Long.parseLong(value.trim());
+        } catch (RuntimeException exception) {
+            return 600000L;
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }
