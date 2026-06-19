@@ -222,7 +222,7 @@ public class DramaController {
                     MDC.get(TraceIdFilter.TRACE_ID)
             );
         }
-        String playUrl = baiduPanClient.createStreamingUrl(episode.getSourcePath());
+        String playUrl = baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst();
         return ApiResponse.ok(
                 new DramaDtos.EpisodePlaySource(episodeNo, "BAIDU", false, playUrl),
                 MDC.get(TraceIdFilter.TRACE_ID)
