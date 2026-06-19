@@ -3,22 +3,24 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="${REMOTE:-root@ai-drama-n1}"
-REMOTE_WEB_DIR="${REMOTE_WEB_DIR:-/opt/ai-drama/www}"
-NGINX_CONF="${NGINX_CONF:-/etc/nginx/conf.d/ai-drama.conf}"
-SERVER_NAME="${SERVER_NAME:-ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com}"
+REMOTE_WEB_DIR="${REMOTE_WEB_DIR:-/opt/ai-drama/landing}"
+NGINX_CONF="${NGINX_CONF:-/etc/nginx/conf.d/ai-drama-landing.conf}"
+SERVER_NAME="${SERVER_NAME:-ai-drama-landing-135668366.ap-southeast-1.elb.amazonaws.com}"
 
-cd "$ROOT_DIR/admin/frontend"
+cd "$ROOT_DIR/client/landing"
 npm run build
 
 ssh "$REMOTE" "mkdir -p '$REMOTE_WEB_DIR'"
-rsync -az --delete "$ROOT_DIR/admin/frontend/dist/" "$REMOTE:$REMOTE_WEB_DIR/"
+rsync -az --delete "$ROOT_DIR/client/landing/dist/" "$REMOTE:$REMOTE_WEB_DIR/"
 
 ssh "$REMOTE" bash -s <<EOF
 set -euo pipefail
 cat > '$NGINX_CONF' <<'NGINX'
+server_names_hash_bucket_size 128;
+
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
+    listen 80;
+    listen [::]:80;
     server_name $SERVER_NAME;
 
     root $REMOTE_WEB_DIR;
@@ -59,8 +61,9 @@ server {
 NGINX
 nginx -t
 systemctl reload nginx
-curl -fsS http://127.0.0.1/login >/tmp/ai-drama-frontend-smoke.html
-head -n 5 /tmp/ai-drama-frontend-smoke.html
+curl -fsS -H 'Host: $SERVER_NAME' http://127.0.0.1/ >/tmp/ai-drama-landing-smoke.html
+head -n 5 /tmp/ai-drama-landing-smoke.html
 EOF
 
-echo "Deployed frontend to $REMOTE:$REMOTE_WEB_DIR"
+echo "Deployed landing to $REMOTE:$REMOTE_WEB_DIR"
+echo "URL: http://$SERVER_NAME/"

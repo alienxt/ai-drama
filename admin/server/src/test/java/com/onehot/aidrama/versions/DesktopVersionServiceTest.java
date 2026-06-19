@@ -22,6 +22,9 @@ class DesktopVersionServiceTest {
         DesktopVersion newest = version("MAC", "0.2.0", true);
         DesktopVersion draft = version("MAC", "0.3.0", false);
         DesktopVersion windows = version("WINDOWS", "9.0.0", true);
+        oldVersion.setDownloadUrl("/uploads/old.dmg");
+        newest.setDownloadUrl("/uploads/new.dmg");
+        windows.setDownloadUrl("/uploads/app.exe");
 
         when(repository.findByPlatformAndPublished("MAC", true, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .thenReturn(List.of(windows, draft, oldVersion, newest));
@@ -36,12 +39,30 @@ class DesktopVersionServiceTest {
         DesktopVersionRepository repository = mock(DesktopVersionRepository.class);
         DesktopVersionService service = new DesktopVersionService(repository);
 
+        DesktopVersion current = version("WINDOWS", "1.2.0", true);
+        current.setDownloadUrl("/uploads/app.exe");
         when(repository.findByPlatformAndPublished("WINDOWS", true, Sort.by(Sort.Direction.DESC, "createdAt")))
-                .thenReturn(List.of(version("WINDOWS", "1.2.0", true)));
+                .thenReturn(List.of(current));
 
         Optional<DesktopVersion> update = service.findUpdate("WINDOWS", "1.2.0");
 
         assertThat(update).isEmpty();
+    }
+
+    @Test
+    void latestPublishedRequiresUploadedPackage() {
+        DesktopVersionRepository repository = mock(DesktopVersionRepository.class);
+        DesktopVersionService service = new DesktopVersionService(repository);
+        DesktopVersion withoutPackage = version("MAC", "0.3.0", true);
+        DesktopVersion withPackage = version("MAC", "0.2.0", true);
+        withPackage.setDownloadUrl("/uploads/app.dmg");
+
+        when(repository.findByPlatformAndPublished("MAC", true, Sort.by(Sort.Direction.DESC, "createdAt")))
+                .thenReturn(List.of(withoutPackage, withPackage));
+
+        Optional<DesktopVersion> latest = service.findLatestPublished("MAC");
+
+        assertThat(latest).contains(withPackage);
     }
 
     @Test

@@ -18,16 +18,22 @@ public class DesktopVersionService {
 
     public Optional<DesktopVersion> findUpdate(String platform, String currentVersion) {
         String normalizedPlatform = normalizePlatform(platform);
+        return findLatestPublished(normalizedPlatform)
+                .filter(version -> compareVersions(version.getVersion(), currentVersion) > 0);
+    }
+
+    public Optional<DesktopVersion> findLatestPublished(String platform) {
+        String normalizedPlatform = normalizePlatform(platform);
         return repository.findByPlatformAndPublished(
-                        normalizedPlatform,
-                        true,
-                        Sort.by(Sort.Direction.DESC, "createdAt")
-                )
+                normalizedPlatform,
+                true,
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        )
                 .stream()
                 .filter(version -> normalizedPlatform.equals(version.getPlatform()))
                 .filter(DesktopVersion::isPublished)
-                .max(Comparator.comparing(DesktopVersion::getVersion, DesktopVersionService::compareVersions))
-                .filter(version -> compareVersions(version.getVersion(), currentVersion) > 0);
+                .filter(version -> version.getDownloadUrl() != null && !version.getDownloadUrl().isBlank())
+                .max(Comparator.comparing(DesktopVersion::getVersion, DesktopVersionService::compareVersions));
     }
 
     public DesktopVersion create(VersionDtos.VersionRequest request) {

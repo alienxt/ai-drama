@@ -186,6 +186,19 @@ export type DesktopVersion = {
   updatedAt?: string;
 };
 
+export type DownloadInvite = {
+  id: string;
+  code: string;
+  note?: string;
+  enabled: boolean;
+  maxUses: number;
+  usedCount: number;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type RequestLog = {
   id: string;
   traceId?: string;

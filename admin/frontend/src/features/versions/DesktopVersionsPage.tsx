@@ -6,7 +6,7 @@ import {
   RocketOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { Button, Form, Input, Modal, Select, Space, Switch, Tag, Tooltip, Upload } from 'antd';
+import { Button, Form, Input, Modal, Progress, Select, Space, Switch, Tag, Tooltip, Upload } from 'antd';
 import type { UploadRequestOption } from 'rc-upload/lib/interface';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -26,6 +26,8 @@ function formatSize(size: number) {
 export function DesktopVersionsPage() {
   const [reload, setReload] = useState(0);
   const [open, setOpen] = useState(false);
+  const [uploadingVersionId, setUploadingVersionId] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [form] = Form.useForm<VersionForm>();
 
   function showCreate() {
@@ -49,15 +51,28 @@ export function DesktopVersionsPage() {
   async function uploadPackage(record: DesktopVersion, options: UploadRequestOption) {
     const data = new FormData();
     data.append('file', options.file as File);
+    setUploadingVersionId(record.id);
+    setUploadProgress(0);
     try {
       await http.post(`/admin/desktop-versions/${record.id}/package`, data, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 30 * 60 * 1000,
+        onUploadProgress: (event) => {
+          if (event.total) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+            options.onProgress?.({ percent });
+          }
+        },
       });
       options.onSuccess?.({}, new XMLHttpRequest());
       appMessage.success('安装包已上传');
       setReload((value) => value + 1);
     } catch (error) {
       options.onError?.(error as Error);
+    } finally {
+      setUploadingVersionId(null);
+      setUploadProgress(0);
     }
   }
 
@@ -86,9 +101,16 @@ export function DesktopVersionsPage() {
                   showUploadList={false}
                   customRequest={(options) => uploadPackage(record, options)}
                   accept={record.platform === 'MAC' ? '.dmg,.pkg' : '.exe,.msi'}
+                  disabled={uploadingVersionId === record.id}
                 >
                   <Tooltip title="上传安装包">
-                    <Button className="table-action" size="small" type="text" icon={<CloudUploadOutlined />} />
+                    <Button
+                      className="table-action"
+                      size="small"
+                      type="text"
+                      loading={uploadingVersionId === record.id}
+                      icon={<CloudUploadOutlined />}
+                    />
                   </Tooltip>
                 </Upload>
                 {record.downloadUrl ? (
@@ -110,6 +132,11 @@ export function DesktopVersionsPage() {
           },
         ]}
       />
+      {uploadingVersionId ? (
+        <Modal title="安装包上传中" open footer={null} closable={false}>
+          <Progress percent={uploadProgress} status="active" />
+        </Modal>
+      ) : null}
       <Modal title="创建桌面版本" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnClose>
         <Form form={form} layout="vertical" onFinish={submit}>
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>

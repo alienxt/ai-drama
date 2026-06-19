@@ -34,6 +34,12 @@ admin/frontend/*.tsbuildinfo
 admin/frontend/vite.config.js
 admin/frontend/vite.config.d.ts
 admin/frontend/.vite/
+client/landing/node_modules/
+client/landing/dist/
+client/landing/*.tsbuildinfo
+client/landing/vite.config.js
+client/landing/vite.config.d.ts
+client/landing/.vite/
 
 # Python
 desktop/.venv/

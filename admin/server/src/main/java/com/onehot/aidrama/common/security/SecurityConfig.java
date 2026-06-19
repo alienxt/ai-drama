@@ -37,11 +37,13 @@ public class SecurityConfig {
                                 "/media-accounts",
                                 "/tasks",
                                 "/desktop-versions",
+                                "/download-invites",
                                 "/index.html",
                                 "/favicon.ico",
                                 "/site.webmanifest",
                                 "/app-icon.svg"
                         ).permitAll()
+                        .requestMatchers("/api/public/**").permitAll()
                         .requestMatchers("/assets/**", "/icons/**").permitAll()
                         .requestMatchers("/uploads/**").permitAll()
                         .requestMatchers("/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
