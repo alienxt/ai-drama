@@ -245,7 +245,7 @@ export function DramasPage() {
       extra={(
         <TableToolbar
           fields={[
-            { name: 'keyword', placeholder: '搜索剧名/简介/目录', width: 240 },
+            { name: 'keyword', placeholder: '搜索剧名/AI剧名/简介/目录', width: 240 },
             {
               name: 'status',
               placeholder: '状态',

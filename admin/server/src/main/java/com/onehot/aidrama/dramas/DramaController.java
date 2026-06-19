@@ -110,10 +110,10 @@ public class DramaController {
             @RequestParam(required = false) Integer episodeCount,
             @RequestParam(required = false) Instant createdFrom,
             @RequestParam(required = false) Instant createdTo,
-            Pageable pageable
+        Pageable pageable
     ) {
         MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "summary", "sourcePath")
+                .containsAny(keyword, "title", "aiTitle", "summary", "sourcePath")
                 .eq("status", status)
                 .in("categoryIds", categoryIds)
                 .arraySize("episodes", episodeCount)

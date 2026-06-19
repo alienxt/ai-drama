@@ -119,6 +119,24 @@ class DramaControllerTest {
     }
 
     @Test
+    void adminListFiltersByOriginalAiTitleSummaryOrSourcePathKeyword() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list("山风", null, null, null, null, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        String queryJson = query.getValue().getQueryObject().toString();
+        assertThat(queryJson).contains("title");
+        assertThat(queryJson).contains("aiTitle");
+        assertThat(queryJson).contains("summary");
+        assertThat(queryJson).contains("sourcePath");
+        assertThat(queryJson).contains("山风");
+    }
+
+    @Test
     void ignoresNonPositiveEpisodeCountFilter() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);

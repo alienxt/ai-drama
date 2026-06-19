@@ -110,7 +110,7 @@ public class AiService {
                 .orElseThrow(() -> new OpenAiException("缺少 OpenAI API Key，请在系统配置中设置 openai.apiKey"));
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofSeconds(configLong("openai.connectTimeoutSeconds", 30)));
-        requestFactory.setReadTimeout(Duration.ofSeconds(configLong("openai.readTimeoutSeconds", 180)));
+        requestFactory.setReadTimeout(Duration.ofSeconds(configLong("openai.readTimeoutSeconds", 300)));
         return restClientBuilder
                 .baseUrl(config("openai.baseUrl", DEFAULT_BASE_URL))
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
