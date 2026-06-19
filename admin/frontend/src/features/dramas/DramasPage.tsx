@@ -1,5 +1,5 @@
 import { CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
-import { Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -7,11 +7,18 @@ import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
-import { apiDelete, apiGet, apiGetPage, apiPost, apiPut } from '../../shared/http';
+import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaCategory } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
+
+type ClientSyncProgress = {
+  dramaId: string;
+  title?: string;
+  status: 'pending' | 'running' | 'success' | 'failed';
+  detail: string;
+};
 
 export function DramasPage() {
   const [version, setVersion] = useState(0);
@@ -22,6 +29,9 @@ export function DramasPage() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [syncingAssets, setSyncingAssets] = useState(false);
+  const [syncModeOpen, setSyncModeOpen] = useState(false);
+  const [clientSyncOpen, setClientSyncOpen] = useState(false);
+  const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
   const [form] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
@@ -91,10 +101,14 @@ export function DramasPage() {
     }
   }
 
-  async function syncSelectedAssets() {
+  function openSyncAssetsMode() {
     if (!selectedRowKeys.length) {
       return;
     }
+    setSyncModeOpen(true);
+  }
+
+  async function syncSelectedAssetsInBackend() {
     setSyncingAssets(true);
     try {
       const result = await apiPost<DramaAssetSyncAccepted>('/admin/dramas/sync-assets', {
@@ -102,9 +116,91 @@ export function DramasPage() {
       });
       appMessage.success(`已开始后台同步 ${result.requested} 部短剧，同步后会继续生成 AI 剧名和封面`);
       setSelectedRowKeys([]);
+      setSyncModeOpen(false);
     } finally {
       setSyncingAssets(false);
     }
+  }
+
+  async function syncSelectedAssetsInBrowser() {
+    const ids = selectedRowKeys.map(String);
+    setSyncingAssets(true);
+    setSyncModeOpen(false);
+    setClientSyncOpen(true);
+    try {
+      const plan = await apiPost<DramaClientAssetSyncPlan>('/admin/dramas/sync-assets/client-plan', { ids });
+      setClientSyncItems(plan.items.map((item) => ({
+        dramaId: item.dramaId,
+        title: item.title,
+        status: item.errorMessage ? 'failed' : 'pending',
+        detail: item.errorMessage || '等待同步',
+      })));
+      for (const item of plan.items) {
+        if (item.errorMessage) {
+          continue;
+        }
+        updateClientSyncItem(item.dramaId, { status: 'running', detail: '正在通过浏览器下载简介和封面' });
+        try {
+          const [summary, cover] = await Promise.all([
+            item.summaryDownloadUrl ? downloadText(item.summaryDownloadUrl) : Promise.resolve(undefined),
+            item.coverDownloadUrl ? downloadBlob(item.coverDownloadUrl) : Promise.resolve(undefined),
+          ]);
+          if (!summary && !cover) {
+            throw new Error('没有可同步的简介或封面');
+          }
+          updateClientSyncItem(item.dramaId, { status: 'running', detail: '正在上传到后台保存' });
+          const formData = new FormData();
+          if (summary) {
+            formData.append('summary', summary);
+          }
+          if (item.coverPath) {
+            formData.append('coverPath', item.coverPath);
+          }
+          if (cover) {
+            formData.append('cover', cover, coverFileName(item.coverPath));
+          }
+          await http.post<DramaClientAssetSyncComplete>(`/admin/dramas/sync-assets/client-complete/${item.dramaId}`, formData, {
+            timeout: 120000,
+          });
+          updateClientSyncItem(item.dramaId, { status: 'success', detail: '已保存，后台会继续生成 AI 剧名和封面' });
+        } catch (error) {
+          updateClientSyncItem(item.dramaId, {
+            status: 'failed',
+            detail: error instanceof Error ? error.message : '浏览器同步失败',
+          });
+        }
+      }
+      appMessage.success('浏览器同步已完成');
+      setSelectedRowKeys([]);
+      setVersion((value) => value + 1);
+    } finally {
+      setSyncingAssets(false);
+    }
+  }
+
+  async function downloadText(url: string) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`简介下载失败：HTTP ${response.status}`);
+    }
+    return response.text();
+  }
+
+  async function downloadBlob(url: string) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`封面下载失败：HTTP ${response.status}`);
+    }
+    return response.blob();
+  }
+
+  function coverFileName(path?: string) {
+    const name = path?.split('/').filter(Boolean).pop();
+    return name || 'cover.jpg';
+  }
+
+  function updateClientSyncItem(dramaId: string, patch: Partial<ClientSyncProgress>) {
+    setClientSyncItems((items) => items.map((item) => item.dramaId === dramaId ? { ...item, ...patch } : item));
   }
 
   async function remove(record: Drama) {
@@ -139,7 +235,7 @@ export function DramasPage() {
             icon={<SyncOutlined />}
             disabled={!selectedRowKeys.length}
             loading={syncingAssets}
-            onClick={syncSelectedAssets}
+            onClick={openSyncAssetsMode}
           >
             同步封面和简介{selectedRowKeys.length ? `（${selectedRowKeys.length}）` : ''}
           </Button>
@@ -355,6 +451,68 @@ export function DramasPage() {
           </div>
         ) : null}
       </Drawer>
+      <Modal
+        title="选择同步方式"
+        open={syncModeOpen}
+        onCancel={() => setSyncModeOpen(false)}
+        footer={null}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={16} className="asset-sync-mode">
+          <div className="asset-sync-mode-list">
+            <button type="button" className="asset-sync-mode-card" onClick={syncSelectedAssetsInBrowser}>
+              <span className="asset-sync-mode-dot" />
+              <span>
+                <strong>浏览器端同步</strong>
+                <em>使用当前浏览器网络下载百度封面和简介，再上传到后台。</em>
+              </span>
+            </button>
+            <button type="button" className="asset-sync-mode-card" onClick={syncSelectedAssetsInBackend}>
+              <span className="asset-sync-mode-dot" />
+              <span>
+                <strong>后台同步</strong>
+                <em>继续由 AWS 后台下载，适合少量或网络稳定时使用。</em>
+              </span>
+            </button>
+          </div>
+          <Alert
+            type="warning"
+            showIcon
+            message="浏览器端同步请确保当前网络在中国大陆"
+            description="如果百度下载链接不允许跨域访问，进度里会显示失败原因；这种情况下可以改用后台同步或换本地辅助工具。"
+          />
+        </Space>
+      </Modal>
+      <Modal
+        title="浏览器端同步进度"
+        open={clientSyncOpen}
+        onCancel={() => setClientSyncOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setClientSyncOpen(false)} disabled={syncingAssets}>关闭</Button>,
+        ]}
+        width={760}
+      >
+        <Space direction="vertical" size={16} className="client-sync-progress">
+          <Alert type="info" showIcon message="同步期间请保持这个页面打开，浏览器会逐部下载并上传到后台。" />
+          <Progress
+            percent={clientSyncItems.length ? Math.round((clientSyncItems.filter((item) => item.status === 'success' || item.status === 'failed').length / clientSyncItems.length) * 100) : 0}
+            status={clientSyncItems.some((item) => item.status === 'failed') ? 'exception' : syncingAssets ? 'active' : 'success'}
+          />
+          <div className="client-sync-list">
+            {clientSyncItems.map((item) => (
+              <div key={item.dramaId} className="client-sync-row">
+                <div>
+                  <strong>{item.title || item.dramaId}</strong>
+                  <span>{item.detail}</span>
+                </div>
+                <Tag color={item.status === 'success' ? 'green' : item.status === 'failed' ? 'red' : item.status === 'running' ? 'processing' : 'default'}>
+                  {item.status === 'success' ? '完成' : item.status === 'failed' ? '失败' : item.status === 'running' ? '同步中' : '等待'}
+                </Tag>
+              </div>
+            ))}
+          </div>
+        </Space>
+      </Modal>
       <Modal
         title={editing ? '编辑短剧' : '新增短剧'}
         open={editorOpen}

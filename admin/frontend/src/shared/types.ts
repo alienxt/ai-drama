@@ -71,6 +71,27 @@ export type DramaAssetSyncAccepted = {
   acceptedAt?: string;
 };
 
+export type DramaClientAssetSyncPlanItem = {
+  dramaId: string;
+  title?: string;
+  sourcePath?: string;
+  summaryPath?: string;
+  summaryDownloadUrl?: string;
+  coverPath?: string;
+  coverDownloadUrl?: string;
+  errorMessage?: string;
+};
+
+export type DramaClientAssetSyncPlan = {
+  items: DramaClientAssetSyncPlanItem[];
+};
+
+export type DramaClientAssetSyncComplete = {
+  dramaId: string;
+  coverUrl?: string;
+  summary?: string;
+};
+
 export type AiCoverGenerationAccepted = {
   dramaId: string;
   acceptedAt?: string;
