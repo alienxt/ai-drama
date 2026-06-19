@@ -5,6 +5,7 @@ import java.util.List;
 
 public interface BaiduPanClient {
     List<BaiduPanEntry> listDirectory(String remotePath);
+    String createStreamingUrl(String remotePath);
     String createDownloadUrl(String remotePath);
     List<String> createDownloadUrls(List<String> remotePaths);
     String readTextFile(String remotePath);

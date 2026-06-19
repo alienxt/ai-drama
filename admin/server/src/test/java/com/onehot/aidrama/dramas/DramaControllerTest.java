@@ -93,7 +93,11 @@ class DramaControllerTest {
                 .append("aiCoverUrl", drama.getAiCoverUrl())
                 .append("rating", drama.getRating())
                 .append("categoryIds", drama.getCategoryIds())
-                .append("episodeCount", drama.getEpisodes() == null ? 0 : drama.getEpisodes().size())
+                .append("episodes", drama.getEpisodes() == null
+                        ? List.of()
+                        : drama.getEpisodes().stream()
+                                .map(episode -> new Document("episodeNo", episode.getEpisodeNo()))
+                                .toList())
                 .append("createdAt", drama.getCreatedAt());
     }
 
@@ -261,8 +265,8 @@ class DramaControllerTest {
         ArgumentCaptor<Query> projectedQuery = ArgumentCaptor.forClass(Query.class);
         verify(mongoTemplate).find(projectedQuery.capture(), eq(Document.class), eq("dramas"));
         verify(mongoTemplate, never()).find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class));
-        assertThat(projectedQuery.getValue().getFieldsObject().get("episodes")).isEqualTo(0);
-        assertThat(projectedQuery.getValue().getFieldsObject()).containsKey("episodeCount");
+        assertThat(projectedQuery.getValue().getFieldsObject().get("episodes.episodeNo")).isEqualTo(1);
+        assertThat(projectedQuery.getValue().getFieldsObject()).doesNotContainKeys("episodes.sourcePath", "episodes.size");
     }
 
     @Test
@@ -529,7 +533,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void adminEpisodePlaySourceFallsBackToFreshBaiduUrl() {
+    void adminEpisodePlaySourceFallsBackToBaiduStreamingUrl() {
         DramaRepository repository = mock(DramaRepository.class);
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaController controller = controller(repository, baiduPanClient);
@@ -540,15 +544,16 @@ class DramaControllerTest {
         episode.setSourcePath("/短剧/002.mp4");
         drama.setEpisodes(List.of(episode));
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
-        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
-                .thenReturn(List.of("https://pan.baidu.com/direct.mp4?token=secret"));
+        when(baiduPanClient.createStreamingUrl("/短剧/002.mp4"))
+                .thenReturn("https://pan.baidu.com/rest/2.0/xpan/file?method=streaming&type=M3U8_AUTO_720&token=secret");
 
         DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
 
         assertThat(source.source()).isEqualTo("BAIDU");
         assertThat(source.downloaded()).isFalse();
-        assertThat(source.playUrl()).isEqualTo("https://pan.baidu.com/direct.mp4?token=secret");
-        verify(baiduPanClient).createDownloadUrls(List.of("/短剧/002.mp4"));
+        assertThat(source.playUrl()).contains("method=streaming");
+        assertThat(source.playUrl()).contains("M3U8_AUTO_720");
+        verify(baiduPanClient).createStreamingUrl("/短剧/002.mp4");
     }
 
     @Test

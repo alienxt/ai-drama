@@ -56,6 +56,11 @@ public class BaiduPanHttpClient implements BaiduPanClient {
     }
 
     @Override
+    public String createStreamingUrl(String remotePath) {
+        return streamingUri(remotePath, ensureAccessToken(false), "M3U8_AUTO_720").toString();
+    }
+
+    @Override
     public String createDownloadUrl(String remotePath) {
         return createDownloadUrls(List.of(remotePath)).getFirst();
     }
@@ -303,6 +308,15 @@ public class BaiduPanHttpClient implements BaiduPanClient {
                 "method", "list",
                 "access_token", accessToken,
                 "dir", remotePath
+        ));
+    }
+
+    static URI streamingUri(String remotePath, String accessToken, String type) {
+        return encodedUri(XPAN_FILE_URL, Map.of(
+                "method", "streaming",
+                "access_token", accessToken,
+                "path", remotePath,
+                "type", type
         ));
     }
 

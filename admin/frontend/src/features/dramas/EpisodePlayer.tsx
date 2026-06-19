@@ -1,6 +1,7 @@
 import { CloudDownloadOutlined, CloudOutlined, DownloadOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button, Empty, Spin, Tag, Tooltip, Typography } from 'antd';
-import { useEffect, useState } from 'react';
+import { Alert, Button, Empty, Spin, Tag, Tooltip, Typography } from 'antd';
+import Hls from 'hls.js';
+import { useEffect, useRef, useState } from 'react';
 import { apiGet } from '../../shared/http';
 import type { AdminEpisode, EpisodePlaySource } from '../../shared/types';
 
@@ -9,19 +10,67 @@ type EpisodePlayerProps = {
 };
 
 export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [episodes, setEpisodes] = useState<AdminEpisode[]>([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [loadingEpisodeNo, setLoadingEpisodeNo] = useState<number | null>(null);
   const [downloadingEpisodeNo, setDownloadingEpisodeNo] = useState<number | null>(null);
   const [activeSource, setActiveSource] = useState<EpisodePlaySource | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadEpisodes();
   }, [dramaId]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    setPlaybackError(null);
+    if (!video || !activeSource) {
+      return;
+    }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = activeSource.playUrl;
+      return;
+    }
+    if (!Hls.isSupported()) {
+      video.src = activeSource.playUrl;
+      setPlaybackError('当前浏览器不支持 m3u8 播放');
+      return;
+    }
+
+    const hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+    });
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      hls.loadSource(activeSource.playUrl);
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      void video.play().catch(() => undefined);
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      const message = `${data.type}: ${data.details}`;
+      if (data.fatal) {
+        setPlaybackError(`百度 m3u8 加载失败：${message}`);
+      }
+      console.warn('Baidu HLS playback error', data);
+    });
+    hls.attachMedia(video);
+    return () => {
+      hls.destroy();
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [activeSource]);
+
   async function loadEpisodes() {
     setLoadingEpisodes(true);
     setActiveSource(null);
+    setPlaybackError(null);
     try {
       const rows = await apiGet<AdminEpisode[]>(`/admin/dramas/${dramaId}/episodes`);
       setEpisodes(rows);
@@ -43,12 +92,8 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
   async function downloadEpisode(episode: AdminEpisode) {
     setDownloadingEpisodeNo(episode.episodeNo);
     try {
-      const source =
-        activeSource?.episodeNo === episode.episodeNo
-          ? activeSource
-          : await apiGet<EpisodePlaySource>(`/admin/dramas/${dramaId}/episodes/${episode.episodeNo}/play-url`);
       const link = document.createElement('a');
-      link.href = source.playUrl;
+      link.href = `/api/admin/dramas/${dramaId}/episodes/${episode.episodeNo}/stream`;
       link.download = episode.title || `${String(episode.episodeNo).padStart(2, '0')}.mp4`;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
@@ -66,14 +111,17 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
     <div className="episode-player">
       <div className="episode-player-main">
         {activeSource ? (
-          <video
-            key={activeSource.playUrl}
-            className="episode-video"
-            src={activeSource.playUrl}
-            controls
-            playsInline
-            preload="metadata"
-          />
+          <>
+            <video
+              key={activeSource.playUrl}
+              ref={videoRef}
+              className="episode-video"
+              controls
+              playsInline
+              preload="metadata"
+            />
+            {playbackError ? <Alert type="error" showIcon message={playbackError} /> : null}
+          </>
         ) : (
           <div className="episode-video-placeholder">
             <PlayCircleOutlined />

@@ -16,7 +16,6 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.data.mongodb.MongoExpression;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
@@ -144,9 +143,7 @@ public class DramaController {
         long total = mongoTemplate.count(query.toQuery(), Drama.class);
         Query pageQuery = query.toQuery().with(pageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt")
-                .projectAs(MongoExpression.create("{ $size: { $ifNull: [ \"$episodes\", [] ] } }"), "episodeCount")
-                .exclude("episodes");
+                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -170,7 +167,7 @@ public class DramaController {
                             categoryIds.stream()
                                 .map(code -> categoryNames.getOrDefault(code, code))
                                 .toList(),
-                            intValue(document, "episodeCount"),
+                            episodeCount(document),
                             instantValue(document, "createdAt"),
                             prioritizedDramaIds.contains(id)
                     );
@@ -222,7 +219,7 @@ public class DramaController {
                     MDC.get(TraceIdFilter.TRACE_ID)
             );
         }
-        String playUrl = baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst();
+        String playUrl = baiduPanClient.createStreamingUrl(episode.getSourcePath());
         return ApiResponse.ok(
                 new DramaDtos.EpisodePlaySource(episodeNo, "BAIDU", false, playUrl),
                 MDC.get(TraceIdFilter.TRACE_ID)
@@ -457,6 +454,14 @@ public class DramaController {
             }
         }
         return 0;
+    }
+
+    private int episodeCount(Document document) {
+        Object value = document.get("episodes");
+        if (value instanceof List<?> episodes) {
+            return episodes.size();
+        }
+        return intValue(document, "episodeCount");
     }
 
     private Instant instantValue(Document document, String field) {
