@@ -1006,7 +1006,7 @@ class DesktopWindow(QMainWindow):
         if not categories:
             categories = "，".join(str(code) for code in drama.get("categoryIds") or [])
         status, downloaded_count, total_count = self.drama_download_info(drama)
-        total_count = total_count or len(drama.get("episodes") or [])
+        total_count = total_count or self.drama_episode_count(drama)
 
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -1087,11 +1087,21 @@ class DesktopWindow(QMainWindow):
             str(drama.get("summary") or "-"),
             cls.format_rating(drama.get("rating")),
             categories or "-",
-            str(len(drama.get("episodes") or [])),
+            str(cls.drama_episode_count(drama)),
             "-",
             "-",
             cls.format_datetime(str(drama.get("createdAt") or "")),
         ]
+
+    @staticmethod
+    def drama_episode_count(drama: dict[str, Any]) -> int:
+        episode_count = drama.get("episodeCount")
+        if episode_count is not None:
+            try:
+                return max(int(episode_count), 0)
+            except (TypeError, ValueError):
+                return 0
+        return len(drama.get("episodes") or [])
 
     def drama_download_status(self, drama: dict[str, Any]) -> str:
         return self.drama_download_info(drama)[0]
@@ -1103,13 +1113,13 @@ class DesktopWindow(QMainWindow):
     def drama_download_info(self, drama: dict[str, Any]) -> tuple[str, int, int]:
         drama_id = str(drama.get("id") or "")
         episodes = drama.get("episodes") or []
+        expected_count = self.drama_episode_count(drama)
         target_dir = self.settings.downloads_dir / drama_id
         if not drama_id or not target_dir.exists():
-            return "未下载", 0, len(episodes)
+            return "未下载", 0, expected_count
         files = sorted(target_dir.glob("*.mp4"))
         if not files:
-            return "未下载", 0, len(episodes)
-        expected_count = len(episodes)
+            return "未下载", 0, expected_count
         by_episode = {f"{int(item.get('episodeNo') or 0):03d}.mp4": int(item.get("size") or 0) for item in episodes}
         downloaded_count = 0
         for file in files:

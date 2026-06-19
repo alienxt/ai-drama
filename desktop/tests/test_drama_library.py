@@ -41,6 +41,21 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
     assert values == ["新剧名", "一段简介", "4分", "科幻", "2", "-", "-", "2026-06-14 16:42:03"]
 
 
+def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
+    values = DesktopWindow.drama_row_values(
+        {
+            "title": "新剧名",
+            "summary": "一段简介",
+            "rating": 4,
+            "categoryNames": ["科幻"],
+            "episodeCount": 12,
+            "createdAt": "2026-06-14T16:42:03Z",
+        }
+    )
+
+    assert values[4] == "12"
+
+
 def test_desktop_drama_row_values_defaults_missing_rating_to_five():
     values = DesktopWindow.drama_row_values(
         {
@@ -83,6 +98,18 @@ def test_drama_download_info_marks_all_complete(tmp_path):
             {"episodeNo": 2, "size": 10},
         ],
     }
+    target = tmp_path / "drama-1"
+    target.mkdir()
+    (target / "001.mp4").write_bytes(b"x" * 10)
+    (target / "002.mp4").write_bytes(b"x" * 10)
+
+    assert DesktopWindow.drama_download_info(window, drama) == ("已下载", 2, 2)
+
+
+def test_drama_download_info_uses_episode_count_summary_without_episodes(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(downloads_dir=tmp_path)
+    drama = {"id": "drama-1", "episodeCount": 2}
     target = tmp_path / "drama-1"
     target.mkdir()
     (target / "001.mp4").write_bytes(b"x" * 10)

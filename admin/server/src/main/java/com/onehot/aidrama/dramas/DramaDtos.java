@@ -57,7 +57,7 @@ public class DramaDtos {
             Integer rating,
             List<String> categoryIds,
             List<String> categoryNames,
-            List<DramaEpisode> episodes,
+            int episodeCount,
             Instant createdAt,
             boolean prioritized
     ) {
@@ -72,7 +72,7 @@ public class DramaDtos {
                     drama.getRating(),
                     drama.getCategoryIds(),
                     categoryNames,
-                    drama.getEpisodes(),
+                    drama.getEpisodes() == null ? 0 : drama.getEpisodes().size(),
                     drama.getCreatedAt(),
                     prioritized
             );

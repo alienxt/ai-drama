@@ -21,6 +21,20 @@ class BaiduPanHttpClientTest {
     }
 
     @Test
+    void createsEncodedBaiduStreamingM3u8Uri() {
+        URI uri = BaiduPanHttpClient.streamingUri(
+                "/drama/真人剧/2026/6月18日/1.取款当天（61集）尹洋&邹倩/1.mp4",
+                "token-value",
+                "M3U8_AUTO_720"
+        );
+
+        assertThat(uri.toASCIIString()).contains("method=streaming");
+        assertThat(uri.toASCIIString()).contains("type=M3U8_AUTO_720");
+        assertThat(uri.toASCIIString()).contains("%26");
+        assertThat(uri.toASCIIString()).doesNotContain("尹洋&邹倩");
+    }
+
+    @Test
     void masksAccessTokenWhenReportingBaiduRequestUri() {
         URI uri = URI.create("https://pan.baidu.com/rest/2.0/xpan/file?method=list&access_token=secret-token&refresh_token=refresh-secret&client_secret=client-secret&dir=/root");
 
