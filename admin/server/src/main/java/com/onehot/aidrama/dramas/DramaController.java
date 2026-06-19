@@ -12,9 +12,11 @@ import com.onehot.aidrama.distribution.DistributionTaskRepository;
 import com.onehot.aidrama.distribution.DistributionTaskStatus;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.data.mongodb.MongoExpression;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
@@ -22,6 +24,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -36,6 +39,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -137,7 +141,12 @@ public class DramaController {
                 .containsAny(keyword, "title", "aiTitle")
                 .eq("status", DramaStatus.READY)
                 .range("createdAt", listedFrom, null);
-        PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, pageable));
+        long total = mongoTemplate.count(query.toQuery(), Drama.class);
+        Query pageQuery = query.toQuery().with(pageable);
+        pageQuery.fields()
+                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt")
+                .projectAs(MongoExpression.create("{ $size: { $ifNull: [ \"$episodes\", [] ] } }"), "episodeCount")
+                .exclude("episodes");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -145,17 +154,33 @@ public class DramaController {
                         category -> category.getName(),
                         (first, second) -> first
                 ));
-        List<DramaDtos.DesktopDramaResponse> content = page.content().stream()
-                .map(drama -> DramaDtos.DesktopDramaResponse.from(
-                        drama,
-                        drama.getCategoryIds().stream()
+        List<DramaDtos.DesktopDramaResponse> content = mongoTemplate.find(pageQuery, Document.class, "dramas").stream()
+                .map(document -> {
+                    String id = documentId(document);
+                    List<String> categoryIds = stringList(document, "categoryIds");
+                    return DramaDtos.DesktopDramaResponse.from(
+                            id,
+                            document.getString("title"),
+                            document.getString("aiTitle"),
+                            document.getString("summary"),
+                            document.getString("coverUrl"),
+                            document.getString("aiCoverUrl"),
+                            document.getInteger("rating"),
+                            categoryIds,
+                            categoryIds.stream()
                                 .map(code -> categoryNames.getOrDefault(code, code))
                                 .toList(),
-                        prioritizedDramaIds.contains(drama.getId())
-                ))
+                            intValue(document, "episodeCount"),
+                            instantValue(document, "createdAt"),
+                            prioritizedDramaIds.contains(id)
+                    );
+                })
                 .toList();
+        int pageSize = pageable.isPaged() ? pageable.getPageSize() : content.size();
+        int pageNumber = pageable.isPaged() ? pageable.getPageNumber() : 0;
+        int totalPages = pageSize == 0 ? 1 : (int) Math.ceil((double) total / pageSize);
         return ApiResponse.ok(
-                new PageResult<>(content, page.totalElements(), page.totalPages(), page.page(), page.size()),
+                new PageResult<>(content, total, totalPages, pageNumber, pageSize),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
@@ -399,6 +424,53 @@ public class DramaController {
                 ).stream()
                 .map(DistributionTask::getDramaId)
                 .toList();
+    }
+
+    private String documentId(Document document) {
+        Object id = document.get("_id");
+        if (id == null) {
+            return document.getString("id");
+        }
+        return id.toString();
+    }
+
+    private List<String> stringList(Document document, String field) {
+        List<?> values = document.getList(field, Object.class);
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .map(String::valueOf)
+                .toList();
+    }
+
+    private int intValue(Document document, String field) {
+        Object value = document.get(field);
+        if (value instanceof Number number) {
+            return Math.max(number.intValue(), 0);
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Math.max(Integer.parseInt(text), 0);
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private Instant instantValue(Document document, String field) {
+        Object value = document.get(field);
+        if (value instanceof Instant instant) {
+            return instant;
+        }
+        if (value instanceof Date date) {
+            return date.toInstant();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            return Instant.parse(text);
+        }
+        return null;
     }
 
     public record AiCoverGenerationAccepted(String dramaId, Instant acceptedAt, Instant recommendedCheckAt) {

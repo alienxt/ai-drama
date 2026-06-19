@@ -61,35 +61,48 @@ public class DramaDtos {
             Instant createdAt,
             boolean prioritized
     ) {
-        public static DesktopDramaResponse from(Drama drama, List<String> categoryNames, boolean prioritized) {
+        public static DesktopDramaResponse from(
+                String id,
+                String title,
+                String aiTitle,
+                String summary,
+                String coverUrl,
+                String aiCoverUrl,
+                Integer rating,
+                List<String> categoryIds,
+                List<String> categoryNames,
+                int episodeCount,
+                Instant createdAt,
+                boolean prioritized
+        ) {
             return new DesktopDramaResponse(
-                    drama.getId(),
-                    effectiveTitle(drama),
+                    id,
+                    effectiveTitle(title, aiTitle),
                     null,
-                    drama.getSummary(),
-                    effectiveCoverUrl(drama),
+                    summary,
+                    effectiveCoverUrl(coverUrl, aiCoverUrl),
                     null,
-                    drama.getRating(),
-                    drama.getCategoryIds(),
+                    rating == null ? 5 : rating,
+                    categoryIds == null ? List.of() : categoryIds,
                     categoryNames,
-                    drama.getEpisodes() == null ? 0 : drama.getEpisodes().size(),
-                    drama.getCreatedAt(),
+                    episodeCount,
+                    createdAt,
                     prioritized
             );
         }
 
-        private static String effectiveTitle(Drama drama) {
-            if (drama.getAiTitle() != null && !drama.getAiTitle().isBlank()) {
-                return drama.getAiTitle();
+        private static String effectiveTitle(String title, String aiTitle) {
+            if (aiTitle != null && !aiTitle.isBlank()) {
+                return aiTitle;
             }
-            return drama.getTitle();
+            return title;
         }
 
-        private static String effectiveCoverUrl(Drama drama) {
-            if (drama.getAiCoverUrl() != null && !drama.getAiCoverUrl().isBlank()) {
-                return drama.getAiCoverUrl();
+        private static String effectiveCoverUrl(String coverUrl, String aiCoverUrl) {
+            if (aiCoverUrl != null && !aiCoverUrl.isBlank()) {
+                return aiCoverUrl;
             }
-            return drama.getCoverUrl();
+            return coverUrl;
         }
     }
 }

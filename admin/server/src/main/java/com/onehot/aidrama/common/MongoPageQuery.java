@@ -72,12 +72,17 @@ public class MongoPageQuery {
     }
 
     public <T> Page<T> page(MongoTemplate mongoTemplate, Class<T> type, Pageable pageable) {
+        Query query = toQuery();
+        long total = mongoTemplate.count(query, type);
+        List<T> content = mongoTemplate.find(query.with(pageable), type);
+        return new PageImpl<>(content, pageable, total);
+    }
+
+    public Query toQuery() {
         Query query = new Query();
         if (!criteria.isEmpty()) {
             query.addCriteria(new Criteria().andOperator(criteria));
         }
-        long total = mongoTemplate.count(query, type);
-        List<T> content = mongoTemplate.find(query.with(pageable), type);
-        return new PageImpl<>(content, pageable, total);
+        return query;
     }
 }

@@ -11,6 +11,7 @@ import com.onehot.aidrama.distribution.DistributionTaskRepository;
 import com.onehot.aidrama.distribution.DistributionTaskStatus;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
+import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -74,6 +76,25 @@ class DramaControllerTest {
 
     private JwtPrincipal desktopPrincipal() {
         return new JwtPrincipal("owner-1", "test", List.of("DESKTOP_USER"));
+    }
+
+    private void mockDesktopDocuments(MongoTemplate mongoTemplate, Drama... dramas) {
+        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn((long) dramas.length);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas")))
+                .thenReturn(java.util.Arrays.stream(dramas).map(this::desktopDocument).toList());
+    }
+
+    private Document desktopDocument(Drama drama) {
+        return new Document("_id", drama.getId())
+                .append("title", drama.getTitle())
+                .append("aiTitle", drama.getAiTitle())
+                .append("summary", drama.getSummary())
+                .append("coverUrl", drama.getCoverUrl())
+                .append("aiCoverUrl", drama.getAiCoverUrl())
+                .append("rating", drama.getRating())
+                .append("categoryIds", drama.getCategoryIds())
+                .append("episodeCount", drama.getEpisodes() == null ? 0 : drama.getEpisodes().size())
+                .append("createdAt", drama.getCreatedAt());
     }
 
     @Test
@@ -153,7 +174,7 @@ class DramaControllerTest {
     void desktopListOnlyReturnsReadyDramasFromLastSevenDays() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
 
         controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10));
 
@@ -169,7 +190,7 @@ class DramaControllerTest {
     void desktopListFiltersByOriginalOrAiTitleKeyword() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
 
         controller.desktopList(desktopPrincipal(), "神医", PageRequest.of(0, 10));
 
@@ -193,8 +214,7 @@ class DramaControllerTest {
         DramaCategory category = new DramaCategory();
         category.setCode("sci-fi");
         category.setName("科幻");
-        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        mockDesktopDocuments(mongoTemplate, drama);
         when(categoryRepository.findByEnabledTrueOrderBySortOrderAsc()).thenReturn(List.of(category));
 
         PageResult<DramaDtos.DesktopDramaResponse> result = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data();
@@ -217,8 +237,7 @@ class DramaControllerTest {
         second.setEpisodeNo(2);
         second.setSourcePath("/短剧/002.mp4");
         drama.setEpisodes(List.of(first, second));
-        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        mockDesktopDocuments(mongoTemplate, drama);
 
         DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
 
@@ -226,6 +245,24 @@ class DramaControllerTest {
         assertThat(DramaDtos.DesktopDramaResponse.class.getRecordComponents())
                 .extracting(java.lang.reflect.RecordComponent::getName)
                 .doesNotContain("episodes");
+    }
+
+    @Test
+    void desktopListUsesProjectedDocumentsInsteadOfFullDramaDocuments() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        mockDesktopDocuments(mongoTemplate, drama);
+
+        controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> projectedQuery = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).find(projectedQuery.capture(), eq(Document.class), eq("dramas"));
+        verify(mongoTemplate, never()).find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class));
+        assertThat(projectedQuery.getValue().getFieldsObject().get("episodes")).isEqualTo(0);
+        assertThat(projectedQuery.getValue().getFieldsObject()).containsKey("episodeCount");
     }
 
     @Test
@@ -238,8 +275,7 @@ class DramaControllerTest {
         drama.setAiTitle("AI剧名");
         drama.setCoverUrl("/uploads/covers/original.jpg");
         drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
-        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        mockDesktopDocuments(mongoTemplate, drama);
 
         DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
 
@@ -263,8 +299,7 @@ class DramaControllerTest {
         task.setMediaAccountId("media-1");
         task.setStatus(DistributionTaskStatus.PENDING);
         task.setPriority(100);
-        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        mockDesktopDocuments(mongoTemplate, drama);
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(media));
         when(distributionTaskRepository.findByStatusAndPriorityGreaterThanAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
@@ -374,8 +409,7 @@ class DramaControllerTest {
         Drama drama = new Drama();
         drama.setId("drama-1");
         drama.setTitle("短剧");
-        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
-        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        mockDesktopDocuments(mongoTemplate, drama);
 
         PageResult<DramaDtos.DesktopDramaResponse> result = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data();
 
@@ -495,7 +529,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void adminEpisodePlaySourceFallsBackToBaiduStreamingUrl() {
+    void adminEpisodePlaySourceFallsBackToFreshBaiduUrl() {
         DramaRepository repository = mock(DramaRepository.class);
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaController controller = controller(repository, baiduPanClient);
@@ -506,16 +540,15 @@ class DramaControllerTest {
         episode.setSourcePath("/短剧/002.mp4");
         drama.setEpisodes(List.of(episode));
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
-        when(baiduPanClient.createStreamingUrl("/短剧/002.mp4"))
-                .thenReturn("https://pan.baidu.com/rest/2.0/xpan/file?method=streaming&type=M3U8_AUTO_720&token=secret");
+        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
+                .thenReturn(List.of("https://pan.baidu.com/direct.mp4?token=secret"));
 
         DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
 
         assertThat(source.source()).isEqualTo("BAIDU");
         assertThat(source.downloaded()).isFalse();
-        assertThat(source.playUrl()).contains("method=streaming");
-        assertThat(source.playUrl()).contains("M3U8_AUTO_720");
-        verify(baiduPanClient).createStreamingUrl("/短剧/002.mp4");
+        assertThat(source.playUrl()).isEqualTo("https://pan.baidu.com/direct.mp4?token=secret");
+        verify(baiduPanClient).createDownloadUrls(List.of("/短剧/002.mp4"));
     }
 
     @Test

@@ -1,7 +1,6 @@
 import { CloudDownloadOutlined, CloudOutlined, DownloadOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Button, Empty, Spin, Tag, Tooltip, Typography } from 'antd';
-import Hls from 'hls.js';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiGet } from '../../shared/http';
 import type { AdminEpisode, EpisodePlaySource } from '../../shared/types';
 
@@ -10,7 +9,6 @@ type EpisodePlayerProps = {
 };
 
 export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [episodes, setEpisodes] = useState<AdminEpisode[]>([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [loadingEpisodeNo, setLoadingEpisodeNo] = useState<number | null>(null);
@@ -20,33 +18,6 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
   useEffect(() => {
     void loadEpisodes();
   }, [dramaId]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !activeSource) {
-      return;
-    }
-    if (!isM3u8Url(activeSource.playUrl)) {
-      video.src = activeSource.playUrl;
-      return;
-    }
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = activeSource.playUrl;
-      return;
-    }
-    if (!Hls.isSupported()) {
-      video.src = activeSource.playUrl;
-      return;
-    }
-    const hls = new Hls();
-    hls.loadSource(activeSource.playUrl);
-    hls.attachMedia(video);
-    return () => {
-      hls.destroy();
-      video.removeAttribute('src');
-      video.load();
-    };
-  }, [activeSource]);
 
   async function loadEpisodes() {
     setLoadingEpisodes(true);
@@ -72,8 +43,12 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
   async function downloadEpisode(episode: AdminEpisode) {
     setDownloadingEpisodeNo(episode.episodeNo);
     try {
+      const source =
+        activeSource?.episodeNo === episode.episodeNo
+          ? activeSource
+          : await apiGet<EpisodePlaySource>(`/admin/dramas/${dramaId}/episodes/${episode.episodeNo}/play-url`);
       const link = document.createElement('a');
-      link.href = `/api/admin/dramas/${dramaId}/episodes/${episode.episodeNo}/stream`;
+      link.href = source.playUrl;
       link.download = episode.title || `${String(episode.episodeNo).padStart(2, '0')}.mp4`;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
@@ -93,8 +68,8 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
         {activeSource ? (
           <video
             key={activeSource.playUrl}
-            ref={videoRef}
             className="episode-video"
+            src={activeSource.playUrl}
             controls
             playsInline
             preload="metadata"
@@ -190,8 +165,4 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
       </div>
     </div>
   );
-}
-
-function isM3u8Url(url: string) {
-  return url.includes('.m3u8') || url.includes('method=streaming') || url.includes('M3U8_');
 }
