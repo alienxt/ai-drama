@@ -1,0 +1,475 @@
+package com.onehot.aidrama.dramas;
+
+import com.onehot.aidrama.baiduyun.BaiduPanClient;
+import com.onehot.aidrama.categories.DramaCategory;
+import com.onehot.aidrama.categories.DramaCategoryRepository;
+import com.onehot.aidrama.common.PageResult;
+import com.onehot.aidrama.common.error.BusinessException;
+import com.onehot.aidrama.common.security.JwtPrincipal;
+import com.onehot.aidrama.distribution.DistributionTask;
+import com.onehot.aidrama.distribution.DistributionTaskRepository;
+import com.onehot.aidrama.distribution.DistributionTaskStatus;
+import com.onehot.aidrama.media.MediaAccount;
+import com.onehot.aidrama.media.MediaAccountRepository;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
+
+import java.util.List;
+import java.util.Optional;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
+class DramaControllerTest {
+    private final MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+    private final DistributionTaskRepository distributionTaskRepository = mock(DistributionTaskRepository.class);
+    @TempDir
+    Path downloadDir;
+
+    private DramaController controller(MongoTemplate mongoTemplate, DramaCategoryRepository categoryRepository) {
+        return new DramaController(
+                mock(DramaRepository.class),
+                mock(BaiduPanClient.class),
+                mongoTemplate,
+                mock(DramaAiService.class),
+                categoryRepository,
+                mediaAccountRepository,
+                distributionTaskRepository,
+                Runnable::run,
+                downloadDir
+        );
+    }
+
+    private DramaController controller(MongoTemplate mongoTemplate) {
+        return controller(mongoTemplate, mock(DramaCategoryRepository.class));
+    }
+
+    private DramaController controller(DramaRepository repository, BaiduPanClient baiduPanClient) {
+        return new DramaController(
+                repository,
+                baiduPanClient,
+                mock(MongoTemplate.class),
+                mock(DramaAiService.class),
+                mock(DramaCategoryRepository.class),
+                mediaAccountRepository,
+                distributionTaskRepository,
+                Runnable::run,
+                downloadDir
+        );
+    }
+
+    private JwtPrincipal desktopPrincipal() {
+        return new JwtPrincipal("owner-1", "test", List.of("DESKTOP_USER"));
+    }
+
+    @Test
+    void filtersDramasMissingCover() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, DramaAssetState.MISSING_COVER, null, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getQueryObject().toJson()).contains("coverUrl");
+    }
+
+    @Test
+    void filtersDramasMissingSummary() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, DramaAssetState.MISSING_SUMMARY, null, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getQueryObject().toJson()).contains("summary");
+    }
+
+    @Test
+    void filtersDramasByEpisodeCount() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, null, 50, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        String queryJson = query.getValue().getQueryObject().toString();
+        assertThat(queryJson).contains("episodes");
+        assertThat(queryJson).contains("$size");
+        assertThat(queryJson).contains("50");
+    }
+
+    @Test
+    void ignoresNonPositiveEpisodeCountFilter() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, null, 0, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getQueryObject().toJson()).doesNotContain("$size");
+    }
+
+    @Test
+    void desktopListOnlyReturnsReadyDramasFromLastSevenDays() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        String queryJson = query.getValue().getQueryObject().toString();
+        assertThat(queryJson).contains("status=READY");
+        assertThat(queryJson).contains("createdAt");
+        assertThat(queryJson).contains("$gte");
+    }
+
+    @Test
+    void desktopListFiltersByOriginalOrAiTitleKeyword() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.desktopList(desktopPrincipal(), "神医", PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        String queryJson = query.getValue().getQueryObject().toString();
+        assertThat(queryJson).contains("title");
+        assertThat(queryJson).contains("aiTitle");
+        assertThat(queryJson).contains("神医");
+    }
+
+    @Test
+    void desktopListReturnsCategoryNames() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaCategoryRepository categoryRepository = mock(DramaCategoryRepository.class);
+        DramaController controller = controller(mongoTemplate, categoryRepository);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        drama.setCategoryIds(List.of("sci-fi"));
+        DramaCategory category = new DramaCategory();
+        category.setCode("sci-fi");
+        category.setName("科幻");
+        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        when(categoryRepository.findByEnabledTrueOrderBySortOrderAsc()).thenReturn(List.of(category));
+
+        PageResult<DramaDtos.DesktopDramaResponse> result = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data();
+
+        assertThat(result.content()).hasSize(1);
+        assertThat(result.content().getFirst().categoryNames()).containsExactly("科幻");
+    }
+
+    @Test
+    void desktopListReplacesOriginalTitleAndCoverWithAiValues() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("原始剧名");
+        drama.setAiTitle("AI剧名");
+        drama.setCoverUrl("/uploads/covers/original.jpg");
+        drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
+        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+
+        DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
+
+        assertThat(row.title()).isEqualTo("AI剧名");
+        assertThat(row.coverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
+        assertThat(row.aiTitle()).isNull();
+        assertThat(row.aiCoverUrl()).isNull();
+    }
+
+    @Test
+    void desktopListMarksPrioritizedDramasForCurrentOwner() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        MediaAccount media = new MediaAccount();
+        media.setId("media-1");
+        DistributionTask task = new DistributionTask();
+        task.setDramaId("drama-1");
+        task.setMediaAccountId("media-1");
+        task.setStatus(DistributionTaskStatus.PENDING);
+        task.setPriority(100);
+        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(media));
+        when(distributionTaskRepository.findByStatusAndPriorityGreaterThanAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                0,
+                List.of("media-1")
+        )).thenReturn(List.of(task));
+
+        PageResult<DramaDtos.DesktopDramaResponse> result = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data();
+
+        assertThat(result.content().getFirst().prioritized()).isTrue();
+    }
+
+    @Test
+    void generateCoverAcceptsRequestAndRunsGenerationInBackground() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService dramaAiService = mock(DramaAiService.class);
+        AtomicReference<Runnable> backgroundTask = new AtomicReference<>();
+        DramaController controller = new DramaController(
+                repository,
+                mock(BaiduPanClient.class),
+                mock(MongoTemplate.class),
+                dramaAiService,
+                mock(DramaCategoryRepository.class),
+                mediaAccountRepository,
+                distributionTaskRepository,
+                backgroundTask::set
+        );
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setAiCoverUrl("/uploads/ai-covers/new.jpg");
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dramaAiService.generateCover("drama-1")).thenReturn(drama);
+
+        var response = controller.generateCover("drama-1");
+
+        assertThat(response.data().dramaId()).isEqualTo("drama-1");
+        assertThat(response.data().acceptedAt()).isNotNull();
+        assertThat(response.data().recommendedCheckAt()).isAfter(response.data().acceptedAt());
+        assertThat(drama.isAiCoverGenerating()).isTrue();
+        verifyNoInteractions(dramaAiService);
+
+        backgroundTask.get().run();
+
+        verify(dramaAiService).generateCover("drama-1");
+    }
+
+    @Test
+    void updateRejectsReadyStatusBeforeAiTitleAndCoverAreGenerated() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("原始剧名");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/短剧/001.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+
+        DramaDtos.DramaRequest request = new DramaDtos.DramaRequest(
+                "原始剧名",
+                "",
+                "简介",
+                "/uploads/covers/source.jpg",
+                "",
+                5,
+                List.of("urban"),
+                DramaStatus.READY
+        );
+
+        assertThatThrownBy(() -> controller.update("drama-1", request))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("AI 剧名和 AI 封面生成完成后才能设为待分发");
+    }
+
+    @Test
+    void deleteRemovesExistingDrama() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+
+        controller.delete("drama-1");
+
+        verify(repository).delete(drama);
+    }
+
+    @Test
+    void deleteRejectsMissingDrama() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+        when(repository.findById("missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> controller.delete("missing"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("短剧不存在");
+        verify(repository).findById("missing");
+        verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void desktopListReturnsDefaultRatingForLegacyDramas() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        when(mongoTemplate.count(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(1L);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of(drama));
+
+        PageResult<DramaDtos.DesktopDramaResponse> result = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data();
+
+        assertThat(result.content().getFirst().rating()).isEqualTo(5);
+    }
+
+    @Test
+    void downloadPlanReturnsBackendEpisodeUrlsWithoutCreatingBaiduLinks() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        drama.setAiTitle("AI短剧名");
+        drama.setSummary("简介");
+        drama.setCoverUrl("/uploads/covers/source.jpg");
+        drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
+        drama.setCategoryIds(List.of("urban"));
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/短剧/001.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+
+        DramaDtos.DownloadPlan plan = controller.downloadPlan("drama-1").data();
+
+        assertThat(plan.episodes()).hasSize(1);
+        assertThat(plan.title()).isEqualTo("AI短剧名");
+        assertThat(plan.aiTitle()).isEqualTo("AI短剧名");
+        assertThat(plan.summary()).isEqualTo("简介");
+        assertThat(plan.coverUrl()).isEqualTo("/uploads/covers/source.jpg");
+        assertThat(plan.aiCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
+        assertThat(plan.effectiveCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
+        assertThat(plan.categoryIds()).containsExactly("urban");
+        assertThat(plan.episodes().getFirst().downloadUrl())
+                .isEqualTo("/api/desktop/dramas/drama-1/episodes/1/download");
+        verifyNoInteractions(baiduPanClient);
+    }
+
+    @Test
+    void downloadEpisodeRedirectsToFreshBaiduUrl() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
+                .thenReturn(List.of("https://pan.baidu.com/download?token=secret"));
+
+        var response = controller.downloadEpisode("drama-1", 2);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
+        assertThat(response.getHeaders().getLocation().toString())
+                .isEqualTo("https://pan.baidu.com/download?token=secret");
+    }
+
+    @Test
+    void adminEpisodesShowDownloadedStateFromLocalFiles() throws Exception {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode first = new DramaEpisode();
+        first.setEpisodeNo(1);
+        first.setTitle("第一集");
+        first.setSourcePath("/短剧/001.mp4");
+        first.setSize(100);
+        DramaEpisode second = new DramaEpisode();
+        second.setEpisodeNo(2);
+        second.setTitle("第二集");
+        second.setSourcePath("/短剧/002.mp4");
+        second.setSize(200);
+        drama.setEpisodes(List.of(first, second));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        Path localFile = downloadDir.resolve("drama-1").resolve("001.mp4");
+        Files.createDirectories(localFile.getParent());
+        Files.writeString(localFile, "video");
+
+        var episodes = controller.adminEpisodes("drama-1").data();
+
+        assertThat(episodes).hasSize(2);
+        assertThat(episodes.getFirst().downloaded()).isTrue();
+        assertThat(episodes.getFirst().playSource()).isEqualTo("LOCAL");
+        assertThat(episodes.getFirst().localUrl()).isEqualTo("/api/admin/dramas/drama-1/episodes/1/stream");
+        assertThat(episodes.get(1).downloaded()).isFalse();
+        assertThat(episodes.get(1).playSource()).isEqualTo("BAIDU");
+    }
+
+    @Test
+    void adminEpisodePlaySourcePrefersLocalFileOverBaiduUrl() throws Exception {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/短剧/001.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        Path localFile = downloadDir.resolve("drama-1").resolve("001.mp4");
+        Files.createDirectories(localFile.getParent());
+        Files.writeString(localFile, "video");
+
+        DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 1).data();
+
+        assertThat(source.source()).isEqualTo("LOCAL");
+        assertThat(source.downloaded()).isTrue();
+        assertThat(source.playUrl()).isEqualTo("/api/admin/dramas/drama-1/episodes/1/stream");
+        verifyNoInteractions(baiduPanClient);
+    }
+
+    @Test
+    void adminEpisodePlaySourceFallsBackToFreshBaiduUrl() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
+                .thenReturn(List.of("https://pan.baidu.com/download?token=secret"));
+
+        DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
+
+        assertThat(source.source()).isEqualTo("BAIDU");
+        assertThat(source.downloaded()).isFalse();
+        assertThat(source.playUrl()).isEqualTo("https://pan.baidu.com/download?token=secret");
+    }
+}

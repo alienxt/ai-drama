@@ -1,0 +1,241 @@
+import os
+import pytest
+from types import SimpleNamespace
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+pytest.importorskip("PySide6")
+
+from PySide6.QtWidgets import QApplication, QHeaderView, QTableWidget
+
+from aidrama_desktop.gui.app import DesktopWindow
+
+
+def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
+    path = DesktopWindow.build_drama_list_path(page=2, size=10)
+
+    assert path == "/desktop/dramas?page=2&size=10&sort=createdAt,desc"
+
+
+def test_desktop_drama_list_path_supports_title_keyword_search():
+    path = DesktopWindow.build_drama_list_path(page=0, size=10, keyword="神医 太子")
+
+    assert path == "/desktop/dramas?page=0&size=10&sort=createdAt,desc&keyword=%E7%A5%9E%E5%8C%BB+%E5%A4%AA%E5%AD%90"
+
+
+def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at():
+    values = DesktopWindow.drama_row_values(
+        {
+            "title": "原剧名",
+            "aiTitle": "新剧名",
+            "summary": "一段简介",
+            "rating": 4,
+            "categoryIds": ["sci-fi"],
+            "categoryNames": ["科幻"],
+            "episodes": [{}, {}],
+            "status": "READY",
+            "createdAt": "2026-06-14T16:42:03Z",
+            "updatedAt": "2026-06-15T12:02:48Z",
+        }
+    )
+
+    assert values == ["新剧名", "一段简介", "4分", "科幻", "2", "-", "-", "2026-06-14 16:42:03"]
+
+
+def test_desktop_drama_row_values_defaults_missing_rating_to_five():
+    values = DesktopWindow.drama_row_values(
+        {
+            "title": "原剧名",
+            "summary": "一段简介",
+            "categoryNames": ["科幻"],
+            "episodes": [],
+            "createdAt": "2026-06-14T16:42:03Z",
+        }
+    )
+
+    assert values[2] == "5分"
+
+
+def test_drama_download_info_counts_only_completed_episodes(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(downloads_dir=tmp_path)
+    drama = {
+        "id": "drama-1",
+        "episodes": [
+            {"episodeNo": 1, "size": 10},
+            {"episodeNo": 2, "size": 10},
+        ],
+    }
+    target = tmp_path / "drama-1"
+    target.mkdir()
+    (target / "001.mp4").write_bytes(b"x" * 10)
+    (target / "002.mp4").write_bytes(b"x" * 4)
+
+    assert DesktopWindow.drama_download_info(window, drama) == ("下载中", 1, 2)
+
+
+def test_drama_download_info_marks_all_complete(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(downloads_dir=tmp_path)
+    drama = {
+        "id": "drama-1",
+        "episodes": [
+            {"episodeNo": 1, "size": 10},
+            {"episodeNo": 2, "size": 10},
+        ],
+    }
+    target = tmp_path / "drama-1"
+    target.mkdir()
+    (target / "001.mp4").write_bytes(b"x" * 10)
+    (target / "002.mp4").write_bytes(b"x" * 10)
+
+    assert DesktopWindow.drama_download_info(window, drama) == ("已下载", 2, 2)
+
+
+def test_task_done_can_omit_large_result_from_log():
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    payload = {"content": [{"summary": "x" * 1000}], "totalElements": 1}
+    handled = []
+    window.append_log = logs.append
+
+    DesktopWindow._task_done(window, "加载短剧库", payload, handled.append, log_result=False)
+
+    assert logs == ["完成：加载短剧库"]
+    assert handled == [payload]
+
+
+def test_task_done_summarizes_list_result_in_log():
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    window.append_log = logs.append
+
+    DesktopWindow._task_done(window, "刷新媒体号", [{"id": "media-1"}, {"id": "media-2"}], None)
+
+    assert logs == ["完成：刷新媒体号 共 2 条"]
+
+
+def test_task_done_summarizes_page_result_in_log():
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    window.append_log = logs.append
+
+    DesktopWindow._task_done(window, "加载短剧库", {"content": [{"id": "drama-1"}], "totalElements": 131}, None)
+
+    assert logs == ["完成：加载短剧库 共 131 条"]
+
+
+def test_task_done_can_hide_update_check_payload_from_log():
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    payload = ("MAC", {"updateAvailable": False, "downloadUrl": None})
+    handled = []
+    window.append_log = logs.append
+
+    DesktopWindow._task_done(window, "检查桌面端更新", payload, handled.append, log_result=False)
+
+    assert logs == ["完成：检查桌面端更新"]
+    assert handled == [payload]
+
+
+def test_media_row_values_include_binding_time():
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.media_categories = [{"code": "urban", "name": "都市"}]
+
+    values = DesktopWindow.media_row_values(
+        window,
+        {
+            "displayName": "主账号",
+            "platform": "WECHAT_VIDEO",
+            "externalAccountId": "wx-1",
+            "status": "ACTIVE",
+            "deviceId": "device-1",
+            "lastVerifiedAt": "2026-06-15T12:02:48Z",
+            "loginStateRef": "profile.json",
+        },
+        {"dailyLimit": 5, "intervalMinutes": 30, "categoryIds": ["urban"]},
+    )
+
+    assert values == [
+        "主账号",
+        "视频号",
+        "wx-1",
+        "可用",
+        "device-1",
+        "2026-06-15 12:02:48",
+        "已保存",
+        "5",
+        "30 分钟",
+        "都市",
+    ]
+
+
+def test_media_page_action_labels_only_include_create_and_refresh():
+    assert DesktopWindow.media_page_action_labels() == ["新增媒体号", "刷新媒体号"]
+
+
+def test_media_table_keeps_name_column_readable():
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(0, 11)
+
+    DesktopWindow.configure_media_table_columns(table)
+
+    assert app is not None
+    assert table.columnWidth(0) >= 160
+    assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Fixed
+    assert all(table.horizontalHeader().sectionResizeMode(column) == QHeaderView.Fixed for column in range(11))
+
+
+def test_clean_error_message_hides_exception_class_name():
+    assert (
+        DesktopWindow.clean_error_message(
+            "Traceback...\naidrama_desktop.api.client.ApiError: 这部剧已经有分发任务"
+        )
+        == "这部剧已经有分发任务"
+    )
+
+
+def test_is_drama_prioritized_reads_backend_flag():
+    assert DesktopWindow.is_drama_prioritized({"prioritized": True}) is True
+    assert DesktopWindow.is_drama_prioritized({"prioritized": False}) is False
+    assert DesktopWindow.is_drama_prioritized({}) is False
+
+
+def test_auto_tasks_require_active_media_account_with_login_state():
+    assert DesktopWindow.auto_task_block_reason([]) == "请先新增媒体号并完成登录。"
+    assert (
+        DesktopWindow.auto_task_block_reason(
+            [{"status": "ACTIVE", "loginStateRef": "", "displayName": "主视频号"}]
+        )
+        == "媒体号未保存登录信息，请先完成媒体号登录。"
+    )
+    assert (
+        DesktopWindow.auto_task_block_reason(
+            [{"status": "EXPIRED", "loginStateRef": "profile", "displayName": "主视频号"}]
+        )
+        == "没有可用的媒体号，请先确认媒体号状态为可用。"
+    )
+    assert (
+        DesktopWindow.auto_task_block_reason(
+            [{"status": "PAUSED", "loginStateRef": "profile", "displayName": "主视频号"}]
+        )
+        == "没有可用的媒体号，请先确认媒体号状态为可用。"
+    )
+    assert (
+        DesktopWindow.auto_task_block_reason(
+            [
+                {
+                    "status": "ACTIVE",
+                    "loginStateRef": "profile",
+                    "displayName": "主视频号",
+                    "distributionPolicy": {"enabled": False},
+                }
+            ]
+        )
+        == "没有可用的媒体号，请先确认媒体号状态为可用。"
+    )
+    assert (
+        DesktopWindow.auto_task_block_reason(
+            [{"status": "ACTIVE", "loginStateRef": "profile", "displayName": "主视频号"}]
+        )
+        is None
+    )

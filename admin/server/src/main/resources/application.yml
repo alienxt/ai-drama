@@ -1,0 +1,30 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-drama-server
+  servlet:
+    multipart:
+      max-file-size: ${AIDRAMA_MAX_FILE_SIZE:2GB}
+      max-request-size: ${AIDRAMA_MAX_REQUEST_SIZE:2GB}
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/ai_drama}
+
+aidrama:
+  baidu:
+    scan-fixed-delay-ms: ${AIDRAMA_BAIDU_SCAN_FIXED_DELAY_MS:600000}
+    scan-initial-delay-ms: ${AIDRAMA_BAIDU_SCAN_INITIAL_DELAY_MS:60000}
+  security:
+    jwt-secret: ${AIDRAMA_JWT_SECRET:change-me-to-a-long-random-secret-in-production}
+    token-ttl-minutes: ${AIDRAMA_TOKEN_TTL_MINUTES:720}
+  bootstrap:
+    admin-username: ${AIDRAMA_ADMIN_USERNAME:admin}
+    admin-password: ${AIDRAMA_ADMIN_PASSWORD:admin123}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui

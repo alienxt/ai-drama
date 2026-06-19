@@ -1,0 +1,53 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Java
+admin/server/target/
+admin/server/uploads/
+admin/server/uploads-test/
+
+# Node
+node_modules/
+admin/frontend/node_modules/
+admin/frontend/dist/
+admin/frontend/*.tsbuildinfo
+admin/frontend/vite.config.js
+admin/frontend/vite.config.d.ts
+admin/frontend/.vite/
+
+# Python
+desktop/.venv/
+desktop/.pytest_cache/
+desktop/**/__pycache__/
+desktop/**/*.egg-info/
+desktop/build/
+desktop/dist/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local tooling/output
+.playwright-cli/
+output/

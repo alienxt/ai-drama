@@ -1,0 +1,35 @@
+package com.onehot.aidrama.distribution;
+
+import org.springframework.data.mongodb.repository.MongoRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface DistributionTaskRepository extends MongoRepository<DistributionTask, String> {
+    Optional<DistributionTask> findFirstByStatusOrderByCreatedAtAsc(DistributionTaskStatus status);
+    Optional<DistributionTask> findFirstByStatusAndMediaAccountIdInOrderByCreatedAtAsc(
+            DistributionTaskStatus status,
+            List<String> mediaAccountIds
+    );
+    Optional<DistributionTask> findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+            DistributionTaskStatus status,
+            List<String> mediaAccountIds
+    );
+    Optional<DistributionTask> findFirstByDramaIdAndStatusAndMediaAccountIdInOrderByCreatedAtAsc(
+            String dramaId,
+            DistributionTaskStatus status,
+            List<String> mediaAccountIds
+    );
+    List<DistributionTask> findByStatusAndPriorityGreaterThanAndMediaAccountIdIn(
+            DistributionTaskStatus status,
+            int priority,
+            List<String> mediaAccountIds
+    );
+    boolean existsByMediaAccountIdAndDramaId(String mediaAccountId, String dramaId);
+
+    default boolean existsActiveByDramaId(String dramaId) {
+        return existsByDramaIdAndStatusNotIn(dramaId, List.of(DistributionTaskStatus.FAILED, DistributionTaskStatus.CANCELLED));
+    }
+
+    boolean existsByDramaIdAndStatusNotIn(String dramaId, List<DistributionTaskStatus> statuses);
+}

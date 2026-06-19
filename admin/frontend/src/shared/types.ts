@@ -1,0 +1,182 @@
+export type PageResult<T> = {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  page: number;
+  size: number;
+};
+
+export type Account = {
+  id: string;
+  username: string;
+  roles: string[];
+  enabled: boolean;
+  boundDeviceId?: string;
+  lastLoginDeviceId?: string;
+  lastLoginAt?: string;
+};
+
+export type DramaCategory = {
+  id: string;
+  name: string;
+  code: string;
+  enabled: boolean;
+  sortOrder: number;
+};
+
+export type Drama = {
+  id: string;
+  title: string;
+  aiTitle?: string;
+  summary?: string;
+  coverUrl?: string;
+  aiCoverUrl?: string;
+  aiCoverGenerating?: boolean;
+  rating?: number;
+  categoryIds: string[];
+  sourcePath?: string;
+  status: 'DRAFT' | 'READY' | 'DISABLED';
+  episodes: { episodeNo: number; title?: string; sourcePath: string; size: number }[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AdminEpisode = {
+  episodeNo: number;
+  title?: string;
+  sourcePath: string;
+  size: number;
+  downloaded: boolean;
+  playSource: 'LOCAL' | 'BAIDU';
+  localUrl?: string;
+};
+
+export type EpisodePlaySource = {
+  episodeNo: number;
+  source: 'LOCAL' | 'BAIDU';
+  downloaded: boolean;
+  playUrl: string;
+};
+
+export type BaiduScanStatus = {
+  lastScanAt?: string;
+};
+
+export type BaiduScanAccepted = {
+  acceptedAt?: string;
+};
+
+export type DramaAssetSyncAccepted = {
+  requested: number;
+  acceptedAt?: string;
+};
+
+export type AiCoverGenerationAccepted = {
+  dramaId: string;
+  acceptedAt?: string;
+  recommendedCheckAt?: string;
+};
+
+export type MediaAccount = {
+  id: string;
+  platform: 'WECHAT_VIDEO' | 'DOUYIN' | 'TIKTOK';
+  displayName: string;
+  externalAccountId?: string;
+  status: 'BINDING' | 'ACTIVE' | 'PAUSED' | 'EXPIRED' | 'DISABLED';
+  loginStateRef?: string;
+  deviceId?: string;
+  lastVerifiedAt?: string;
+  distributionPolicy: {
+    categoryIds: string[];
+    dailyLimit: number;
+    intervalMinutes: number;
+    enabled: boolean;
+    transcodePreset: string;
+  };
+};
+
+export type DistributionTask = {
+  id: string;
+  mediaAccountId: string;
+  mediaAccountName?: string;
+  dramaId: string;
+  dramaTitle?: string;
+  status: 'PENDING' | 'CLAIMED' | 'DOWNLOADING' | 'PROCESSING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  progress: number;
+  failureReason?: string;
+  platformPublishId?: string;
+};
+
+export type AiTask = {
+  id: string;
+  type: 'DRAMA_TITLE' | 'DRAMA_COVER';
+  status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  provider?: string;
+  model?: string;
+  endpoint?: string;
+  subjectType?: string;
+  subjectId?: string;
+  subjectTitle?: string;
+  prompt?: string;
+  requestPayload?: Record<string, unknown>;
+  responsePayload?: Record<string, unknown>;
+  errorMessage?: string;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type SystemConfig = {
+  key: string;
+  value: string;
+  secret: boolean;
+};
+
+export type DesktopVersion = {
+  id: string;
+  platform: 'MAC' | 'WINDOWS';
+  version: string;
+  releaseNotes?: string;
+  mandatory: boolean;
+  published: boolean;
+  fileName?: string;
+  fileSize: number;
+  downloadUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type RequestLog = {
+  id: string;
+  traceId?: string;
+  method: string;
+  path: string;
+  query?: string;
+  status: number;
+  durationMs: number;
+  accountId?: string;
+  username?: string;
+  clientIp?: string;
+  userAgent?: string;
+  createdAt?: string;
+};
+
+export type ExceptionLog = {
+  id: string;
+  traceId?: string;
+  source?: string;
+  method?: string;
+  path?: string;
+  status: number;
+  code: string;
+  message: string;
+  exceptionClass: string;
+  stackTrace?: string;
+  accountId?: string;
+  username?: string;
+  clientIp?: string;
+  userAgent?: string;
+  createdAt?: string;
+};
