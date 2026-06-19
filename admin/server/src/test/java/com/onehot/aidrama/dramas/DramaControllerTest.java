@@ -20,10 +20,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -533,7 +535,28 @@ class DramaControllerTest {
     }
 
     @Test
-    void adminEpisodePlaySourceFallsBackToBaiduStreamingUrl() {
+    void adminEpisodePlaySourceFallsBackToProxiedBaiduHlsUrl() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+
+        DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
+
+        assertThat(source.source()).isEqualTo("BAIDU");
+        assertThat(source.downloaded()).isFalse();
+        assertThat(source.playUrl()).isEqualTo("/api/admin/dramas/drama-1/episodes/2/hls.m3u8");
+        verifyNoInteractions(baiduPanClient);
+    }
+
+    @Test
+    void baiduHlsManifestRewritesSegmentsToSameOriginUrls() {
         DramaRepository repository = mock(DramaRepository.class);
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaController controller = controller(repository, baiduPanClient);
@@ -546,14 +569,66 @@ class DramaControllerTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(baiduPanClient.createStreamingUrl("/短剧/002.mp4"))
                 .thenReturn("https://pan.baidu.com/rest/2.0/xpan/file?method=streaming&type=M3U8_AUTO_720&token=secret");
+        String segmentUrl = "https://v2-ant.baidu.com/video/segment.ts?range=0-100&sign=abc";
+        when(baiduPanClient.readUrl("https://pan.baidu.com/rest/2.0/xpan/file?method=streaming&type=M3U8_AUTO_720&token=secret"))
+                .thenReturn("#EXTM3U\n#EXTINF:2,\n" + segmentUrl + "\n#EXT-X-ENDLIST\n");
 
-        DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
+        var response = controller.baiduHlsManifest("drama-1", 2);
 
-        assertThat(source.source()).isEqualTo("BAIDU");
-        assertThat(source.downloaded()).isFalse();
-        assertThat(source.playUrl()).contains("method=streaming");
-        assertThat(source.playUrl()).contains("M3U8_AUTO_720");
-        verify(baiduPanClient).createStreamingUrl("/短剧/002.mp4");
+        assertThat(response.getHeaders().getContentType().toString()).isEqualTo("application/vnd.apple.mpegurl");
+        assertThat(response.getBody()).contains("/api/admin/dramas/drama-1/episodes/2/hls-segment?url=");
+        assertThat(response.getBody()).doesNotContain(segmentUrl);
+        String encoded = response.getBody().lines()
+                .filter(line -> line.contains("/hls-segment?url="))
+                .findFirst()
+                .orElseThrow()
+                .substring("/api/admin/dramas/drama-1/episodes/2/hls-segment?url=".length());
+        assertThat(new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8)).isEqualTo(segmentUrl);
+    }
+
+    @Test
+    void baiduHlsSegmentDownloadsOnlyBaiduUrls() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        String segmentUrl = "https://v2-ant.baidu.com/video/segment.ts?range=0-100&sign=abc";
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(segmentUrl.getBytes(StandardCharsets.UTF_8));
+        when(baiduPanClient.downloadUrl(segmentUrl)).thenReturn(new byte[]{1, 2, 3});
+
+        var response = controller.baiduHlsSegment("drama-1", 2, encoded);
+
+        assertThat(response.getBody()).containsExactly(1, 2, 3);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(org.springframework.http.MediaType.APPLICATION_OCTET_STREAM);
+        verify(baiduPanClient).downloadUrl(segmentUrl);
+    }
+
+    @Test
+    void baiduHlsSegmentRejectsNonBaiduUrls() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaController controller = controller(repository, baiduPanClient);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setSourcePath("/短剧/002.mp4");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("https://example.com/segment.ts".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> controller.baiduHlsSegment("drama-1", 2, encoded))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("非法的百度分片地址");
+        verify(baiduPanClient, never()).downloadUrl(org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test

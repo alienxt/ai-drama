@@ -118,6 +118,84 @@ def test_drama_download_info_uses_episode_count_summary_without_episodes(tmp_pat
     assert DesktopWindow.drama_download_info(window, drama) == ("已下载", 2, 2)
 
 
+def test_drama_cover_widget_returns_immediately_and_loads_async(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.cover_cache = {}
+    window.cover_loading = {}
+    calls = []
+
+    def fail_sync_fetch(*_args, **_kwargs):
+        raise AssertionError("cover widget must not fetch synchronously")
+
+    def record_async_load(url, label):
+        calls.append((url, label.text()))
+
+    monkeypatch.setattr("aidrama_desktop.gui.app.httpx.get", fail_sync_fetch)
+    window.load_cover_async = record_async_load
+
+    label = DesktopWindow.drama_cover_widget(window, "https://example.test/cover.jpg")
+
+    assert app is not None
+    assert label.text() == "封面\n加载中"
+    assert calls == [("https://example.test/cover.jpg", "封面\n加载中")]
+
+
+def test_drama_cover_widget_uses_cached_failure_without_async_load():
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.cover_cache = {"https://example.test/missing.jpg": None}
+    window.cover_loading = {}
+    calls = []
+    window.load_cover_async = lambda url, label: calls.append((url, label))
+
+    label = DesktopWindow.drama_cover_widget(window, "https://example.test/missing.jpg")
+
+    assert app is not None
+    assert label.text() == "封面\n加载失败"
+    assert calls == []
+
+
+def test_drama_cover_widget_uses_local_disk_cache_without_async_load(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(work_dir=tmp_path)
+    window.cover_cache = {}
+    window.cover_loading = {}
+    calls = []
+    cover_url = "https://example.test/cover.jpg"
+    cache_path = DesktopWindow.drama_cover_cache_path(window, cover_url)
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"cached-cover")
+    window.load_cover_async = lambda url, label: calls.append((url, label))
+    applied = []
+    window.apply_drama_cover_bytes = lambda label, content: applied.append(content)
+
+    label = DesktopWindow.drama_cover_widget(window, cover_url)
+
+    assert app is not None
+    assert calls == []
+    assert applied == [b"cached-cover"]
+    assert window.cover_cache[cover_url] == b"cached-cover"
+    assert label.property("coverUrl") == cover_url
+
+
+def test_on_cover_loaded_persists_success_to_local_cache(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(work_dir=tmp_path)
+    window.cover_cache = {}
+    window.cover_loading = {}
+    cover_url = "https://example.test/cover.jpg"
+    window.apply_drama_cover_bytes = lambda _label, _content: None
+
+    DesktopWindow.on_cover_loaded(window, (cover_url, b"fresh-cover"))
+
+    assert app is not None
+    assert DesktopWindow.drama_cover_cache_path(window, cover_url).read_bytes() == b"fresh-cover"
+    assert window.cover_cache[cover_url] == b"fresh-cover"
+
+
 def test_task_done_can_omit_large_result_from_log():
     window = DesktopWindow.__new__(DesktopWindow)
     logs = []

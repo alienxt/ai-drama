@@ -8,6 +8,8 @@ public interface BaiduPanClient {
     String createStreamingUrl(String remotePath);
     String createDownloadUrl(String remotePath);
     List<String> createDownloadUrls(List<String> remotePaths);
+    String readUrl(String url);
+    byte[] downloadUrl(String url);
     String readTextFile(String remotePath);
     void downloadFile(String remotePath, Path target);
 }

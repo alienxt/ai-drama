@@ -106,6 +106,30 @@ public class BaiduPanHttpClient implements BaiduPanClient {
     }
 
     @Override
+    public String readUrl(String url) {
+        try (Response response = execute(requestBuilder(URI.create(url)).get().build())) {
+            if (response.code() >= 400) {
+                throw new BaiduPanException("Baidu URL read HTTP " + response.code());
+            }
+            return responseBody(response).string();
+        } catch (IOException exception) {
+            throw new BaiduPanException("Baidu URL read failed", exception);
+        }
+    }
+
+    @Override
+    public byte[] downloadUrl(String url) {
+        try (Response response = execute(requestBuilder(URI.create(url)).get().build())) {
+            if (response.code() >= 400) {
+                throw new BaiduPanException("Baidu URL download HTTP " + response.code());
+            }
+            return responseBody(response).bytes();
+        } catch (IOException exception) {
+            throw new BaiduPanException("Baidu URL download failed", exception);
+        }
+    }
+
+    @Override
     public String readTextFile(String remotePath) {
         try {
             try (Response response = execute(requestBuilder(URI.create(createDownloadUrl(remotePath))).get().build())) {

@@ -34,10 +34,12 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -219,11 +221,39 @@ public class DramaController {
                     MDC.get(TraceIdFilter.TRACE_ID)
             );
         }
-        String playUrl = baiduPanClient.createStreamingUrl(episode.getSourcePath());
         return ApiResponse.ok(
-                new DramaDtos.EpisodePlaySource(episodeNo, "BAIDU", false, playUrl),
+                new DramaDtos.EpisodePlaySource(episodeNo, "BAIDU", false, adminEpisodeHlsUrl(id, episodeNo)),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
+    }
+
+    @GetMapping("/api/admin/dramas/{id}/episodes/{episodeNo}/hls.m3u8")
+    ResponseEntity<String> baiduHlsManifest(
+            @PathVariable String id,
+            @PathVariable int episodeNo
+    ) {
+        DramaEpisode episode = getEpisode(id, episodeNo);
+        String baiduManifestUrl = baiduPanClient.createStreamingUrl(episode.getSourcePath());
+        String manifest = baiduPanClient.readUrl(baiduManifestUrl);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/vnd.apple.mpegurl"))
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(rewriteBaiduManifest(id, episodeNo, manifest));
+    }
+
+    @GetMapping("/api/admin/dramas/{id}/episodes/{episodeNo}/hls-segment")
+    ResponseEntity<byte[]> baiduHlsSegment(
+            @PathVariable String id,
+            @PathVariable int episodeNo,
+            @RequestParam String url
+    ) {
+        getEpisode(id, episodeNo);
+        String segmentUrl = decodeSegmentUrl(url);
+        validateBaiduSegmentUrl(segmentUrl);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(baiduPanClient.downloadUrl(segmentUrl));
     }
 
     @GetMapping("/api/admin/dramas/{id}/episodes/{episodeNo}/stream")
@@ -368,6 +398,43 @@ public class DramaController {
 
     private String adminEpisodeStreamUrl(String dramaId, int episodeNo) {
         return "/api/admin/dramas/" + dramaId + "/episodes/" + episodeNo + "/stream";
+    }
+
+    private String adminEpisodeHlsUrl(String dramaId, int episodeNo) {
+        return "/api/admin/dramas/" + dramaId + "/episodes/" + episodeNo + "/hls.m3u8";
+    }
+
+    private String rewriteBaiduManifest(String dramaId, int episodeNo, String manifest) {
+        return manifest.lines()
+                .map(line -> {
+                    String trimmed = line.trim();
+                    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+                        return line;
+                    }
+                    return "/api/admin/dramas/" + dramaId + "/episodes/" + episodeNo
+                            + "/hls-segment?url=" + encodeSegmentUrl(trimmed);
+                })
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String encodeSegmentUrl(String url) {
+        return Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(url.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String decodeSegmentUrl(String encoded) {
+        return new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
+    }
+
+    private void validateBaiduSegmentUrl(String url) {
+        URI uri = URI.create(url);
+        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+        if (!"https".equalsIgnoreCase(uri.getScheme())
+                || (!host.equals("baidu.com") && !host.endsWith(".baidu.com")
+                && !host.equals("baidupcs.com") && !host.endsWith(".baidupcs.com"))) {
+            throw new BusinessException("INVALID_HLS_SEGMENT", "非法的百度分片地址", HttpStatus.BAD_REQUEST);
+        }
     }
 
     private String effectiveCoverUrl(Drama drama) {

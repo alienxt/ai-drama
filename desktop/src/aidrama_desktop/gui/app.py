@@ -4,6 +4,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
+from hashlib import sha256
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -279,6 +280,8 @@ class DesktopWindow(QMainWindow):
         self.drama_size = 10
         self.drama_total_pages = 1
         self.drama_total_elements = 0
+        self.cover_cache: dict[str, bytes | None] = {}
+        self.cover_loading: dict[str, list[QLabel]] = {}
         self.active_workers: list[Worker] = []
         self.auto_task_enabled = False
         self.auto_task_busy = False
@@ -1194,23 +1197,108 @@ class DesktopWindow(QMainWindow):
         return urljoin(f"{server_root}/", value.lstrip("/"))
 
     @staticmethod
-    def drama_cover_widget(cover_url: str) -> QLabel:
-        label = QLabel("无封面")
+    def empty_drama_cover_label(text: str = "无封面") -> QLabel:
+        label = QLabel(text)
         label.setAlignment(Qt.AlignCenter)
         label.setFixedSize(64, 76)
         label.setObjectName("coverThumb")
+        return label
+
+    def drama_cover_widget(self, cover_url: str) -> QLabel:
+        label = self.empty_drama_cover_label()
         if not cover_url:
             return label
-        try:
-            response = httpx.get(cover_url, timeout=5)
-            response.raise_for_status()
-            pixmap = QPixmap()
-            if pixmap.loadFromData(response.content):
-                label.setText("")
-                label.setPixmap(pixmap.scaled(56, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        except Exception:  # noqa: BLE001
-            label.setText("封面\n加载失败")
+        label.setProperty("coverUrl", cover_url)
+        if cover_url in self.cover_cache:
+            self.apply_drama_cover_bytes(label, self.cover_cache[cover_url])
+            return label
+        cached_cover = self.read_cached_drama_cover(cover_url)
+        if cached_cover:
+            self.cover_cache[cover_url] = cached_cover
+            self.apply_drama_cover_bytes(label, cached_cover)
+            return label
+        label.setText("封面\n加载中")
+        self.load_cover_async(cover_url, label)
         return label
+
+    def drama_cover_cache_path(self, cover_url: str) -> Path:
+        cache_dir = self.settings.work_dir / "dramas" / "covers"
+        return cache_dir / f"{sha256(cover_url.encode('utf-8')).hexdigest()}.img"
+
+    def read_cached_drama_cover(self, cover_url: str) -> bytes | None:
+        if not hasattr(self, "settings"):
+            return None
+        try:
+            cache_path = self.drama_cover_cache_path(cover_url)
+            if cache_path.is_file():
+                return cache_path.read_bytes()
+        except OSError:
+            return None
+        return None
+
+    def write_cached_drama_cover(self, cover_url: str, content: bytes | None) -> None:
+        if not content:
+            return
+        if not hasattr(self, "settings"):
+            return
+        try:
+            cache_path = self.drama_cover_cache_path(cover_url)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = cache_path.with_suffix(".tmp")
+            temp_path.write_bytes(content)
+            temp_path.replace(cache_path)
+        except OSError:
+            return
+
+    def load_cover_async(self, cover_url: str, label: QLabel) -> None:
+        pending = self.cover_loading.setdefault(cover_url, [])
+        pending.append(label)
+        if len(pending) > 1:
+            return
+
+        def fetch_cover() -> tuple[str, bytes | None]:
+            try:
+                response = httpx.get(cover_url, timeout=5)
+                response.raise_for_status()
+                return cover_url, response.content
+            except Exception:  # noqa: BLE001
+                return cover_url, None
+
+        worker = Worker(fetch_cover)
+        worker.signals.done.connect(self.on_cover_loaded)
+        worker.signals.failed.connect(lambda _: self.on_cover_loaded((cover_url, None)))
+        worker.signals.done.connect(lambda _: self._release_worker(worker))
+        worker.signals.failed.connect(lambda _: self._release_worker(worker))
+        self.active_workers.append(worker)
+        self.thread_pool.start(worker)
+
+    def on_cover_loaded(self, result: object) -> None:
+        if not isinstance(result, tuple) or len(result) != 2:
+            return
+        cover_url, content = result
+        if not isinstance(cover_url, str):
+            return
+        cover_bytes = content if isinstance(content, bytes) else None
+        self.cover_cache[cover_url] = cover_bytes
+        self.write_cached_drama_cover(cover_url, cover_bytes)
+        labels = self.cover_loading.pop(cover_url, [])
+        for label in labels:
+            if label.property("coverUrl") == cover_url:
+                self.apply_drama_cover_bytes(label, cover_bytes)
+
+    @staticmethod
+    def apply_drama_cover_bytes(label: QLabel, content: bytes | None) -> None:
+        if not content:
+            label.setPixmap(QPixmap())
+            label.setText("封面\n加载失败")
+            return
+        pixmap = QPixmap()
+        if pixmap.loadFromData(content):
+            label.setText("")
+            label.setPixmap(pixmap.scaled(56, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            return
+        label.setPixmap(QPixmap())
+        label.setText("封面\n加载失败")
 
     @staticmethod
     def drama_detail_cover_widget(cover_url: str) -> QLabel:
