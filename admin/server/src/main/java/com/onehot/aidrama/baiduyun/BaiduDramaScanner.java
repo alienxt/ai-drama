@@ -285,7 +285,8 @@ public class BaiduDramaScanner {
                     matches.stream().map(Drama::getId).toList()
             );
         }
-        if (existing.isEmpty()) {
+        boolean newDrama = existing.isEmpty();
+        if (newDrama) {
             skipIfOriginalTitleAndEpisodeCountAlreadyExist(planned);
         }
         Drama drama = existing.orElseGet(Drama::new);
@@ -302,7 +303,7 @@ public class BaiduDramaScanner {
         }
         drama.setSource("BAIDU_PAN");
         drama.setSourcePath(planned.sourcePath());
-        if (drama.getStatus() != DramaStatus.DISABLED) {
+        if (newDrama && drama.getStatus() != DramaStatus.DISABLED) {
             drama.setStatus(DramaStatus.DRAFT);
         }
         Set<String> categoryCodes = classifier.classifyCodes(planned.title(), planned.summary());

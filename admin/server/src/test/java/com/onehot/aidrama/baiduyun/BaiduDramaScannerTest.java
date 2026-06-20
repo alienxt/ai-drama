@@ -176,6 +176,36 @@ class BaiduDramaScannerTest {
     }
 
     @Test
+    void rescanningExistingReadyDramaPreservesReadyStatus() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+        Drama existing = new Drama();
+        existing.setTitle("已准备短剧");
+        existing.setSummary("已有简介");
+        existing.setCoverUrl("/uploads/covers/existing.jpg");
+        existing.setAiTitle("AI 剧名");
+        existing.setAiCoverUrl("/uploads/ai-covers/existing.jpg");
+        existing.setStatus(DramaStatus.READY);
+        existing.setSourcePath("/root/6月15日/4.已准备短剧（20集）");
+
+        when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/4.已准备短剧（20集）", "4.已准备短剧（20集）", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月15日/4.已准备短剧（20集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/4.已准备短剧（20集）/01.mp4", "01.mp4", false, 4L, 100)
+        ));
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/4.已准备短剧（20集）")).thenReturn(List.of(existing));
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama rescanned = scanner.scanDateDirectory("/root/6月15日").getFirst();
+
+        assertThat(rescanned.getStatus()).isEqualTo(DramaStatus.READY);
+    }
+
+    @Test
     void rescanningDuplicateSourcePathKeepsUsingExistingRecordInsteadOfExpectingUniqueResult() {
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
