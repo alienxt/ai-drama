@@ -560,7 +560,7 @@ class DesktopWindow(QMainWindow):
 
     @staticmethod
     def configure_media_table_columns(table: QTableWidget) -> None:
-        widths = [160, 90, 170, 86, 190, 165, 88, 105, 130, 150, 190]
+        widths = [160, 90, 170, 86, 190, 165, 88, 105, 130, 150, 250]
         for column, width in enumerate(widths):
             table.horizontalHeader().setSectionResizeMode(column, QHeaderView.Fixed)
             table.setColumnWidth(column, width)
@@ -574,7 +574,7 @@ class DesktopWindow(QMainWindow):
         dialog_layout.setContentsMargins(18, 18, 18, 18)
         dialog_layout.setSpacing(12)
 
-        hint = QLabel("当前视频号只需要填写名称和平台侧账号 ID。")
+        hint = QLabel("创建后会自动打开独立浏览器窗口；登录信息会保存到该媒体号的独立浏览器目录。")
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)
         dialog_layout.addWidget(hint)
@@ -602,7 +602,7 @@ class DesktopWindow(QMainWindow):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("新增")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("新增并打开浏览器")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.create_media_account)
         buttons.rejected.connect(dialog.reject)
@@ -1446,9 +1446,12 @@ class DesktopWindow(QMainWindow):
         toggle = QPushButton("启用" if status == "PAUSED" else "暂停")
         toggle.setEnabled(status in {"ACTIVE", "PAUSED"})
         toggle.clicked.connect(lambda _=False, item=account: self.toggle_media_enabled(item))
+        open_browser = QPushButton("打开浏览器")
+        open_browser.clicked.connect(lambda _=False, item=account: self.open_media_account(item))
         policy = QPushButton("编辑策略")
         policy.clicked.connect(lambda _=False, item=account: self.open_media_policy_dialog(item))
         layout.addWidget(toggle)
+        layout.addWidget(open_browser)
         layout.addWidget(policy)
         layout.addStretch(1)
         return wrapper
@@ -1562,13 +1565,26 @@ class DesktopWindow(QMainWindow):
             "deviceId": self.settings.device_id,
         }
 
+        def task() -> dict[str, Any]:
+            media = self.api().post("/desktop/media-accounts", payload)
+            account_id = media.get("id")
+            chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
+            profile_key = self.media_profile_key({**media, "externalAccountId": external_id}, account_id)
+            chrome.open_platform_login(platform, platform_login_url(platform), profile_key)
+            login_payload = {
+                "loginStateRef": chrome.login_state_ref(platform, profile_key),
+                "deviceId": self.settings.device_id,
+                "verified": True,
+            }
+            return self.api().put(f"/desktop/media-accounts/{account_id}/login-state", login_payload)
+
         def done(_: Any) -> None:
             self.media_name_input.clear()
             self.media_external_id_input.clear()
             self.media_create_dialog.accept()
             self.load_media_accounts()
 
-        self.run_async("新增媒体号", lambda: self.api().post("/desktop/media-accounts", payload), done)
+        self.run_async("新增媒体号", task, done)
 
     def selected_media_account(self) -> dict[str, Any] | None:
         row = self.media_table.currentRow()
@@ -1587,11 +1603,14 @@ class DesktopWindow(QMainWindow):
         account = self.selected_media_account()
         if not account:
             return
-        platform = account.get("platform", "WECHAT_VIDEO")
+        self.save_media_login_state(account)
+
+    def save_media_login_state(self, account: dict[str, Any]) -> None:
         account_id = account.get("id")
         chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
+        profile_key = self.media_profile_key(account, account_id)
         payload = {
-            "loginStateRef": chrome.login_state_ref(platform, account_id),
+            "loginStateRef": str(self.media_profile_dir(chrome, account, profile_key)),
             "deviceId": self.settings.device_id,
             "verified": True,
         }
@@ -1612,10 +1631,38 @@ class DesktopWindow(QMainWindow):
 
         def task() -> str:
             chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
-            chrome.open_platform_login(platform, platform_login_url(platform), account_id)
-            return f"{display_name} 浏览器已打开"
+            profile_key = self.media_profile_key(account, account_id)
+            profile_dir = self.media_profile_dir(chrome, account, profile_key)
+            chrome.open_profile(profile_dir, platform_login_url(platform))
+            payload = {
+                "loginStateRef": str(profile_dir),
+                "deviceId": self.settings.device_id,
+                "verified": True,
+            }
+            self.api().put(f"/desktop/media-accounts/{account_id}/login-state", payload)
+            return f"{display_name} 浏览器已打开，登录信息已保存"
 
         self.run_async("绑定媒体号", task)
+
+    @staticmethod
+    def media_profile_key(account: dict[str, Any], fallback: Any) -> str | None:
+        external_id = str(account.get("externalAccountId") or "").strip()
+        if external_id:
+            return external_id
+        if fallback:
+            return str(fallback)
+        return None
+
+    @staticmethod
+    def media_profile_dir(
+        chrome: ChromeController,
+        account: dict[str, Any],
+        profile_key: str | None,
+    ) -> Path:
+        saved_ref = str(account.get("loginStateRef") or "").strip()
+        if saved_ref:
+            return Path(saved_ref)
+        return chrome.platform_profile_dir(str(account.get("platform") or "WECHAT_VIDEO"), profile_key)
 
     def current_contract_key(self) -> str:
         return str(self.contract_type_input.currentData() or "cost")

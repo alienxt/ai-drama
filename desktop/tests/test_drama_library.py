@@ -5,7 +5,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QTableWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget
 
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
@@ -259,6 +259,95 @@ def test_task_done_can_hide_update_check_payload_from_log():
     assert handled == [payload]
 
 
+def test_create_media_account_opens_browser_for_created_account(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(
+        device_id="device-1",
+        chrome_path=None,
+        browser_profile_dir=tmp_path / "profiles",
+    )
+    cleared = []
+    window.media_name_input = SimpleNamespace(text=lambda: "染柒剧作", clear=lambda: cleared.append("name"))
+    window.media_external_id_input = SimpleNamespace(text=lambda: "sph-id", clear=lambda: cleared.append("external"))
+    window.media_platform_input = SimpleNamespace(currentData=lambda: "WECHAT_VIDEO")
+    accepted = []
+    loaded = []
+    window.media_create_dialog = SimpleNamespace(accept=lambda: accepted.append(True))
+    window.load_media_accounts = lambda: loaded.append(True)
+
+    posts = []
+    puts = []
+
+    class FakeApi:
+        def post(self, path, payload):
+            posts.append((path, payload))
+            return {
+                "id": "media-1",
+                "displayName": payload["displayName"],
+                "externalAccountId": payload["externalAccountId"],
+                "platform": payload["platform"],
+            }
+
+        def put(self, path, payload):
+            puts.append((path, payload))
+            return {"id": "media-1", **payload}
+
+    opened = []
+
+    class FakeChromeController:
+        def __init__(self, chrome_path, profile_root):
+            self.chrome_path = chrome_path
+            self.profile_root = profile_root
+
+        def open_platform_login(self, platform, url, account_id, remote_debugging_port=None):
+            opened.append((self.chrome_path, self.profile_root, platform, url, account_id, remote_debugging_port))
+
+        def login_state_ref(self, platform, account_id):
+            return str(self.profile_root / platform.lower() / account_id)
+
+    monkeypatch.setattr("aidrama_desktop.gui.app.find_chrome", lambda chrome_path: "/Applications/Chrome")
+    monkeypatch.setattr("aidrama_desktop.gui.app.ChromeController", FakeChromeController)
+    window.api = lambda: FakeApi()
+    window.run_async = lambda _title, task, done=None: done(task()) if done else task()
+
+    DesktopWindow.create_media_account(window)
+
+    assert posts == [
+        (
+            "/desktop/media-accounts",
+            {
+                "platform": "WECHAT_VIDEO",
+                "displayName": "染柒剧作",
+                "externalAccountId": "sph-id",
+                "deviceId": "device-1",
+            },
+        )
+    ]
+    assert opened == [
+        (
+            "/Applications/Chrome",
+            tmp_path / "profiles",
+            "WECHAT_VIDEO",
+            "https://channels.weixin.qq.com/platform",
+            "sph-id",
+            None,
+        )
+    ]
+    assert puts == [
+        (
+            "/desktop/media-accounts/media-1/login-state",
+            {
+                "loginStateRef": str(tmp_path / "profiles" / "wechat_video" / "sph-id"),
+                "deviceId": "device-1",
+                "verified": True,
+            },
+        )
+    ]
+    assert accepted == [True]
+    assert loaded == [True]
+    assert cleared == ["name", "external"]
+
+
 def test_media_row_values_include_binding_time():
     window = DesktopWindow.__new__(DesktopWindow)
     window.media_categories = [{"code": "urban", "name": "都市"}]
@@ -293,6 +382,122 @@ def test_media_row_values_include_binding_time():
 
 def test_media_page_action_labels_only_include_create_and_refresh():
     assert DesktopWindow.media_page_action_labels() == ["新增媒体号", "刷新媒体号"]
+
+
+def test_media_row_actions_include_browser_and_policy_buttons():
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.toggle_media_enabled = lambda _account: None
+    window.open_media_policy_dialog = lambda _account: None
+    window.open_media_account = lambda _account: None
+
+    widget = DesktopWindow.media_actions_widget(window, {"status": "BINDING"})
+    button_texts = [button.text() for button in widget.findChildren(QPushButton)]
+
+    assert app is not None
+    assert button_texts == ["暂停", "打开浏览器", "编辑策略"]
+
+
+def test_save_media_login_state_updates_backend_with_profile_ref(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(
+        device_id="device-1",
+        chrome_path=None,
+        browser_profile_dir=tmp_path / "profiles",
+    )
+    loaded = []
+    window.load_media_accounts = lambda: loaded.append(True)
+    puts = []
+
+    class FakeApi:
+        def put(self, path, payload):
+            puts.append((path, payload))
+            return {"id": "media-1"}
+
+    class FakeChromeController:
+        def __init__(self, chrome_path, profile_root):
+            self.chrome_path = chrome_path
+            self.profile_root = profile_root
+
+        def platform_profile_dir(self, platform, account_id):
+            return self.profile_root / platform.lower() / account_id
+
+    monkeypatch.setattr("aidrama_desktop.gui.app.find_chrome", lambda chrome_path: "/Applications/Chrome")
+    monkeypatch.setattr("aidrama_desktop.gui.app.ChromeController", FakeChromeController)
+    window.api = lambda: FakeApi()
+    window.run_async = lambda _title, task, done=None: done(task()) if done else task()
+
+    DesktopWindow.save_media_login_state(
+        window,
+        {"id": "media-1", "platform": "WECHAT_VIDEO", "displayName": "染柒剧作"},
+    )
+
+    assert puts == [
+        (
+            "/desktop/media-accounts/media-1/login-state",
+            {
+                "loginStateRef": str(tmp_path / "profiles" / "wechat_video" / "media-1"),
+                "deviceId": "device-1",
+                "verified": True,
+            },
+        )
+    ]
+    assert loaded == [True]
+
+
+def test_open_media_account_opens_browser_and_saves_profile_ref(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(
+        device_id="device-1",
+        chrome_path=None,
+        browser_profile_dir=tmp_path / "profiles",
+    )
+    opened = []
+    puts = []
+    saved_profile = tmp_path / "profiles" / "saved-wechat-profile"
+
+    class FakeApi:
+        def put(self, path, payload):
+            puts.append((path, payload))
+            return {"id": "media-1"}
+
+    class FakeChromeController:
+        def __init__(self, chrome_path, profile_root):
+            self.chrome_path = chrome_path
+            self.profile_root = profile_root
+
+        def open_profile(self, profile_dir, url, remote_debugging_port=None):
+            opened.append((profile_dir, url, remote_debugging_port))
+
+        def platform_profile_dir(self, platform, account_id):
+            return self.profile_root / platform.lower() / account_id
+
+    monkeypatch.setattr("aidrama_desktop.gui.app.find_chrome", lambda chrome_path: "/Applications/Chrome")
+    monkeypatch.setattr("aidrama_desktop.gui.app.ChromeController", FakeChromeController)
+    results = []
+    window.api = lambda: FakeApi()
+    window.run_async = lambda _title, task, done=None, **_kwargs: results.append(task())
+    account = {
+        "id": "media-1",
+        "platform": "WECHAT_VIDEO",
+        "displayName": "染柒剧作",
+        "loginStateRef": str(saved_profile),
+    }
+
+    DesktopWindow.open_media_account(window, account)
+
+    assert opened == [(saved_profile, "https://channels.weixin.qq.com/platform", None)]
+    assert puts == [
+        (
+            "/desktop/media-accounts/media-1/login-state",
+            {
+                "loginStateRef": str(saved_profile),
+                "deviceId": "device-1",
+                "verified": True,
+            },
+        )
+    ]
+    assert results == ["染柒剧作 浏览器已打开，登录信息已保存"]
 
 
 def test_media_table_keeps_name_column_readable():

@@ -40,16 +40,34 @@ class ChromeController:
         profile_dir.mkdir(parents=True, exist_ok=True)
         return profile_dir
 
-    def open_platform_login(self, platform: str, url: str, account_id: str | None = None) -> subprocess.Popen[bytes]:
+    def open_platform_login(
+        self,
+        platform: str,
+        url: str,
+        account_id: str | None = None,
+        remote_debugging_port: int | None = None,
+    ) -> subprocess.Popen[bytes]:
         profile_dir = self.platform_profile_dir(platform, account_id)
+        return self.open_profile(profile_dir, url, remote_debugging_port)
+
+    def open_profile(
+        self,
+        profile_dir: Path,
+        url: str,
+        remote_debugging_port: int | None = None,
+    ) -> subprocess.Popen[bytes]:
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        args = [
+            self.chrome_path,
+            f"--user-data-dir={profile_dir}",
+            "--no-first-run",
+            "--disable-default-apps",
+        ]
+        if remote_debugging_port is not None:
+            args.append(f"--remote-debugging-port={remote_debugging_port}")
+        args.append(url)
         return subprocess.Popen(
-            [
-                self.chrome_path,
-                f"--user-data-dir={profile_dir}",
-                "--no-first-run",
-                "--disable-default-apps",
-                url,
-            ]
+            args
         )
 
     def login_state_ref(self, platform: str, account_id: str | None = None) -> str:
