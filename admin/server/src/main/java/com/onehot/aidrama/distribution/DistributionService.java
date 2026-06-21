@@ -8,9 +8,12 @@ import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -35,7 +38,7 @@ public class DistributionService {
     }
 
     public List<DistributionTask> generateTasks() {
-        var dramas = dramaRepository.findByStatus(DramaStatus.READY);
+        var dramas = recentReadyDramas();
         var mediaAccounts = mediaAccountRepository.findAll();
         return generateTasksForMediaAccounts(mediaAccounts, dramas);
     }
@@ -74,7 +77,7 @@ public class DistributionService {
     }
 
     public List<DistributionTask> generateTasksForOwner(String ownerAccountId) {
-        var dramas = dramaRepository.findByStatus(DramaStatus.READY);
+        var dramas = recentReadyDramas();
         var mediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
         return generateTasksForMediaAccounts(mediaAccounts, dramas);
     }
@@ -103,6 +106,9 @@ public class DistributionService {
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
         if (drama.getStatus() != DramaStatus.READY) {
             throw new BusinessException("DRAMA_NOT_READY", "短剧不可分发", HttpStatus.BAD_REQUEST);
+        }
+        if (!isRecentUpdatedDrama(drama)) {
+            throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在最近更新剧池内", HttpStatus.BAD_REQUEST);
         }
         List<String> ownedMediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .map(MediaAccount::getId)
@@ -140,6 +146,22 @@ public class DistributionService {
                         .stream()
                         .map(media -> createTask(media.getId(), drama.getId(), 0)))
                 .toList();
+    }
+
+    private List<com.onehot.aidrama.dramas.Drama> recentReadyDramas() {
+        return dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                DramaStatus.READY,
+                recentUpdatedFrom(),
+                Sort.by(Sort.Direction.DESC, "updatedAt")
+        );
+    }
+
+    private boolean isRecentUpdatedDrama(com.onehot.aidrama.dramas.Drama drama) {
+        return drama.getUpdatedAt() != null && !drama.getUpdatedAt().isBefore(recentUpdatedFrom());
+    }
+
+    private Instant recentUpdatedFrom() {
+        return Instant.now().minus(7, ChronoUnit.DAYS);
     }
 
     private boolean hasSavedLoginState(MediaAccount media) {

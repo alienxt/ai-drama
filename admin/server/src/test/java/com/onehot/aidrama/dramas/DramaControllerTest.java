@@ -19,6 +19,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import com.mongodb.client.result.UpdateResult;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -177,7 +179,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void desktopListOnlyReturnsReadyDramasFromLastSevenDays() {
+    void desktopListOnlyReturnsReadyDramasUpdatedInLastSevenDays() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
         when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
@@ -188,8 +190,44 @@ class DramaControllerTest {
         verify(mongoTemplate).count(query.capture(), eq(Drama.class));
         String queryJson = query.getValue().getQueryObject().toString();
         assertThat(queryJson).contains("status=READY");
-        assertThat(queryJson).contains("createdAt");
+        assertThat(queryJson).contains("updatedAt");
         assertThat(queryJson).contains("$gte");
+    }
+
+    @Test
+    void desktopListSortsByUpdatedAtDescending() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
+
+        controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).find(query.capture(), eq(Document.class), eq("dramas"));
+        assertThat(query.getValue().getSortObject().toString()).contains("updatedAt=-1");
+    }
+
+    @Test
+    void batchFreshUpdatesSelectedDramaUpdatedAt() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.updateMulti(
+                org.mockito.ArgumentMatchers.any(Query.class),
+                org.mockito.ArgumentMatchers.any(Update.class),
+                eq(Drama.class)
+        )).thenReturn(UpdateResult.acknowledged(2, 2L, null));
+
+        DramaDtos.BatchFreshResponse response = controller.batchFresh(
+                new DramaDtos.BatchIdsRequest(List.of("drama-1", "drama-2"))
+        ).data();
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        ArgumentCaptor<Update> update = ArgumentCaptor.forClass(Update.class);
+        verify(mongoTemplate).updateMulti(query.capture(), update.capture(), eq(Drama.class));
+        assertThat(query.getValue().getQueryObject().toString()).contains("drama-1", "drama-2");
+        assertThat(update.getValue().getUpdateObject().toString()).contains("updatedAt");
+        assertThat(response.requested()).isEqualTo(2);
+        assertThat(response.updated()).isEqualTo(2);
     }
 
     @Test

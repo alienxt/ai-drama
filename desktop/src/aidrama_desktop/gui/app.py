@@ -379,7 +379,7 @@ class DesktopWindow(QMainWindow):
         header_text = QVBoxLayout()
         self.header_title = QLabel("短剧库")
         self.header_title.setObjectName("pageTitle")
-        self.header_subtitle = QLabel("可分发短剧列表，默认展示近 7 天上架内容")
+        self.header_subtitle = QLabel("可分发短剧列表，默认展示近 7 天更新内容")
         self.header_subtitle.setObjectName("mutedText")
         header_text.addWidget(self.header_title)
         header_text.addWidget(self.header_subtitle)
@@ -1075,7 +1075,7 @@ class DesktopWindow(QMainWindow):
 
     @staticmethod
     def build_drama_list_path(page: int, size: int, keyword: str = "") -> str:
-        params = [("page", str(page)), ("size", str(size)), ("sort", "createdAt,desc")]
+        params = [("page", str(page)), ("size", str(size)), ("sort", "updatedAt,desc")]
         if keyword.strip():
             params.append(("keyword", keyword.strip()))
         return f"/desktop/dramas?{urlencode(params, safe=',')}"

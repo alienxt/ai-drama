@@ -71,6 +71,12 @@ export type DramaAssetSyncAccepted = {
   acceptedAt?: string;
 };
 
+export type DramaBatchFreshResponse = {
+  requested: number;
+  updated: number;
+  updatedAt?: string;
+};
+
 export type DramaClientAssetSyncPlanItem = {
   dramaId: string;
   title?: string;

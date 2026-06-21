@@ -1,4 +1,4 @@
-import { CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SyncOutlined } from '@ant-design/icons';
 import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -29,6 +29,7 @@ export function DramasPage() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [syncingAssets, setSyncingAssets] = useState(false);
+  const [freshing, setFreshing] = useState(false);
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
   const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
@@ -119,6 +120,23 @@ export function DramasPage() {
       setSyncModeOpen(false);
     } finally {
       setSyncingAssets(false);
+    }
+  }
+
+  async function batchFreshSelected() {
+    if (!selectedRowKeys.length) {
+      return;
+    }
+    setFreshing(true);
+    try {
+      const result = await apiPost<DramaBatchFreshResponse>('/admin/dramas/batch-fresh', {
+        ids: selectedRowKeys.map(String),
+      });
+      appMessage.success(`已上新 ${result.updated}/${result.requested} 部短剧`);
+      setSelectedRowKeys([]);
+      setVersion((value) => value + 1);
+    } finally {
+      setFreshing(false);
     }
   }
 
@@ -238,6 +256,14 @@ export function DramasPage() {
             onClick={openSyncAssetsMode}
           >
             同步封面和简介{selectedRowKeys.length ? `（${selectedRowKeys.length}）` : ''}
+          </Button>
+          <Button
+            icon={<RocketOutlined />}
+            disabled={!selectedRowKeys.length}
+            loading={freshing}
+            onClick={batchFreshSelected}
+          >
+            批量上新{selectedRowKeys.length ? `（${selectedRowKeys.length}）` : ''}
           </Button>
           <span className="scan-meta">上次扫描：{formatDateTime(scanStatus?.lastScanAt)}</span>
         </>

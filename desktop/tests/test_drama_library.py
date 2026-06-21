@@ -13,13 +13,13 @@ from aidrama_desktop.gui.app import DesktopWindow
 def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
     path = DesktopWindow.build_drama_list_path(page=2, size=10)
 
-    assert path == "/desktop/dramas?page=2&size=10&sort=createdAt,desc"
+    assert path == "/desktop/dramas?page=2&size=10&sort=updatedAt,desc"
 
 
 def test_desktop_drama_list_path_supports_title_keyword_search():
     path = DesktopWindow.build_drama_list_path(page=0, size=10, keyword="神医 太子")
 
-    assert path == "/desktop/dramas?page=0&size=10&sort=createdAt,desc&keyword=%E7%A5%9E%E5%8C%BB+%E5%A4%AA%E5%AD%90"
+    assert path == "/desktop/dramas?page=0&size=10&sort=updatedAt,desc&keyword=%E7%A5%9E%E5%8C%BB+%E5%A4%AA%E5%AD%90"
 
 
 def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at():

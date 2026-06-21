@@ -12,10 +12,14 @@ import com.onehot.aidrama.common.PageResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -35,6 +39,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
+        markUpdatedNow(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
@@ -49,7 +54,11 @@ class DistributionServiceTest {
         policy.setCategoryIds(List.of("urban"));
         owned.setDistributionPolicy(policy);
 
-        when(dramaRepository.findByStatus(DramaStatus.READY)).thenReturn(List.of(drama));
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(owned));
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -70,6 +79,12 @@ class DistributionServiceTest {
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-owned");
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        verify(dramaRepository).findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        );
+        verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
     }
 
     @Test
@@ -83,6 +98,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
+        markUpdatedNow(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
@@ -91,7 +107,11 @@ class DistributionServiceTest {
         MediaAccount first = activeMedia("media-1", "owner-1", "urban");
         MediaAccount second = activeMedia("media-2", "owner-1", "urban");
 
-        when(dramaRepository.findByStatus(DramaStatus.READY)).thenReturn(List.of(drama));
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(first, second));
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -119,7 +139,11 @@ class DistributionServiceTest {
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
 
-        when(dramaRepository.findByStatus(DramaStatus.READY)).thenReturn(List.of(drama));
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-2", "owner-1", "urban")));
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(true);
 
@@ -138,6 +162,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
+        markUpdatedNow(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
@@ -171,6 +196,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
+        markUpdatedNow(drama);
         DistributionTask existing = new DistributionTask();
         existing.setId("task-1");
         existing.setDramaId("drama-1");
@@ -195,6 +221,25 @@ class DistributionServiceTest {
     }
 
     @Test
+    void priorityRejectsDramaOutsideRecentUpdatedPool() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = new Drama();
+        drama.setId("drama-old");
+        drama.setStatus(DramaStatus.READY);
+        ReflectionTestUtils.setField(drama, "updatedAt", Instant.now().minusSeconds(8 * 24 * 60 * 60));
+        when(dramaRepository.findById("drama-old")).thenReturn(Optional.of(drama));
+
+        assertThatThrownBy(() -> service.prioritizeDramaForOwner("owner-1", "drama-old"))
+                .hasMessage("短剧不在最近更新剧池内");
+        verify(mediaAccountRepository, never()).findByOwnerAccountId("owner-1");
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
     void cancelledDramaCanBeGeneratedAgain() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
@@ -210,12 +255,38 @@ class DistributionServiceTest {
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
 
-        when(dramaRepository.findByStatus(DramaStatus.READY)).thenReturn(List.of(drama));
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         assertThat(service.generateTasksForOwner("owner-1")).hasSize(1);
+    }
+
+    @Test
+    void generatesFromSameRecentUpdatedReadyPoolAsDesktopDramaList() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of());
+
+        service.generateTasksForOwner("owner-1");
+
+        verify(dramaRepository).findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                org.mockito.ArgumentMatchers.argThat(sort -> sort.toString().contains("updatedAt: DESC"))
+        );
+        verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
     }
 
     @Test
@@ -265,5 +336,9 @@ class DistributionServiceTest {
         policy.setCategoryIds(List.of(categoryId));
         media.setDistributionPolicy(policy);
         return media;
+    }
+
+    private static void markUpdatedNow(Drama drama) {
+        ReflectionTestUtils.setField(drama, "updatedAt", Instant.now());
     }
 }

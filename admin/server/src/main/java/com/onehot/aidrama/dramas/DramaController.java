@@ -21,9 +21,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -141,9 +145,12 @@ public class DramaController {
         MongoPageQuery query = new MongoPageQuery()
                 .containsAny(keyword, "title", "aiTitle")
                 .eq("status", DramaStatus.READY)
-                .range("createdAt", listedFrom, null);
+                .range("updatedAt", listedFrom, null);
         long total = mongoTemplate.count(query.toQuery(), Drama.class);
-        Query pageQuery = query.toQuery().with(pageable);
+        Pageable effectivePageable = pageable.isPaged()
+                ? PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), Sort.by(Sort.Direction.DESC, "updatedAt"))
+                : pageable;
+        Query pageQuery = query.toQuery().with(effectivePageable);
         pageQuery.fields()
                 .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
@@ -296,6 +303,30 @@ public class DramaController {
         Drama drama = get(id);
         repository.delete(drama);
         return ApiResponse.ok(null, MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping("/api/admin/dramas/batch-fresh")
+    ApiResponse<DramaDtos.BatchFreshResponse> batchFresh(@RequestBody DramaDtos.BatchIdsRequest request) {
+        List<String> ids = Optional.ofNullable(request)
+                .map(DramaDtos.BatchIdsRequest::ids)
+                .orElse(List.of())
+                .stream()
+                .filter(this::hasText)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return ApiResponse.ok(new DramaDtos.BatchFreshResponse(0, 0, null), MDC.get(TraceIdFilter.TRACE_ID));
+        }
+        Instant updatedAt = Instant.now();
+        long updated = mongoTemplate.updateMulti(
+                Query.query(Criteria.where("_id").in(ids)),
+                new Update().set("updatedAt", updatedAt),
+                Drama.class
+        ).getModifiedCount();
+        return ApiResponse.ok(
+                new DramaDtos.BatchFreshResponse(ids.size(), updated, updatedAt),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
     }
 
     private Drama apply(Drama drama, DramaDtos.DramaRequest request) {

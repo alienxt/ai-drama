@@ -16,6 +16,12 @@ public class DramaDtos {
     ) {
     }
 
+    public record BatchIdsRequest(List<String> ids) {
+    }
+
+    public record BatchFreshResponse(int requested, long updated, Instant updatedAt) {
+    }
+
     public record DownloadPlan(
             String dramaId,
             String title,
