@@ -1,11 +1,12 @@
-import { ExportOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
-import { Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Tag, Tooltip } from 'antd';
+import { DeleteOutlined, ExportOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip } from 'antd';
 import { useMemo, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
-import { apiGet, apiGetPage, apiPatch, apiPost, apiPut } from '../../shared/http';
+import { formatDateTime } from '../../shared/format';
+import { apiDelete, apiGet, apiGetPage, apiPatch, apiPost, apiPut } from '../../shared/http';
 import {
   mediaAccountStatusColors,
   mediaAccountStatusLabel,
@@ -53,6 +54,12 @@ export function MediaAccountsPage() {
   async function setDistributionStatus(account: MediaAccount, status: 'ACTIVE' | 'PAUSED') {
     await apiPatch(`/admin/media-accounts/${account.id}/status`, { status });
     appMessage.success(status === 'PAUSED' ? '已暂停该媒体号分发' : '已恢复该媒体号分发');
+    setVersion((value) => value + 1);
+  }
+
+  async function remove(account: MediaAccount) {
+    await apiDelete(`/admin/media-accounts/${account.id}`);
+    appMessage.success('媒体号已删除');
     setVersion((value) => value + 1);
   }
 
@@ -120,6 +127,7 @@ export function MediaAccountsPage() {
             ),
           },
           { title: '设备', dataIndex: 'deviceId' },
+          { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
           { title: '登录态', dataIndex: 'loginStateRef', render: (value?: string) => value ? <Tag color="green">已保存</Tag> : <Tag>未保存</Tag> },
           { title: '每日上限', dataIndex: ['distributionPolicy', 'dailyLimit'] },
           { title: '间隔分钟', dataIndex: ['distributionPolicy', 'intervalMinutes'] },
@@ -161,6 +169,11 @@ export function MediaAccountsPage() {
                 <Tooltip title="打开浏览器">
                   <Button className="table-action" size="small" type="text" icon={<ExportOutlined />} onClick={() => openBrowser(record)} />
                 </Tooltip>
+                <Popconfirm title="删除这个媒体号？" onConfirm={() => remove(record)}>
+                  <Tooltip title="删除">
+                    <Button className="table-action" size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Tooltip>
+                </Popconfirm>
               </Space>
             ),
           },

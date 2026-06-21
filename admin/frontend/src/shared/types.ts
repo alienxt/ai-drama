@@ -113,6 +113,7 @@ export type MediaAccount = {
   loginStateRef?: string;
   deviceId?: string;
   lastVerifiedAt?: string;
+  createdAt?: string;
   distributionPolicy: {
     categoryIds: string[];
     dailyLimit: number;

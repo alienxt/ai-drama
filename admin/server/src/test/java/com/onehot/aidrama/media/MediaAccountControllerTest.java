@@ -9,6 +9,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class MediaAccountControllerTest {
@@ -40,5 +41,15 @@ class MediaAccountControllerTest {
         assertThatThrownBy(() -> controller.adminUpdateStatus("media-1", new MediaDtos.StatusRequest(MediaAccountStatus.ACTIVE)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("启用前请先保存登录信息");
+    }
+
+    @Test
+    void adminCanDeleteMediaAccount() {
+        MediaAccountRepository repository = mock(MediaAccountRepository.class);
+        MediaAccountController controller = new MediaAccountController(repository, mock(MongoTemplate.class));
+
+        controller.adminDelete("media-1");
+
+        verify(repository).deleteById("media-1");
     }
 }

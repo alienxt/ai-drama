@@ -95,6 +95,12 @@ public class MediaAccountController {
         return ApiResponse.ok(repository.save(account), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @DeleteMapping("/api/admin/media-accounts/{id}")
+    ApiResponse<Void> adminDelete(@PathVariable String id) {
+        repository.deleteById(id);
+        return ApiResponse.ok(null, MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
     @PutMapping("/api/desktop/media-accounts/{id}/policy")
     ApiResponse<MediaAccount> updatePolicy(@AuthenticationPrincipal JwtPrincipal principal, @PathVariable String id, @RequestBody DistributionPolicy policy) {
         MediaAccount account = findOwned(principal, id);
