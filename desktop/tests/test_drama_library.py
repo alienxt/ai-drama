@@ -5,15 +5,32 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QHeaderView, QTableWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QTableWidget
 
-from aidrama_desktop.gui.app import DesktopWindow
+from aidrama_desktop.config.settings import API_BASE_URL, Settings
+from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 
 
 def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
     path = DesktopWindow.build_drama_list_path(page=2, size=10)
 
     assert path == "/desktop/dramas?page=2&size=10&sort=updatedAt,desc"
+
+
+def test_login_page_hides_fixed_service_address(tmp_path):
+    QApplication.instance() or QApplication([])
+    settings = Settings(
+        work_dir=tmp_path / "work",
+        browser_profile_dir=tmp_path / "profiles",
+        token_file=tmp_path / "token",
+    )
+
+    page = LoginPage(settings)
+    label_texts = {label.text() for label in page.findChildren(QLabel)}
+    input_texts = {editor.text() for editor in page.findChildren(QLineEdit)}
+
+    assert "服务地址" not in label_texts
+    assert API_BASE_URL not in input_texts
 
 
 def test_desktop_drama_list_path_supports_title_keyword_search():

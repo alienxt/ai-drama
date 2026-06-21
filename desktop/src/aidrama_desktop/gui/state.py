@@ -8,14 +8,12 @@ from aidrama_desktop.config.settings import Settings
 
 @dataclass(frozen=True)
 class AppStatus:
-    server_url: str
     device_id: str
     login_state: str
 
     @classmethod
     def from_settings(cls, settings: Settings, logged_in: bool) -> "AppStatus":
         return cls(
-            server_url=settings.server_url,
             device_id=settings.device_id,
             login_state="已登录" if logged_in else "未登录",
         )
@@ -41,7 +39,7 @@ def desktop_nav_items() -> list[NavItem]:
         NavItem("media", "媒体号", "视频号账号、登录态与浏览器打开"),
         NavItem("contracts", "合同配置", "成本合同、买剧合同 Word 模板与本地生成"),
         NavItem("tasks", "任务执行", "心跳、领取任务与发布下一条"),
-        NavItem("settings", "设置", "服务地址、设备 ID 和工具路径"),
+        NavItem("settings", "设置", "设备 ID 和工具路径"),
         NavItem("logs", "运行日志", "桌面端操作与错误记录"),
     ]
 
@@ -49,7 +47,6 @@ def desktop_nav_items() -> list[NavItem]:
 def settings_rows(settings: Settings) -> list[SettingsRow]:
     return [
         SettingsRow("当前版本", __version__),
-        SettingsRow("服务地址", settings.server_url),
         SettingsRow("设备 ID", settings.device_id),
         SettingsRow("工作根目录", str(settings.work_dir), "directory"),
         SettingsRow("配置目录", str(settings.config_dir), "directory"),
@@ -67,4 +64,5 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
 
 
 def update_settings(settings: Settings, **values: object) -> Settings:
+    values.pop("server_url", None)
     return settings.model_copy(update=values)

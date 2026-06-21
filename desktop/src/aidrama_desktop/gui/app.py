@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from aidrama_desktop.api.client import ApiClient, normalize_base_url
+from aidrama_desktop.api.client import ApiClient
 from aidrama_desktop import __version__
 from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
@@ -129,14 +129,12 @@ class AgentController(QObject):
 
 
 class LoginPage(QWidget):
-    logged_in = Signal(str)
+    logged_in = Signal()
 
     def __init__(self, settings: Settings):
         super().__init__()
         self.setObjectName("loginRoot")
         self.settings = settings
-        self.server_input = QLineEdit(settings.server_url)
-        self.server_input.setObjectName("loginInput")
         self.username_input = QLineEdit("test")
         self.username_input.setObjectName("loginInput")
         self.username_input.setPlaceholderText("桌面端用户名")
@@ -200,7 +198,6 @@ class LoginPage(QWidget):
 
         form_layout.addWidget(title)
         form_layout.addSpacing(18)
-        form_layout.addWidget(self._field_row("服务地址", self.server_input))
         form_layout.addWidget(self._field_row("用户名", self.username_input))
         form_layout.addWidget(self._field_row("密码", self.password_input))
         form_layout.addWidget(self.remember_checkbox)
@@ -241,16 +238,14 @@ class LoginPage(QWidget):
         return f"设备号 {device_id[:8]}...{device_id[-6:]}"
 
     def _login(self) -> None:
-        server_url = normalize_base_url(self.server_input.text())
         username = self.username_input.text().strip()
         password = self.password_input.text()
-        if not server_url or not username or not password:
-            QMessageBox.warning(self, "登录失败", "请填写服务地址、用户名和密码。")
+        if not username or not password:
+            QMessageBox.warning(self, "登录失败", "请填写用户名和密码。")
             return
-        self.server_input.setText(server_url)
-        settings = update_settings(self.settings, server_url=server_url)
+        settings = update_settings(self.settings)
         try:
-            ApiClient(server_url, TokenStore(settings.token_file)).login(username, password, settings.device_id)
+            ApiClient(settings.server_url, TokenStore(settings.token_file)).login(username, password, settings.device_id)
         except Exception as exception:  # noqa: BLE001
             QMessageBox.critical(self, "登录失败", str(exception))
             return
@@ -258,7 +253,7 @@ class LoginPage(QWidget):
             self.remember_store.set(username, password)
         else:
             self.remember_store.clear()
-        self.logged_in.emit(server_url)
+        self.logged_in.emit()
 
 
 class DesktopWindow(QMainWindow):
@@ -796,8 +791,8 @@ class DesktopWindow(QMainWindow):
             self.load_dramas(page=self.drama_page)
         self.refresh_status()
 
-    def on_logged_in(self, server_url: str) -> None:
-        self.settings = update_settings(self.settings, server_url=server_url)
+    def on_logged_in(self) -> None:
+        self.settings = update_settings(self.settings)
         self.agent.settings = self.settings
         self.append_log("登录成功。")
         self.stack.setCurrentWidget(self.main_page)
@@ -1815,7 +1810,6 @@ class DesktopWindow(QMainWindow):
         status = AppStatus.from_settings(self.settings, logged_in=bool(self.token_store.get()))
         if hasattr(self, "login_value"):
             self.login_value.setText(status.login_state)
-            self.server_value.setText(status.server_url)
             self.device_value.setText(status.device_id)
         self.statusBar().showMessage(self.status_bar_text(status), 5000)
 

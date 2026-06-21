@@ -66,8 +66,13 @@ class ApiClient:
         auth: bool = True,
     ) -> Any:
         headers = self._headers() if auth else {}
-        with httpx.Client(base_url=self.base_url, timeout=30) as client:
-            response = client.request(method, path, json=payload, headers=headers)
+        try:
+            with httpx.Client(base_url=self.base_url, timeout=30) as client:
+                response = client.request(method, path, json=payload, headers=headers)
+        except httpx.TimeoutException as exception:
+            raise ApiError("服务请求超时，请稍后重试。") from exception
+        except httpx.RequestError as exception:
+            raise ApiError("无法连接服务，请稍后重试。") from exception
         body = self._parse_body(response)
         if getattr(response, "status_code", 200) >= 400:
             raise ApiError(self._error_message(response, body))

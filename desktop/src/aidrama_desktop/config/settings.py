@@ -8,6 +8,8 @@ from platformdirs import user_config_dir, user_data_dir
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+API_BASE_URL = "https://ad.ai-drama.uk/api"
+
 
 def default_device_id() -> str:
     mac = uuid.getnode()
@@ -16,7 +18,7 @@ def default_device_id() -> str:
 
 
 class Settings(BaseSettings):
-    server_url: str = Field(default="http://localhost:8080/api")
+    server_url: str = Field(default=API_BASE_URL)
     device_id: str = Field(default_factory=default_device_id)
     chrome_path: str | None = None
     ffmpeg_path: str = "ffmpeg"
