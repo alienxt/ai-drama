@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 from pathlib import Path
 
 
@@ -14,6 +15,11 @@ class PlatformPublisher(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def publish(self, media_files: list[Path], title: str, summary: str | None = None) -> str:
+    def publish(
+        self,
+        media_files: list[Path],
+        title: str,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         raise NotImplementedError
-

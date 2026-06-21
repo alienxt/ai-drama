@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import random
 import urllib.request
 import json
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from aidrama_desktop import __version__
 from aidrama_desktop.api.client import ApiClient
@@ -24,6 +27,7 @@ class TaskRunner:
     publisher_factory: Callable[[str], PlatformPublisher] | None = None
     progress_callback: Callable[[str, str | None], None] | None = None
     cancel_checker: Callable[[], bool] | None = None
+    download_concurrency: int = 6
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -50,23 +54,13 @@ class TaskRunner:
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
             drama_title = self._drama_title(download_plan, task)
             source_files = self._download(download_plan, task_id, drama_title)
-            self._progress(task_id, "PROCESSING", 45)
-            processed = []
-            total_files = len(source_files)
-            for index, source in enumerate(source_files, start=1):
-                self._notify(f"处理：{drama_title} 第 {index}/{total_files} 集", task_id)
-                processed.append(
-                    self.processor.transcode_for_wechat_video(
-                        source,
-                        self.output_dir() / download_plan["dramaId"] / source.with_suffix(".mp4").name,
-                    )
-                )
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
             publish_id = self._publisher_for(task).publish(
-                processed,
+                source_files,
                 title=drama_title,
                 summary=download_plan.get("summary"),
+                metadata=self._publish_metadata(download_plan, source_files),
             )
             self.api.put(
                 f"/desktop/tasks/{task_id}/result",
@@ -116,7 +110,35 @@ class TaskRunner:
                 task_id,
             ),
             should_stop=self.cancel_checker,
+            max_concurrent_downloads=self.download_concurrency,
         )
+
+    def _publish_metadata(self, download_plan: dict, processed_files: list[Path]) -> dict[str, Any]:
+        episodes = download_plan.get("episodes") or []
+        cover_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian.jpg"
+        return {
+            "dramaId": download_plan.get("dramaId"),
+            "title": download_plan.get("title"),
+            "aiTitle": download_plan.get("aiTitle"),
+            "publishTitle": download_plan.get("aiTitle") or download_plan.get("title"),
+            "summary": download_plan.get("summary"),
+            "coverFile": cover_file if cover_file.exists() else None,
+            "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
+            "rating": download_plan.get("rating"),
+            "categoryIds": download_plan.get("categoryIds") or [],
+            "monetizationType": "IAA_AD",
+            "monetizationLabel": "IAA广告变现",
+            "freeEpisodeCount": random.randint(3, 10),
+            "episodes": [
+                {
+                    "episodeNo": episode.get("episodeNo"),
+                    "title": episode.get("title"),
+                    "file": processed_files[index],
+                }
+                for index, episode in enumerate(episodes)
+                if index < len(processed_files)
+            ],
+        }
 
     def input_dir(self) -> Path:
         return self.downloads_dir or self.work_dir / "dramas" / "downloads"
@@ -147,32 +169,68 @@ def download_episodes(
     headers: dict[str, str] | None = None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    max_concurrent_downloads: int = 6,
 ) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
     cover_file = download_cover(download_plan, target_dir, base_url, headers=headers, should_stop=should_stop)
     write_drama_metadata(download_plan, target_dir, cover_file)
-    files: list[Path] = []
     episodes = download_plan["episodes"]
     total = len(episodes)
-    for index, episode in enumerate(episodes, start=1):
-        target = target_dir / f"{episode['episodeNo']:03d}.mp4"
-        url = resolve_download_url(str(episode["downloadUrl"]), base_url)
-        request = urllib.request.Request(url, headers=headers or {})
-        with urllib.request.urlopen(request) as response, target.open("wb") as output:
-            total_bytes = _content_length(response)
-            downloaded = 0
-            while True:
-                if should_stop and should_stop():
-                    raise TaskCancelled("用户停止下载")
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                downloaded += len(chunk)
-                if progress_callback:
-                    progress_callback(index, total, episode, downloaded, total_bytes)
-        files.append(target)
-    return files
+    if not episodes:
+        return []
+
+    worker_count = max(1, min(max_concurrent_downloads, total))
+    files: list[Path | None] = [None] * total
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                download_episode,
+                episode,
+                index,
+                total,
+                target_dir,
+                base_url,
+                headers,
+                progress_callback,
+                should_stop,
+            ): index
+            for index, episode in enumerate(episodes, start=1)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            files[index - 1] = future.result()
+    return [file for file in files if file is not None]
+
+
+def download_episode(
+    episode: dict,
+    index: int,
+    total: int,
+    target_dir: Path,
+    base_url: str,
+    headers: dict[str, str] | None,
+    progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
+    should_stop: Callable[[], bool] | None,
+) -> Path:
+    if should_stop and should_stop():
+        raise TaskCancelled("用户停止下载")
+    target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+    url = resolve_download_url(str(episode["downloadUrl"]), base_url)
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request) as response, target.open("wb") as output:
+        total_bytes = _content_length(response)
+        downloaded = 0
+        while True:
+            if should_stop and should_stop():
+                raise TaskCancelled("用户停止下载")
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+            downloaded += len(chunk)
+            if progress_callback:
+                progress_callback(index, total, episode, downloaded, total_bytes)
+    return target
 
 
 def download_cover(

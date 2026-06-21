@@ -18,6 +18,14 @@ def test_settings_device_id_can_be_overridden_by_env(monkeypatch):
     assert settings.device_id == "manual-device"
 
 
+def test_settings_download_concurrency_can_be_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("AIDRAMA_DOWNLOAD_CONCURRENCY", "8")
+
+    settings = Settings()
+
+    assert settings.download_concurrency == 8
+
+
 def test_load_settings_creates_planned_directories(monkeypatch, tmp_path):
     monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
     monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(tmp_path / "config" / "token"))

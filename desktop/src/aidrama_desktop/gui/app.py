@@ -877,6 +877,7 @@ class DesktopWindow(QMainWindow):
             processed_dir=self.settings.processed_dir,
             progress_callback=self.update_task_progress,
             cancel_checker=self.task_cancel_event.is_set,
+            download_concurrency=self.settings.download_concurrency,
         )
 
     def run_async(

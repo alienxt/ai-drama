@@ -133,7 +133,12 @@ def download_drama(drama_id: str) -> None:
     settings = load_settings()
     api = build_api()
     plan = api.get(f"/desktop/dramas/{drama_id}/download-plan")
-    files = download_episodes(plan, settings.downloads_dir / drama_id, api.base_url)
+    files = download_episodes(
+        plan,
+        settings.downloads_dir / drama_id,
+        api.base_url,
+        max_concurrent_downloads=settings.download_concurrency,
+    )
     for file in files:
         typer.echo(str(file))
 
@@ -162,6 +167,7 @@ def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
         device_id=settings.device_id,
         downloads_dir=settings.downloads_dir,
         processed_dir=settings.processed_dir,
+        download_concurrency=settings.download_concurrency,
     )
 
 

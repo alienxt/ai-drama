@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
+    download_concurrency: int = 6
     work_dir: Path = Field(default_factory=lambda: Path(user_data_dir("ai-drama-desktop")) / "work")
     browser_profile_dir: Path = Field(
         default_factory=lambda: Path(user_data_dir("ai-drama-desktop")) / "chrome-profiles"
