@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="AI Drama Desktop">
+  <defs>
+    <linearGradient id="bg" x1="170" y1="120" x2="860" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#60A5FA"/>
+      <stop offset="0.48" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="250" y1="250" x2="760" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DBEAFE"/>
+    </linearGradient>
+    <filter id="shadow" x="120" y="130" width="790" height="790" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="34" stdDeviation="34" flood-color="#0F172A" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+  <circle cx="810" cy="180" r="122" fill="#BFDBFE" opacity="0.34"/>
+  <circle cx="190" cy="820" r="160" fill="#93C5FD" opacity="0.22"/>
+  <g filter="url(#shadow)">
+    <rect x="210" y="238" width="604" height="548" rx="120" fill="url(#tile)"/>
+    <rect x="278" y="320" width="468" height="86" rx="43" fill="#2563EB" opacity="0.12"/>
+    <rect x="300" y="345" width="64" height="36" rx="18" fill="#2563EB"/>
+    <rect x="398" y="345" width="64" height="36" rx="18" fill="#2563EB"/>
+    <rect x="496" y="345" width="64" height="36" rx="18" fill="#2563EB"/>
+    <rect x="594" y="345" width="64" height="36" rx="18" fill="#2563EB"/>
+    <path d="M432 472c0-30 33-48 58-32l146 92c25 16 25 52 0 68l-146 92c-25 16-58-2-58-32V472Z" fill="#1D4ED8"/>
+    <path d="M350 690h324" stroke="#93C5FD" stroke-width="44" stroke-linecap="round"/>
+  </g>
+  <path d="M326 238c64-74 164-114 286-96" stroke="#DBEAFE" stroke-width="26" stroke-linecap="round" opacity="0.8"/>
+</svg>

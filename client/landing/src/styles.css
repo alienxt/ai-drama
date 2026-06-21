@@ -93,9 +93,15 @@ input {
   border-radius: 8px;
   display: grid;
   place-items: center;
-  color: #fff;
-  font-weight: 800;
-  background: linear-gradient(135deg, #1e6de8, #19a9ff);
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.16);
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .eyebrow {

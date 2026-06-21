@@ -142,7 +142,9 @@ export function App() {
 
       <section className="download-panel">
         <div className="brand-row">
-          <div className="brand-mark">AI</div>
+          <div className="brand-mark">
+            <img src="/app-icon.svg" alt="AI Drama Desktop" />
+          </div>
           <div>
             <p className="eyebrow">AI Drama Desktop</p>
             <h1>短剧分发工具</h1>
