@@ -109,6 +109,39 @@ class DramaAiServiceTest {
     }
 
     @Test
+    void generateTitleContextDoesNotIncludeOriginalCover() {
+        DramaRepository repository = mock(DramaRepository.class);
+        AiService aiService = mock(AiService.class);
+        DramaAiCoverStorage coverStorage = mock(DramaAiCoverStorage.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DramaAiService service = service(repository, aiService, coverStorage, configService, taskRepository);
+
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("原始剧名");
+        drama.setSummary("剧情简介");
+        drama.setCoverUrl("/uploads/covers/source.jpg");
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(configService.get(any())).thenReturn(Optional.empty());
+        when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
+        when(aiService.generateText(any(), any())).thenReturn("新剧名");
+
+        service.generateTitle("drama-1");
+
+        verify(aiService).generateText(
+                any(),
+                org.mockito.ArgumentMatchers.argThat(prompt ->
+                        prompt.contains("原始剧名：原始剧名")
+                                && prompt.contains("简介：剧情简介")
+                                && !prompt.contains("原始封面")
+                                && !prompt.contains("/uploads/covers/source.jpg")
+                )
+        );
+    }
+
+    @Test
     void generateTitleRejectsDramaThatHasActiveDistributionTask() {
         DramaRepository repository = mock(DramaRepository.class);
         AiService aiService = mock(AiService.class);

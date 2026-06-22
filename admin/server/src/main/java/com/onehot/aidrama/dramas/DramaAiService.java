@@ -59,7 +59,7 @@ public class DramaAiService {
             throw new BusinessException("DRAMA_ALREADY_DISTRIBUTED", "这部剧已经分发过，不能重新生成 AI 剧名", HttpStatus.CONFLICT);
         }
         String systemPrompt = config("openai.prompts.dramaTitle", DEFAULT_TITLE_PROMPT);
-        String userPrompt = dramaContext(drama);
+        String userPrompt = titleContext(drama);
         String aiTitle = withAiErrors(() -> aiTaskService.run(
                 textTask(drama, systemPrompt, userPrompt),
                 () -> aiService.generateText(systemPrompt, userPrompt),
@@ -140,15 +140,13 @@ public class DramaAiService {
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
     }
 
-    private String dramaContext(Drama drama) {
+    private String titleContext(Drama drama) {
         return """
                 原始剧名：%s
                 简介：%s
-                原始封面：%s
                 """.formatted(
                 blankToNone(drama.getTitle()),
-                blankToNone(drama.getSummary()),
-                blankToNone(drama.getCoverUrl())
+                blankToNone(drama.getSummary())
         );
     }
 
