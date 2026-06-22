@@ -32,11 +32,11 @@ public class ContractTemplateController {
     }
 
     @GetMapping("/api/desktop/contract-templates")
-    ApiResponse<List<ContractTemplateDtos.ContractTemplateResponse>> desktopList(
+    ApiResponse<ContractTemplateDtos.ContractTemplateResponse> desktopList(
             @RequestParam(defaultValue = "WECHAT_VIDEO") MediaPlatform platform,
             @RequestParam ContractTemplateType type
     ) {
-        return ApiResponse.ok(service.listByPlatformAndType(platform, type), MDC.get(TraceIdFilter.TRACE_ID));
+        return ApiResponse.ok(service.getBestDesktopTemplate(platform, type), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
     @PostMapping("/api/admin/contract-templates")

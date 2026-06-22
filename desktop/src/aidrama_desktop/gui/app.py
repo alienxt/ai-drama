@@ -1883,63 +1883,16 @@ class DesktopWindow(QMainWindow):
         self.run_async(
             f"加载{label}系统模版",
             lambda: (key, label, self.api().get(f"/desktop/contract-templates?{query}")),
-            self.prompt_contract_template_download,
+            self.download_best_contract_template,
             log_result=False,
         )
 
-    def prompt_contract_template_download(self, result: tuple[str, str, list[dict[str, Any]]]) -> None:
-        key, label, templates = result
-        available = [template for template in (templates or []) if template.get("downloadUrl")]
-        if not available:
+    def download_best_contract_template(self, result: tuple[str, str, dict[str, Any] | None]) -> None:
+        key, label, template = result
+        if not template or not template.get("downloadUrl"):
             QMessageBox.information(self, "下载系统模版", f"后台还没有配置可下载的{label}系统模版。")
             return
-        if len(available) == 1:
-            self.download_remote_contract_template(key, label, available[0])
-            return
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"选择{label}系统模版")
-        dialog.setModal(True)
-        dialog.setMinimumWidth(460)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        hint = QLabel("后台有多套系统模版，请选择要下载到本机的一套。")
-        hint.setObjectName("mutedText")
-        layout.addWidget(hint)
-
-        template_list = QListWidget()
-        template_list.setMinimumHeight(260)
-        template_list.setMaximumHeight(300)
-        for template in available:
-            item = QListWidgetItem(self.contract_template_item_label(template))
-            item.setData(Qt.UserRole, template)
-            template_list.addItem(item)
-        template_list.setCurrentRow(0)
-        layout.addWidget(template_list)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("下载并打开系统模版")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.rejected.connect(dialog.reject)
-        buttons.accepted.connect(lambda: self.accept_contract_template_download(dialog, key, label, template_list))
-        layout.addWidget(buttons)
-        dialog.open()
-
-    def accept_contract_template_download(
-        self,
-        dialog: QDialog,
-        key: str,
-        label: str,
-        template_list: QListWidget,
-    ) -> None:
-        item = template_list.currentItem()
-        if not item:
-            QMessageBox.warning(dialog, "下载系统模版", "请选择一套系统模版。")
-            return
-        dialog.accept()
-        self.download_remote_contract_template(key, label, item.data(Qt.UserRole))
+        self.download_remote_contract_template(key, label, template)
 
     def download_remote_contract_template(self, key: str, label: str, template: dict[str, Any]) -> None:
         download_url = str(template.get("downloadUrl") or "")
@@ -1987,26 +1940,6 @@ class DesktopWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         self.append_log(f"合同系统模版已下载并打开：{path}")
         QMessageBox.information(self, "下载系统模版", f"合同系统模版已下载并打开：{path}\n\n请整理盖章签名后点击“选择”回传该 .docx 模版。")
-
-    @staticmethod
-    def contract_template_item_label(template: dict[str, Any]) -> str:
-        name = str(template.get("name") or "未命名系统模版")
-        file_name = str(template.get("fileName") or "")
-        file_size = DesktopWindow.format_file_size(template.get("fileSize"))
-        suffix = f" · {file_name}" if file_name and file_name != name else ""
-        return f"{name}{suffix} · {file_size}"
-
-    @staticmethod
-    def format_file_size(value: Any) -> str:
-        try:
-            size = int(value)
-        except (TypeError, ValueError):
-            return "未知大小"
-        if size <= 0:
-            return "未知大小"
-        if size < 1024 * 1024:
-            return f"{max(1, round(size / 1024))} KB"
-        return f"{size / 1024 / 1024:.1f} MB"
 
     def open_contract_template(self, contract_type: str) -> None:
         template = self.current_contract_template_path(contract_type)

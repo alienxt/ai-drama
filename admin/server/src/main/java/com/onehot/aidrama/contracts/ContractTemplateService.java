@@ -36,6 +36,13 @@ public class ContractTemplateService {
                 .toList();
     }
 
+    public ContractTemplateDtos.ContractTemplateResponse getBestDesktopTemplate(MediaPlatform platform, ContractTemplateType type) {
+        return repository.findFirstByPlatformAndTypeAndDownloadUrlIsNotNullOrderByWeightDescUploadedAtDesc(platform, type)
+                .filter(template -> !template.getDownloadUrl().isBlank())
+                .map(ContractTemplateDtos.ContractTemplateResponse::from)
+                .orElse(null);
+    }
+
     public ContractTemplate create(MediaPlatform platform, ContractTemplateType type, String name, int weight, MultipartFile upload, ContractTemplateStorage storage) {
         ContractTemplate template = new ContractTemplate();
         template.setPlatform(platform);

@@ -12,8 +12,9 @@ import { Button, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, 
 import type { UploadFile } from 'antd';
 import { renderAsync } from 'docx-preview';
 import type { UploadRequestOption } from 'rc-upload/lib/interface';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DataPage } from '../../components/DataPage';
+import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, http } from '../../shared/http';
@@ -125,6 +126,7 @@ function ContractPreviewModal({
 
 export function ContractTemplatesPage() {
   const [reload, setReload] = useState(0);
+  const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -138,6 +140,13 @@ export function ContractTemplatesPage() {
     () => apiGet<ContractTemplate[]>('/admin/contract-templates'),
     [reload],
   );
+  const filteredData = useMemo(() => {
+    return (data ?? []).filter((template) => {
+      const platform = filters.platform;
+      const type = filters.type;
+      return (!platform || template.platform === platform) && (!type || template.type === type);
+    });
+  }, [data, filters]);
 
   function showCreate() {
     form.setFieldsValue({ platform: 'WECHAT_VIDEO', type: 'COST_CONTRACT', name: '', weight: 0, file: [] });
@@ -228,18 +237,41 @@ export function ContractTemplatesPage() {
   return (
     <DataPage
       title="合同模版"
+      extra={(
+        <TableToolbar
+          fields={[
+            {
+              name: 'platform',
+              placeholder: '媒体号类型',
+              type: 'select',
+              options: platformOptions,
+              width: 160,
+            },
+            {
+              name: 'type',
+              placeholder: '合同类型',
+              type: 'select',
+              options: contractTypeOptions,
+              width: 160,
+            },
+          ]}
+          onSearch={setFilters}
+        />
+      )}
       actions={<Button type="primary" icon={<PlusOutlined />} onClick={showCreate}>新增模板</Button>}
     >
       <Table<ContractTemplate>
         rowKey="id"
         loading={loading}
-        dataSource={data ?? []}
+        dataSource={filteredData}
         pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 条` }}
         columns={[
           {
             title: '媒体号类型',
             dataIndex: 'platformLabel',
             width: 130,
+            filters: platformOptions.map((option) => ({ text: option.label, value: option.value })),
+            onFilter: (value, record) => record.platform === value,
             render: (label: string) => <Tag color="geekblue">{label}</Tag>,
           },
           {

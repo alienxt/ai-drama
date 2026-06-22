@@ -7,6 +7,7 @@ import org.springframework.data.domain.Sort;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
@@ -32,6 +33,25 @@ class ContractTemplateServiceTest {
             assertThat(response.type()).isEqualTo(ContractTemplateType.COST_CONTRACT);
             assertThat(response.weight()).isEqualTo(10);
         });
+    }
+
+    @Test
+    void desktopGetsBestTemplateByWeight() {
+        ContractTemplateRepository repository = mock(ContractTemplateRepository.class);
+        ContractTemplate best = template(MediaPlatform.WECHAT_VIDEO, ContractTemplateType.COST_CONTRACT);
+        best.setWeight(100);
+        when(repository.findFirstByPlatformAndTypeAndDownloadUrlIsNotNullOrderByWeightDescUploadedAtDesc(
+                MediaPlatform.WECHAT_VIDEO,
+                ContractTemplateType.COST_CONTRACT
+        )).thenReturn(Optional.of(best));
+        ContractTemplateService service = new ContractTemplateService(repository);
+
+        ContractTemplateDtos.ContractTemplateResponse template =
+                service.getBestDesktopTemplate(MediaPlatform.WECHAT_VIDEO, ContractTemplateType.COST_CONTRACT);
+
+        assertThat(template).isNotNull();
+        assertThat(template.id()).isEqualTo(best.getId());
+        assertThat(template.weight()).isEqualTo(100);
     }
 
     @Test
