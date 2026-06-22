@@ -191,6 +191,46 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
     assert context.closed is True
 
 
+def test_wechat_video_publisher_reuses_existing_playlet_tab(tmp_path: Path, monkeypatch):
+    uploaded_pages = []
+
+    class FakePage:
+        def __init__(self, url):
+            self.url = url
+            self.visited = []
+
+        def goto(self, url, wait_until=None):
+            self.visited.append((url, wait_until))
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    playlet_page = FakePage(WeChatVideoPublisher.playlet_url)
+    unexpected_page = FakePage("about:blank")
+
+    class FakeContext:
+        pages = [playlet_page]
+
+        def new_page(self):
+            self.pages.append(unexpected_page)
+            return unexpected_page
+
+    monkeypatch.setattr(
+        WeChatVideoPublisher,
+        "_upload_playlet",
+        lambda self, page, media_files, title, summary, metadata, timeout_error: uploaded_pages.append(page),
+    )
+    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+
+    page = publisher._open_publish_page(FakeContext(), WeChatVideoPublisher.playlet_url)
+    publisher._upload_playlet(page, [tmp_path / "001.mp4"], "神医归来", None, {}, TimeoutError)
+
+    assert page is playlet_page
+    assert uploaded_pages == [playlet_page]
+    assert playlet_page.visited == []
+    assert unexpected_page not in FakeContext.pages
+
+
 def test_wechat_video_publisher_falls_back_when_cdp_attach_fails(tmp_path: Path, monkeypatch):
     uploaded_pages = []
     launched = []

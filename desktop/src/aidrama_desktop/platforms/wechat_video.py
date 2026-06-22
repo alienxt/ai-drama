@@ -120,9 +120,10 @@ class WeChatVideoPublisher(PlatformPublisher):
 
     def _open_publish_page(self, context, target_url: str):
         startup_pages = list(getattr(context, "pages", []) or [])
-        page = self._startup_blank_page(startup_pages) or context.new_page()
+        page = self._target_page(startup_pages, target_url) or self._startup_blank_page(startup_pages) or context.new_page()
         try:
-            page.goto(target_url, wait_until="domcontentloaded")
+            if not self._is_target_url(getattr(page, "url", ""), target_url):
+                page.goto(target_url, wait_until="domcontentloaded")
             page.wait_for_timeout(1000)
         except Exception as exception:  # noqa: BLE001
             if self._is_page_closed_error(exception):
@@ -130,6 +131,17 @@ class WeChatVideoPublisher(PlatformPublisher):
             raise RuntimeError("无法打开视频号发布页面，请确认网络正常并已登录视频号助手") from exception
         self._close_startup_blank_pages(startup_pages, active_page=page)
         return page
+
+    @staticmethod
+    def _target_page(pages, target_url: str):
+        for page in pages:
+            if WeChatVideoPublisher._is_target_url(getattr(page, "url", ""), target_url):
+                return page
+        return None
+
+    @staticmethod
+    def _is_target_url(url: str, target_url: str) -> bool:
+        return str(url or "").rstrip("/") == target_url.rstrip("/")
 
     @staticmethod
     def _startup_blank_page(pages):
