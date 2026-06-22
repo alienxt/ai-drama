@@ -113,6 +113,7 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert len(publisher.files) == 2
     assert all(str(file).startswith(str(tmp_path / "dramas" / "downloads" / "drama-1")) for file in publisher.files)
     assert processor.calls == []
+    assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
 

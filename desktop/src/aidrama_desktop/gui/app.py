@@ -290,6 +290,7 @@ class DesktopWindow(QMainWindow):
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
         self.current_media_account_id: str | None = None
+        self.current_drama_title: str | None = None
         self.task_paused = False
         self.resume_auto_after_pause = False
         self.task_history_rows: list[dict[str, Any]] = []
@@ -826,13 +827,18 @@ class DesktopWindow(QMainWindow):
         self.skip_task_button.setEnabled(False)
         actions.addWidget(self.publish_next_button)
         actions.addWidget(self.auto_task_button)
-        actions.addWidget(self.pause_task_button)
-        actions.addWidget(self.skip_task_button)
         actions.addStretch(1)
         self.auto_task_state = QLabel("自动执行：未启动")
         self.auto_task_state.setObjectName("mutedText")
         self.current_task_label = QLabel("当前任务：-")
         self.current_task_label.setObjectName("mutedText")
+        self.current_drama_label = QLabel("当前短剧：-")
+        self.current_drama_label.setObjectName("mutedText")
+        drama_row = QHBoxLayout()
+        drama_row.addWidget(self.current_drama_label)
+        drama_row.addWidget(self.pause_task_button)
+        drama_row.addWidget(self.skip_task_button)
+        drama_row.addStretch(1)
         self.current_media_account_label = QLabel("当前媒体号：-")
         self.current_media_account_label.setObjectName("mutedText")
         self.current_media_backend_button = QPushButton("打开媒体后台")
@@ -852,6 +858,7 @@ class DesktopWindow(QMainWindow):
         panel_layout.addLayout(actions)
         panel_layout.addWidget(self.auto_task_state)
         panel_layout.addWidget(self.current_task_label)
+        panel_layout.addLayout(drama_row)
         panel_layout.addLayout(media_account_row)
         panel_layout.addWidget(self.task_stage_label)
         panel_layout.addWidget(self.task_error_label)
@@ -2762,6 +2769,11 @@ class DesktopWindow(QMainWindow):
             self.current_media_account_id = media_account_id
         elif task_id is None:
             self.current_media_account_id = None
+        drama_title = self.task_drama_title(stage, task)
+        if drama_title:
+            self.current_drama_title = drama_title
+        elif task_id is None:
+            self.current_drama_title = None
         display_stage = stage
         if stage.startswith("任务失败："):
             reason = self.clean_error_message(stage.removeprefix("任务失败："))
@@ -2772,6 +2784,8 @@ class DesktopWindow(QMainWindow):
             self.auto_task_state.setText(f"自动执行：{'运行中' if self.auto_task_enabled else '未启动'}")
         if hasattr(self, "current_task_label"):
             self.current_task_label.setText(f"当前任务：{task_id or '-'}")
+        if hasattr(self, "current_drama_label"):
+            self.current_drama_label.setText(f"当前短剧：{self.current_drama_display()}")
         if hasattr(self, "current_media_account_label"):
             self.current_media_account_label.setText(f"当前媒体号：{self.current_media_account_display()}")
         if hasattr(self, "current_media_backend_button"):
@@ -2779,6 +2793,19 @@ class DesktopWindow(QMainWindow):
         if hasattr(self, "task_stage_label"):
             self.task_stage_label.setText(f"当前阶段：{display_stage}")
         self.update_task_control_buttons()
+
+    @staticmethod
+    def task_drama_title(stage: str, task: dict[str, Any] | None = None) -> str:
+        for key in ("dramaTitle", "title", "dramaName"):
+            value = str((task or {}).get(key) or "").strip()
+            if value:
+                return value
+        if stage.startswith("当前短剧："):
+            return stage.removeprefix("当前短剧：").strip()
+        return ""
+
+    def current_drama_display(self) -> str:
+        return str(getattr(self, "current_drama_title", None) or "-")
 
     def current_media_account(self) -> dict[str, Any] | None:
         media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()

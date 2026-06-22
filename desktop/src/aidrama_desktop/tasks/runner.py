@@ -66,6 +66,8 @@ class TaskRunner:
             self._progress(task_id, "DOWNLOADING", 10)
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
             drama_title = self._drama_title(download_plan, task)
+            task_with_title = {**task, "dramaTitle": drama_title}
+            self._notify(f"当前短剧：{drama_title}", task_id, task_with_title)
             source_files = self._download(download_plan, task_id, drama_title)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "UPLOADING", 75)

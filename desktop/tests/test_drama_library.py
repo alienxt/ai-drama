@@ -595,6 +595,7 @@ def test_task_progress_displays_current_media_account_name():
     window.media_accounts = [{"id": "media-1", "displayName": "染柒剧作"}]
     window.auto_task_state = QLabel()
     window.current_task_label = QLabel()
+    window.current_drama_label = QLabel()
     window.current_media_account_label = QLabel()
     window.current_media_backend_button = QPushButton()
     window.task_stage_label = QLabel()
@@ -604,11 +605,12 @@ def test_task_progress_displays_current_media_account_name():
         window,
         "任务已领取",
         "task-1",
-        {"mediaAccountId": "media-1"},
+        {"mediaAccountId": "media-1", "dramaTitle": "江城裁梦予君心"},
     )
 
     assert app is not None
     assert window.current_task_label.text() == "当前任务：task-1"
+    assert window.current_drama_label.text() == "当前短剧：江城裁梦予君心"
     assert window.current_media_account_label.text() == "当前媒体号：染柒剧作"
     assert window.current_media_backend_button.isEnabled() is True
 
