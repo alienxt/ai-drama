@@ -54,6 +54,7 @@ from aidrama_desktop.contracts import (
     ContractConfigStore,
     ContractRenderInput,
     build_contract_output_path,
+    contract_template_key,
     copy_contract_template,
     render_contract_docx,
     safe_contract_filename,
@@ -632,9 +633,15 @@ class DesktopWindow(QMainWindow):
         template_header.addStretch(1)
 
         type_row = QHBoxLayout()
+        self.contract_platform_input = QComboBox()
+        self.contract_platform_input.addItem("视频号", "WECHAT_VIDEO")
+        self.contract_platform_input.setMinimumHeight(34)
+        self.contract_platform_input.setMinimumWidth(140)
+        self.contract_platform_input.setMaximumWidth(200)
+        self.contract_platform_input.currentIndexChanged.connect(self.load_selected_contract_template)
         self.contract_type_input = QComboBox()
         self.contract_type_input.addItem("成本合同", "cost")
-        self.contract_type_input.addItem("买剧合同", "purchase")
+        self.contract_type_input.addItem("购买合同", "purchase")
         self.contract_type_input.setMinimumHeight(34)
         self.contract_type_input.setMinimumWidth(180)
         self.contract_type_input.setMaximumWidth(240)
@@ -647,7 +654,9 @@ class DesktopWindow(QMainWindow):
         open_template.clicked.connect(self.open_contract_template)
         clear_template = QPushButton("清空")
         clear_template.clicked.connect(self.clear_contract_template)
-        type_row.addWidget(QLabel("类型"))
+        type_row.addWidget(QLabel("媒体号类型"))
+        type_row.addWidget(self.contract_platform_input)
+        type_row.addWidget(QLabel("合同类型"))
         type_row.addWidget(self.contract_type_input)
         type_row.addWidget(download_template)
         type_row.addStretch(1)
@@ -663,7 +672,7 @@ class DesktopWindow(QMainWindow):
 
         template_note = QLabel(
             "1. 下载并打开系统模版，将主体的盖章和法人签名（透明底图片），添加到指定的位置上；\n"
-            "2. 选择整理后的模版作为当前模版。"
+            "2. 点击“选择”回传整理后的 .docx 模版后，才可以生成合同。"
         )
         template_note.setObjectName("mutedText")
         template_note.setWordWrap(True)
@@ -706,15 +715,9 @@ class DesktopWindow(QMainWindow):
         form.setColumnStretch(3, 1)
         form.setColumnStretch(4, 1)
         actions = QHBoxLayout()
-        preview = QPushButton("测试生成并打开")
-        generate = QPushButton("生成合同")
-        open_contract = QPushButton("打开上次合同")
-        preview.clicked.connect(self.generate_and_open_contract)
-        generate.clicked.connect(self.generate_contract)
-        open_contract.clicked.connect(self.open_last_contract)
-        actions.addWidget(preview)
-        actions.addWidget(generate)
-        actions.addWidget(open_contract)
+        self.contract_generate_button = QPushButton("生成合同")
+        self.contract_generate_button.clicked.connect(self.generate_contract)
+        actions.addWidget(self.contract_generate_button)
         actions.addStretch(1)
         self.contract_preview = QTextEdit()
         self.contract_preview.setReadOnly(True)
@@ -1755,6 +1758,15 @@ class DesktopWindow(QMainWindow):
         return chrome.platform_profile_dir(str(account.get("platform") or "WECHAT_VIDEO"), profile_key)
 
     def current_contract_key(self) -> str:
+        return contract_template_key(self.current_contract_platform(), self.current_contract_type_key())
+
+    def current_contract_platform(self) -> str:
+        return str(self.contract_platform_input.currentData() or "WECHAT_VIDEO")
+
+    def current_contract_platform_name(self) -> str:
+        return self.contract_platform_input.currentText() or "视频号"
+
+    def current_contract_type_key(self) -> str:
         return str(self.contract_type_input.currentData() or "cost")
 
     def current_contract_name(self) -> str:
@@ -1772,11 +1784,12 @@ class DesktopWindow(QMainWindow):
         template = self.current_contract_template_path()
         display = str(template) if template else "未配置，请选择 .docx Word 模板"
         self.contract_template_path_input.setText(display)
+        if hasattr(self, "contract_generate_button"):
+            self.contract_generate_button.setEnabled(bool(template and template.exists()))
         if hasattr(self, "contract_preview"):
             self.contract_preview.setPlainText(
-                "点击“选择”上传整理好的 .docx 合同模板。"
-                "测试生成会输出新的 .docx 文件并用系统默认应用打开。"
-                "测试生成会输出新的 .docx 文件并用系统默认应用打开"
+                "点击“下载系统模版”获取后台模板并整理盖章签名。"
+                "整理完成后点击“选择”回传本机 .docx 模板，才可以生成合同。"
             )
 
     def load_contract_dramas(self) -> None:
@@ -1861,8 +1874,8 @@ class DesktopWindow(QMainWindow):
 
     def download_contract_template(self) -> None:
         key = self.current_contract_key()
-        label = self.current_contract_name()
-        query = urlencode({"type": self.contract_api_type(key)})
+        label = f"{self.current_contract_platform_name()}{self.current_contract_name()}"
+        query = urlencode({"platform": self.current_contract_platform(), "type": self.contract_api_type(self.current_contract_type_key())})
         self.run_async(
             f"加载{label}系统模版",
             lambda: (key, label, self.api().get(f"/desktop/contract-templates?{query}")),
@@ -1963,13 +1976,9 @@ class DesktopWindow(QMainWindow):
         return target
 
     def on_contract_template_downloaded(self, key: str, path: Path) -> None:
-        self.contract_templates[key] = path
-        self.contract_store.save(self.contract_templates)
-        if self.current_contract_key() == key:
-            self.load_selected_contract_template()
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         self.append_log(f"合同系统模版已下载并打开：{path}")
-        QMessageBox.information(self, "下载系统模版", f"合同系统模版已下载并打开：{path}")
+        QMessageBox.information(self, "下载系统模版", f"合同系统模版已下载并打开：{path}\n\n请整理盖章签名后点击“选择”回传该 .docx 模版。")
 
     @staticmethod
     def contract_template_item_label(template: dict[str, Any]) -> str:

@@ -1,9 +1,12 @@
+from pathlib import Path
+
 from docx import Document
 
 from aidrama_desktop.contracts.generator import (
     ContractConfigStore,
     ContractRenderInput,
     copy_contract_template,
+    contract_template_key,
     format_contract_date,
     render_contract_docx,
 )
@@ -48,10 +51,26 @@ def test_format_contract_date_supports_chinese_date_input():
 def test_contract_config_store_round_trips_template_paths(tmp_path):
     store = ContractConfigStore(tmp_path / "contract-templates.json")
 
-    store.save({"cost": tmp_path / "cost.docx", "purchase": tmp_path / "purchase.docx"})
+    store.save({
+        contract_template_key("WECHAT_VIDEO", "cost"): tmp_path / "cost.docx",
+        contract_template_key("WECHAT_VIDEO", "purchase"): tmp_path / "purchase.docx",
+    })
 
-    assert store.load()["cost"] == tmp_path / "cost.docx"
-    assert store.load()["purchase"] == tmp_path / "purchase.docx"
+    assert store.load()[contract_template_key("WECHAT_VIDEO", "cost")] == tmp_path / "cost.docx"
+    assert store.load()[contract_template_key("WECHAT_VIDEO", "purchase")] == tmp_path / "purchase.docx"
+
+
+def test_contract_config_store_migrates_legacy_template_keys(tmp_path):
+    store = ContractConfigStore(tmp_path / "contract-templates.json")
+    (tmp_path / "contract-templates.json").write_text(
+        '{"cost": "/tmp/legacy-cost.docx", "purchase": "/tmp/legacy-purchase.docx"}',
+        encoding="utf-8",
+    )
+
+    templates = store.load()
+
+    assert templates[contract_template_key("WECHAT_VIDEO", "cost")] == Path("/tmp/legacy-cost.docx")
+    assert templates[contract_template_key("WECHAT_VIDEO", "purchase")] == Path("/tmp/legacy-purchase.docx")
 
 
 def test_copy_contract_template_keeps_docx_and_safe_name(tmp_path):

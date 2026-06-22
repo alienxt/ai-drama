@@ -10,7 +10,12 @@ from pathlib import Path
 from docx import Document
 
 
-CONTRACT_TEMPLATE_KEYS = ("cost", "purchase")
+CONTRACT_MEDIA_PLATFORMS = ("WECHAT_VIDEO",)
+CONTRACT_TEMPLATE_TYPES = ("cost", "purchase")
+
+
+def contract_template_key(platform: str, contract_type: str) -> str:
+    return f"{platform.lower()}:{contract_type}"
 
 
 @dataclass(frozen=True)
@@ -38,7 +43,11 @@ class ContractRenderInput:
 
 
 def default_contract_templates() -> dict[str, Path | None]:
-    return {key: None for key in CONTRACT_TEMPLATE_KEYS}
+    return {
+        contract_template_key(platform, contract_type): None
+        for platform in CONTRACT_MEDIA_PLATFORMS
+        for contract_type in CONTRACT_TEMPLATE_TYPES
+    }
 
 
 class ContractConfigStore:
@@ -57,12 +66,17 @@ class ContractConfigStore:
             value = data.get(key)
             if isinstance(value, str) and value.strip():
                 templates[key] = Path(value)
+        for legacy_key in CONTRACT_TEMPLATE_TYPES:
+            value = data.get(legacy_key)
+            migrated_key = contract_template_key("WECHAT_VIDEO", legacy_key)
+            if templates.get(migrated_key) is None and isinstance(value, str) and value.strip():
+                templates[migrated_key] = Path(value)
         return templates
 
     def save(self, templates: dict[str, Path | str | None]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, str] = {}
-        for key in CONTRACT_TEMPLATE_KEYS:
+        for key in default_contract_templates():
             value = templates.get(key)
             data[key] = str(value) if value else ""
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

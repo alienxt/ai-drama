@@ -2,14 +2,16 @@ import {
   CloudUploadOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EyeOutlined,
   FileWordOutlined,
   PlusOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import { Button, Form, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Tooltip, Upload } from 'antd';
 import type { UploadFile } from 'antd';
+import { renderAsync } from 'docx-preview';
 import type { UploadRequestOption } from 'rc-upload/lib/interface';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DataPage } from '../../components/DataPage';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
@@ -18,15 +20,28 @@ import type { ContractTemplate } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 
 type TemplateForm = {
+  platform: ContractTemplate['platform'];
   type: ContractTemplate['type'];
   name: string;
   file?: UploadFile[];
 };
 
-const contractTypeOptions = [
-  { value: 'COST_CONTRACT', label: '成本合同' },
-  { value: 'PURCHASE_CONTRACT', label: '买剧合同' },
+const platformOptions: { value: ContractTemplate['platform']; label: string }[] = [
+  { value: 'WECHAT_VIDEO', label: '视频号' },
+  { value: 'TIKTOK', label: 'TK' },
+  { value: 'DOUYIN', label: '抖音' },
 ];
+
+const contractTypeOptions: { value: ContractTemplate['type']; label: string }[] = [
+  { value: 'COST_CONTRACT', label: '成本合同' },
+  { value: 'PURCHASE_CONTRACT', label: '购买合同' },
+];
+
+const platformAllowedContractTypes: Record<ContractTemplate['platform'], ContractTemplate['type'][]> = {
+  WECHAT_VIDEO: ['COST_CONTRACT', 'PURCHASE_CONTRACT'],
+  TIKTOK: ['PURCHASE_CONTRACT'],
+  DOUYIN: ['PURCHASE_CONTRACT'],
+};
 
 function formatSize(size: number) {
   if (!size) return '-';
@@ -38,20 +53,86 @@ function uploadFileFromEvent(event: { fileList?: UploadFile[] } | UploadFile[]) 
   return Array.isArray(event) ? event : event?.fileList;
 }
 
+function contractOptionsFor(platform: ContractTemplate['platform']) {
+  const allowed = platformAllowedContractTypes[platform] ?? ['PURCHASE_CONTRACT'];
+  return contractTypeOptions.filter((option) => allowed.includes(option.value));
+}
+
+function resolveResourceUrl(url: string) {
+  return new URL(url, window.location.origin).toString();
+}
+
+function ContractPreviewModal({
+  template,
+  onClose,
+}: {
+  template: ContractTemplate | null;
+  onClose: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!template?.downloadUrl || !containerRef.current) return;
+    const controller = new AbortController();
+    const container = containerRef.current;
+    container.innerHTML = '';
+    setLoading(true);
+    fetch(resolveResourceUrl(template.downloadUrl), { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => renderAsync(blob, container, undefined, {
+        className: 'docx-preview-document',
+        inWrapper: false,
+        ignoreFonts: true,
+      }))
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          container.innerHTML = '<div class="contract-preview-error">Word 预览加载失败，请下载后查看。</div>';
+          appMessage.error(error instanceof Error ? error.message : 'Word 预览加载失败');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [template]);
+
+  return (
+    <Modal
+      title={template ? `${template.platformLabel} · ${template.label} · ${template.name}` : 'Word 预览'}
+      open={Boolean(template)}
+      onCancel={onClose}
+      footer={null}
+      width={980}
+      destroyOnClose
+    >
+      <div className="contract-preview-shell">
+        {loading ? <Progress percent={70} status="active" showInfo={false} /> : null}
+        <div ref={containerRef} className="contract-preview-doc" />
+      </div>
+    </Modal>
+  );
+}
+
 export function ContractTemplatesPage() {
   const [reload, setReload] = useState(0);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [previewTemplate, setPreviewTemplate] = useState<ContractTemplate | null>(null);
   const [form] = Form.useForm<TemplateForm>();
+  const selectedPlatform = Form.useWatch('platform', form) ?? 'WECHAT_VIDEO';
   const { data, loading } = useAsyncData(
     () => apiGet<ContractTemplate[]>('/admin/contract-templates'),
     [reload],
   );
 
   function showCreate() {
-    form.setFieldsValue({ type: 'COST_CONTRACT', name: '', file: [] });
+    form.setFieldsValue({ platform: 'WECHAT_VIDEO', type: 'COST_CONTRACT', name: '', file: [] });
     setOpen(true);
   }
 
@@ -62,6 +143,7 @@ export function ContractTemplatesPage() {
       return;
     }
     const formData = new FormData();
+    formData.append('platform', values.platform);
     formData.append('type', values.type);
     formData.append('name', values.name);
     formData.append('file', file);
@@ -131,6 +213,12 @@ export function ContractTemplatesPage() {
         pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 条` }}
         columns={[
           {
+            title: '媒体号类型',
+            dataIndex: 'platformLabel',
+            width: 130,
+            render: (label: string) => <Tag color="geekblue">{label}</Tag>,
+          },
+          {
             title: '合同类型',
             dataIndex: 'label',
             width: 140,
@@ -176,6 +264,16 @@ export function ContractTemplatesPage() {
                     />
                   </Tooltip>
                 </Upload>
+                <Tooltip title="预览 Word 模板">
+                  <Button
+                    className="table-action"
+                    size="small"
+                    type="text"
+                    disabled={!record.downloadUrl}
+                    icon={<EyeOutlined />}
+                    onClick={() => setPreviewTemplate(record)}
+                  />
+                </Tooltip>
                 <Tooltip title="下载模板">
                   <Button className="table-action" size="small" type="text" icon={<DownloadOutlined />} href={record.downloadUrl} target="_blank" />
                 </Tooltip>
@@ -197,8 +295,17 @@ export function ContractTemplatesPage() {
       />
       <Modal title="新增合同模板" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={creating} destroyOnClose>
         <Form form={form} layout="vertical" onFinish={submit}>
+          <Form.Item name="platform" label="媒体号类型" rules={[{ required: true }]}>
+            <Select
+              options={platformOptions}
+              onChange={(platform: ContractTemplate['platform']) => {
+                const nextOptions = contractOptionsFor(platform);
+                form.setFieldValue('type', nextOptions[0]?.value);
+              }}
+            />
+          </Form.Item>
           <Form.Item name="type" label="合同类型" rules={[{ required: true }]}>
-            <Select options={contractTypeOptions} />
+            <Select options={contractOptionsFor(selectedPlatform)} />
           </Form.Item>
           <Form.Item name="name" label="模板名称" rules={[{ required: true, message: '请输入模板名称' }]}>
             <Input placeholder="例如：成本合同-标准版" />
@@ -222,6 +329,7 @@ export function ContractTemplatesPage() {
           <Progress percent={uploadProgress} status="active" />
         </Modal>
       ) : null}
+      <ContractPreviewModal template={previewTemplate} onClose={() => setPreviewTemplate(null)} />
     </DataPage>
   );
 }

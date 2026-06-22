@@ -2,6 +2,7 @@ package com.onehot.aidrama.contracts;
 
 import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.TraceIdFilter;
+import com.onehot.aidrama.media.MediaPlatform;
 import org.slf4j.MDC;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,18 +30,22 @@ public class ContractTemplateController {
     }
 
     @GetMapping("/api/desktop/contract-templates")
-    ApiResponse<List<ContractTemplateDtos.ContractTemplateResponse>> desktopList(@RequestParam ContractTemplateType type) {
-        return ApiResponse.ok(service.listByType(type), MDC.get(TraceIdFilter.TRACE_ID));
+    ApiResponse<List<ContractTemplateDtos.ContractTemplateResponse>> desktopList(
+            @RequestParam(defaultValue = "WECHAT_VIDEO") MediaPlatform platform,
+            @RequestParam ContractTemplateType type
+    ) {
+        return ApiResponse.ok(service.listByPlatformAndType(platform, type), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
     @PostMapping("/api/admin/contract-templates")
     ApiResponse<ContractTemplateDtos.ContractTemplateResponse> create(
+            @RequestParam(defaultValue = "WECHAT_VIDEO") MediaPlatform platform,
             @RequestParam ContractTemplateType type,
             @RequestParam(required = false) String name,
             @RequestParam("file") MultipartFile file
     ) {
         return ApiResponse.ok(
-                ContractTemplateDtos.ContractTemplateResponse.from(service.create(type, name, file, storage)),
+                ContractTemplateDtos.ContractTemplateResponse.from(service.create(platform, type, name, file, storage)),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }

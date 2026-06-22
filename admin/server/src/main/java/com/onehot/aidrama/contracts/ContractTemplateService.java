@@ -1,5 +1,6 @@
 package com.onehot.aidrama.contracts;
 
+import com.onehot.aidrama.media.MediaPlatform;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -18,31 +19,34 @@ public class ContractTemplateService {
     }
 
     public List<ContractTemplateDtos.ContractTemplateResponse> list() {
-        return repository.findAll(Sort.by(Sort.Direction.ASC, "type").and(Sort.by(Sort.Direction.DESC, "uploadedAt")))
+        return repository.findAll(Sort.by(Sort.Direction.ASC, "platform")
+                        .and(Sort.by(Sort.Direction.ASC, "type"))
+                        .and(Sort.by(Sort.Direction.DESC, "uploadedAt")))
                 .stream()
                 .map(ContractTemplateDtos.ContractTemplateResponse::from)
                 .toList();
     }
 
-    public List<ContractTemplateDtos.ContractTemplateResponse> listByType(ContractTemplateType type) {
-        return repository.findByTypeOrderByUploadedAtDesc(type)
+    public List<ContractTemplateDtos.ContractTemplateResponse> listByPlatformAndType(MediaPlatform platform, ContractTemplateType type) {
+        return repository.findByPlatformAndTypeOrderByUploadedAtDesc(platform, type)
                 .stream()
                 .filter(template -> template.getDownloadUrl() != null && !template.getDownloadUrl().isBlank())
                 .map(ContractTemplateDtos.ContractTemplateResponse::from)
                 .toList();
     }
 
-    public ContractTemplate create(ContractTemplateType type, String name, MultipartFile upload, ContractTemplateStorage storage) {
+    public ContractTemplate create(MediaPlatform platform, ContractTemplateType type, String name, MultipartFile upload, ContractTemplateStorage storage) {
         ContractTemplate template = new ContractTemplate();
+        template.setPlatform(platform);
         template.setType(type);
         template.setName(normalizeName(name, upload.getOriginalFilename()));
         template = repository.save(template);
-        return attachFile(template, storage.store(type, template.getId(), upload));
+        return attachFile(template, storage.store(template.getPlatform(), type, template.getId(), upload));
     }
 
     public ContractTemplate replaceFile(String id, MultipartFile upload, ContractTemplateStorage storage) {
         ContractTemplate template = get(id);
-        return attachFile(template, storage.store(template.getType(), template.getId(), upload));
+        return attachFile(template, storage.store(platformOrDefault(template.getPlatform()), template.getType(), template.getId(), upload));
     }
 
     public void delete(String id) {
@@ -70,5 +74,9 @@ public class ContractTemplateService {
             return "未命名模板";
         }
         return fileName.replaceFirst("(?i)\\.docx$", "").trim();
+    }
+
+    private static MediaPlatform platformOrDefault(MediaPlatform platform) {
+        return platform == null ? MediaPlatform.WECHAT_VIDEO : platform;
     }
 }

@@ -1,5 +1,6 @@
 package com.onehot.aidrama.contracts;
 
+import com.onehot.aidrama.media.MediaPlatform;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
@@ -12,6 +13,8 @@ import java.time.Instant;
 public class ContractTemplate {
     @Id
     private String id;
+    @Indexed
+    private MediaPlatform platform = MediaPlatform.WECHAT_VIDEO;
     @Indexed
     private ContractTemplateType type;
     private String name;
@@ -26,6 +29,8 @@ public class ContractTemplate {
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
+    public MediaPlatform getPlatform() { return platform; }
+    public void setPlatform(MediaPlatform platform) { this.platform = platform; }
     public ContractTemplateType getType() { return type; }
     public void setType(ContractTemplateType type) { this.type = type; }
     public String getName() { return name; }

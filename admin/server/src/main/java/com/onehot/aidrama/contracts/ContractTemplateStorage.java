@@ -1,5 +1,6 @@
 package com.onehot.aidrama.contracts;
 
+import com.onehot.aidrama.media.MediaPlatform;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,10 +20,14 @@ public class ContractTemplateStorage {
         this.uploadDir = uploadDir.toAbsolutePath().normalize();
     }
 
-    public StoredFile store(ContractTemplateType type, String templateId, MultipartFile file) {
+    public StoredFile store(MediaPlatform platform, ContractTemplateType type, String templateId, MultipartFile file) {
         String fileName = cleanFileName(file.getOriginalFilename());
         validateFile(fileName);
-        Path targetDir = uploadDir.resolve("contract-templates").resolve(type.name()).resolve(templateId).normalize();
+        Path targetDir = uploadDir.resolve("contract-templates")
+                .resolve(platform.name())
+                .resolve(type.name())
+                .resolve(templateId)
+                .normalize();
         if (!targetDir.startsWith(uploadDir)) {
             throw new IllegalArgumentException("Invalid contract template path");
         }
@@ -32,7 +37,7 @@ public class ContractTemplateStorage {
             Path target = targetDir.resolve(fileName);
             file.transferTo(target);
             String encodedFileName = UriUtils.encodePathSegment(fileName, StandardCharsets.UTF_8);
-            String downloadUrl = "/uploads/contract-templates/" + type.name() + "/" + templateId + "/" + encodedFileName;
+            String downloadUrl = "/uploads/contract-templates/" + platform.name() + "/" + type.name() + "/" + templateId + "/" + encodedFileName;
             return new StoredFile(fileName, Files.size(target), downloadUrl);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to store contract template file", exception);

@@ -195,6 +195,8 @@ export type DesktopVersion = {
 
 export type ContractTemplate = {
   id: string;
+  platform: 'WECHAT_VIDEO' | 'DOUYIN' | 'TIKTOK';
+  platformLabel: string;
   type: 'COST_CONTRACT' | 'PURCHASE_CONTRACT';
   label: string;
   name: string;
