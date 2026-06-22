@@ -13,11 +13,9 @@ public final class DramaDurationEstimator {
             return 0;
         }
         Random random = new Random(seed(seedText));
-        int total = 0;
-        for (int index = 0; index < episodeCount; index += 1) {
-            total += 1 + random.nextInt(2);
-        }
-        return total;
+        double minutesPerEpisode = 1 + random.nextDouble();
+        int rounded = (int) Math.round((episodeCount * minutesPerEpisode) / 10.0) * 10;
+        return Math.max(10, rounded);
     }
 
     public static int estimateTotalMinutes(Drama drama) {
@@ -26,7 +24,8 @@ public final class DramaDurationEstimator {
     }
 
     public static boolean needsTotalMinutes(Drama drama) {
-        return drama.getTotalMinutes() == null || drama.getTotalMinutes() <= 0;
+        Integer totalMinutes = drama.getTotalMinutes();
+        return totalMinutes == null || totalMinutes <= 0 || totalMinutes % 10 != 0;
     }
 
     private static String seedText(Drama drama) {

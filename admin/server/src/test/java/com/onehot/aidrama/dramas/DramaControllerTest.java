@@ -315,7 +315,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void backfillTotalMinutesOnlyUpdatesMissingValues() {
+    void backfillTotalMinutesUpdatesMissingAndNonRoundedValues() {
         DramaRepository repository = mock(DramaRepository.class);
         DramaController controller = controller(repository, mock(BaiduPanClient.class));
         Drama missing = new Drama();
@@ -326,17 +326,24 @@ class DramaControllerTest {
         existing.setId("existing");
         existing.setTitle("已有时长");
         existing.setEpisodes(List.of(episode(1)));
-        existing.setTotalMinutes(88);
-        when(repository.findAll()).thenReturn(List.of(missing, existing));
+        existing.setTotalMinutes(120);
+        Drama nonRounded = new Drama();
+        nonRounded.setId("non-rounded");
+        nonRounded.setTitle("非整十时长");
+        nonRounded.setEpisodes(List.of(episode(1), episode(2), episode(3)));
+        nonRounded.setTotalMinutes(121);
+        when(repository.findAll()).thenReturn(List.of(missing, existing, nonRounded));
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         DramaDtos.BackfillTotalMinutesResponse response = controller.backfillTotalMinutes().data();
 
-        assertThat(response.requested()).isEqualTo(2);
-        assertThat(response.updated()).isEqualTo(1);
-        assertThat(missing.getTotalMinutes()).isBetween(2, 4);
-        assertThat(existing.getTotalMinutes()).isEqualTo(88);
+        assertThat(response.requested()).isEqualTo(3);
+        assertThat(response.updated()).isEqualTo(2);
+        assertThat(missing.getTotalMinutes()).isEqualTo(10);
+        assertThat(existing.getTotalMinutes()).isEqualTo(120);
+        assertThat(nonRounded.getTotalMinutes() % 10).isZero();
         verify(repository).save(missing);
+        verify(repository).save(nonRounded);
     }
 
     @Test

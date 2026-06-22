@@ -49,7 +49,7 @@ class BaiduDramaScannerTest {
         assertThat(imported.getCoverUrl()).isEqualTo("/uploads/covers/cover.jpg");
         assertThat(imported.getSummary()).isEqualTo("真正的剧情简介");
         assertThat(imported.getStatus()).isEqualTo(DramaStatus.DRAFT);
-        assertThat(imported.getTotalMinutes()).isBetween(1, 2);
+        assertThat(imported.getTotalMinutes()).isEqualTo(10);
     }
 
     @Test
