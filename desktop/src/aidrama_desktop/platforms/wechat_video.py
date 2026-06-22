@@ -188,6 +188,7 @@ class WeChatVideoPublisher(PlatformPublisher):
     ) -> None:
         publish_title = str(metadata.get("publishTitle") or title)
         publish_summary = str(metadata.get("summary") or summary or "")
+        self._accept_playlet_agreement(page, timeout_error)
         create_button = page.get_by_text(re.compile("创建剧集|新建剧集|新增剧集|上传剧集|添加剧集")).first
         try:
             create_button.click(timeout=8000)
@@ -223,6 +224,21 @@ class WeChatVideoPublisher(PlatformPublisher):
             page.get_by_text(re.compile("保存|提交审核|发布|上架")).first.click(timeout=15000)
         except timeout_error as exception:
             raise RuntimeError("短剧文件已选择，但未找到剧集保存/提交按钮，请检查视频号剧集管理页面") from exception
+
+    def _accept_playlet_agreement(self, page, timeout_error) -> None:
+        try:
+            page.get_by_text(re.compile("我已阅读并同意|已阅读并同意|同意.*协议")).first.click(timeout=3000)
+            page.wait_for_timeout(300)
+            return
+        except timeout_error:
+            pass
+        checkbox = page.locator('input[type="checkbox"]').first
+        try:
+            if checkbox.count() > 0 and not checkbox.is_checked():
+                checkbox.check(timeout=3000)
+                page.wait_for_timeout(300)
+        except timeout_error:
+            pass
 
     def _upload_single(self, page, media_file: Path, title: str, summary: str | None, timeout_error) -> None:
         upload_button = page.get_by_text(re.compile("发表视频|发布视频|上传视频|创建")).first
