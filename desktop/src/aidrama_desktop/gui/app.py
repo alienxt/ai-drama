@@ -892,7 +892,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
         self.task_history_table.setColumnWidth(1, 130)
         self.task_history_table.setColumnWidth(2, 92)
-        self.task_history_table.setColumnWidth(3, 330)
+        self.task_history_table.setColumnWidth(3, 300)
         self.task_history_table.setColumnWidth(5, 150)
         self.task_history_table.setColumnWidth(6, 150)
         self.task_history_table.setColumnWidth(7, 86)
@@ -1237,18 +1237,21 @@ class DesktopWindow(QMainWindow):
     def task_history_chain_widget(self, task: dict[str, Any]) -> QWidget:
         wrapper = QWidget()
         layout = QHBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(2)
         for index, label in enumerate(self.task_history_chain_labels(task)):
             state = self.task_history_chain_state(task, index)
             badge = QLabel(label)
             badge.setAlignment(Qt.AlignCenter)
-            badge.setMinimumWidth(54)
+            badge.setMinimumWidth(46)
+            badge.setMaximumWidth(60)
             badge.setStyleSheet(self.task_history_chain_style(state))
             layout.addWidget(badge)
             if index < 4:
-                arrow = QLabel(">")
+                arrow = QLabel("-")
                 arrow.setObjectName("mutedText")
+                arrow.setFixedWidth(8)
+                arrow.setAlignment(Qt.AlignCenter)
                 layout.addWidget(arrow)
         layout.addStretch(1)
         return wrapper
@@ -1317,7 +1320,7 @@ class DesktopWindow(QMainWindow):
             f" background: {background};"
             f" border: 1px solid {border};"
             " border-radius: 4px;"
-            " padding: 3px 5px;"
+            " padding: 2px 4px;"
             " font-size: 12px;"
             "}"
         )
