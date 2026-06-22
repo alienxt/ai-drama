@@ -1,4 +1,4 @@
-import { CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SyncOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SyncOutlined } from '@ant-design/icons';
 import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -30,6 +30,7 @@ export function DramasPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [syncingAssets, setSyncingAssets] = useState(false);
   const [freshing, setFreshing] = useState(false);
+  const [backfillingMinutes, setBackfillingMinutes] = useState(false);
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
   const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
@@ -45,6 +46,17 @@ export function DramasPage() {
     await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
     appMessage.success('已开始后台扫描，扫描成功后会更新上次扫描时间并继续生成 AI 剧名和封面');
     setVersion((value) => value + 1);
+  }
+
+  async function backfillTotalMinutes() {
+    setBackfillingMinutes(true);
+    try {
+      const result = await apiPost<DramaBackfillTotalMinutesResponse>('/admin/dramas/backfill-total-minutes', {});
+      appMessage.success(`总时长已补齐：更新 ${result.updated} / ${result.requested} 条`);
+      setVersion((value) => value + 1);
+    } finally {
+      setBackfillingMinutes(false);
+    }
   }
 
   function showEditor(drama?: Drama) {
@@ -249,6 +261,7 @@ export function DramasPage() {
         <>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditor()}>新增短剧</Button>
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
+          <Button icon={<ClockCircleOutlined />} loading={backfillingMinutes} onClick={backfillTotalMinutes}>补总时长</Button>
           <Button
             icon={<SyncOutlined />}
             disabled={!selectedRowKeys.length}
@@ -304,7 +317,7 @@ export function DramasPage() {
     >
       <AdminTable<Drama>
         rowKey="id"
-        scroll={{ x: 1570 }}
+        scroll={{ x: 1650 }}
         tableLayout="fixed"
         reloadKey={`${version}-${JSON.stringify(filters)}`}
         loadPage={(page, size) => apiGetPage<Drama>('/admin/dramas', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
@@ -345,6 +358,7 @@ export function DramasPage() {
           },
           { title: '评分', dataIndex: 'rating', width: 80, render: (rating?: number) => `${rating ?? 5}分` },
           { title: '集数', dataIndex: 'episodes', width: 80, render: (episodes: Drama['episodes']) => episodes?.length ?? 0 },
+          { title: '总时长', dataIndex: 'totalMinutes', width: 90, render: (value?: number) => value ? `${value} 分钟` : '-' },
           { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
           {
             title: '状态',
@@ -430,6 +444,7 @@ export function DramasPage() {
               <h3>基础信息</h3>
               <div className="drama-detail-grid">
                 {detailItem('集数', viewing.episodes?.length ?? 0)}
+                {detailItem('总时长', viewing.totalMinutes ? `${viewing.totalMinutes} 分钟` : '-')}
                 {detailItem('评分', `${viewing.rating ?? 5}分`)}
                 {detailItem('创建时间', formatDateTime(viewing.createdAt))}
                 {detailItem('更新时间', formatDateTime(viewing.updatedAt))}

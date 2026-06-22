@@ -330,6 +330,21 @@ public class DramaController {
         );
     }
 
+    @PostMapping("/api/admin/dramas/backfill-total-minutes")
+    ApiResponse<DramaDtos.BackfillTotalMinutesResponse> backfillTotalMinutes() {
+        List<Drama> dramas = repository.findAll();
+        Instant updatedAt = Instant.now();
+        long updated = dramas.stream()
+                .filter(DramaDurationEstimator::needsTotalMinutes)
+                .peek(drama -> drama.setTotalMinutes(DramaDurationEstimator.estimateTotalMinutes(drama)))
+                .map(repository::save)
+                .count();
+        return ApiResponse.ok(
+                new DramaDtos.BackfillTotalMinutesResponse(dramas.size(), updated, updatedAt),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     private Drama apply(Drama drama, DramaDtos.DramaRequest request) {
         drama.setTitle(request.title());
         drama.setAiTitle(request.aiTitle());

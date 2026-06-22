@@ -292,6 +292,7 @@ class DesktopWindow(QMainWindow):
         self.contract_store = ContractConfigStore(settings.config_dir / "contract-templates.json")
         self.contract_templates = self.contract_store.load()
         self.last_contract_path: Path | None = None
+        self.last_contract_paths: list[Path] = []
         self.auto_task_timer = QTimer(self)
         self.auto_task_timer.setInterval(30_000)
         self.auto_task_timer.timeout.connect(self.run_auto_task_cycle)
@@ -722,9 +723,12 @@ class DesktopWindow(QMainWindow):
         self.contract_preview = QTextEdit()
         self.contract_preview.setReadOnly(True)
         self.contract_preview.setMinimumHeight(300)
+        self.generated_contract_actions_layout = QVBoxLayout()
+        self.generated_contract_actions_layout.setSpacing(6)
         preview_layout.addLayout(form)
         preview_layout.addLayout(actions)
         preview_layout.addWidget(self.contract_preview, 1)
+        preview_layout.addLayout(self.generated_contract_actions_layout)
 
         layout.addWidget(template_panel)
         layout.addWidget(preview_panel, 1)
@@ -1993,8 +1997,10 @@ class DesktopWindow(QMainWindow):
             output = build_contract_output_path(self.settings.contracts_dir, data)
             generated_paths.append(render_contract_docx(template, output, data))
         self.last_contract_path = generated_paths[-1] if generated_paths else None
+        self.last_contract_paths = generated_paths
         if hasattr(self, "contract_preview"):
             self.contract_preview.setPlainText("已生成 Word 合同：\n" + "\n".join(str(path) for path in generated_paths))
+        self.update_generated_contract_actions(generated_paths)
         self.append_log("合同已生成：" + "，".join(str(path) for path in generated_paths))
         QMessageBox.information(self, "合同生成", "合同已生成：\n" + "\n".join(str(path) for path in generated_paths))
         return generated_paths
@@ -2006,12 +2012,44 @@ class DesktopWindow(QMainWindow):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def open_last_contract(self) -> None:
-        if not self.last_contract_path or not self.last_contract_path.exists():
+        existing_paths = [path for path in self.last_contract_paths if path.exists()]
+        if not existing_paths:
             generated = self.generate_contract()
             if not generated:
                 return
-        if self.last_contract_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_contract_path)))
+            existing_paths = [path for path in generated if path.exists()]
+        for path in existing_paths:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def update_generated_contract_actions(self, paths: list[Path]) -> None:
+        if not hasattr(self, "generated_contract_actions_layout"):
+            return
+        while self.generated_contract_actions_layout.count():
+            item = self.generated_contract_actions_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        for path in paths:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            name = QLabel(path.name)
+            name.setToolTip(str(path))
+            full_path = QLineEdit(str(path))
+            full_path.setReadOnly(True)
+            open_button = QPushButton("打开")
+            open_button.clicked.connect(lambda _checked=False, target=path: self.open_generated_contract_file(target))
+            row_layout.addWidget(name)
+            row_layout.addWidget(full_path, 1)
+            row_layout.addWidget(open_button)
+            self.generated_contract_actions_layout.addWidget(row)
+
+    def open_generated_contract_file(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.warning(self, "打开合同", f"文件不存在：{path}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def open_settings_row(self, row: SettingsRow) -> None:
         if row.kind != "directory":

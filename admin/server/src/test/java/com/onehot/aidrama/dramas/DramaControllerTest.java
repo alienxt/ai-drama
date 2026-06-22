@@ -96,6 +96,7 @@ class DramaControllerTest {
                 .append("coverUrl", drama.getCoverUrl())
                 .append("aiCoverUrl", drama.getAiCoverUrl())
                 .append("rating", drama.getRating())
+                .append("totalMinutes", drama.getTotalMinutes())
                 .append("categoryIds", drama.getCategoryIds())
                 .append("episodes", drama.getEpisodes() == null
                         ? List.of()
@@ -103,6 +104,13 @@ class DramaControllerTest {
                                 .map(episode -> new Document("episodeNo", episode.getEpisodeNo()))
                                 .toList())
                 .append("createdAt", drama.getCreatedAt());
+    }
+
+    private DramaEpisode episode(int episodeNo) {
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(episodeNo);
+        episode.setSourcePath("/短剧/%03d.mp4".formatted(episodeNo));
+        return episode;
     }
 
     @Test
@@ -289,6 +297,46 @@ class DramaControllerTest {
         assertThat(DramaDtos.DesktopDramaResponse.class.getRecordComponents())
                 .extracting(java.lang.reflect.RecordComponent::getName)
                 .doesNotContain("episodes");
+    }
+
+    @Test
+    void desktopListReturnsTotalMinutes() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        drama.setTotalMinutes(123);
+        mockDesktopDocuments(mongoTemplate, drama);
+
+        DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
+
+        assertThat(row.totalMinutes()).isEqualTo(123);
+    }
+
+    @Test
+    void backfillTotalMinutesOnlyUpdatesMissingValues() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+        Drama missing = new Drama();
+        missing.setId("missing");
+        missing.setTitle("缺失时长");
+        missing.setEpisodes(List.of(episode(1), episode(2)));
+        Drama existing = new Drama();
+        existing.setId("existing");
+        existing.setTitle("已有时长");
+        existing.setEpisodes(List.of(episode(1)));
+        existing.setTotalMinutes(88);
+        when(repository.findAll()).thenReturn(List.of(missing, existing));
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        DramaDtos.BackfillTotalMinutesResponse response = controller.backfillTotalMinutes().data();
+
+        assertThat(response.requested()).isEqualTo(2);
+        assertThat(response.updated()).isEqualTo(1);
+        assertThat(missing.getTotalMinutes()).isBetween(2, 4);
+        assertThat(existing.getTotalMinutes()).isEqualTo(88);
+        verify(repository).save(missing);
     }
 
     @Test

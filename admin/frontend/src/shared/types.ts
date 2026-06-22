@@ -33,6 +33,7 @@ export type Drama = {
   aiCoverUrl?: string;
   aiCoverGenerating?: boolean;
   rating?: number;
+  totalMinutes?: number;
   categoryIds: string[];
   sourcePath?: string;
   status: 'DRAFT' | 'READY' | 'DISABLED';
@@ -72,6 +73,12 @@ export type DramaAssetSyncAccepted = {
 };
 
 export type DramaBatchFreshResponse = {
+  requested: number;
+  updated: number;
+  updatedAt?: string;
+};
+
+export type DramaBackfillTotalMinutesResponse = {
   requested: number;
   updated: number;
   updatedAt?: string;

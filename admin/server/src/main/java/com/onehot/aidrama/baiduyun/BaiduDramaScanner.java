@@ -3,6 +3,7 @@ package com.onehot.aidrama.baiduyun;
 import com.onehot.aidrama.categories.DramaCategoryClassifier;
 import com.onehot.aidrama.configs.SystemConfigService;
 import com.onehot.aidrama.dramas.Drama;
+import com.onehot.aidrama.dramas.DramaDurationEstimator;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
@@ -309,6 +310,7 @@ public class BaiduDramaScanner {
         Set<String> categoryCodes = classifier.classifyCodes(planned.title(), planned.summary());
         drama.setCategoryIds(List.copyOf(categoryCodes));
         drama.setEpisodes(planned.episodes().stream().map(this::episodeFrom).toList());
+        ensureTotalMinutes(drama);
         return dramaRepository.save(drama);
     }
 
@@ -326,6 +328,12 @@ public class BaiduDramaScanner {
 
     private int episodeCount(Drama drama) {
         return drama.getEpisodes() == null ? 0 : drama.getEpisodes().size();
+    }
+
+    private void ensureTotalMinutes(Drama drama) {
+        if (DramaDurationEstimator.needsTotalMinutes(drama)) {
+            drama.setTotalMinutes(DramaDurationEstimator.estimateTotalMinutes(drama));
+        }
     }
 
     private void mergeScannedMetadata(Drama drama, PlannedDrama planned) {

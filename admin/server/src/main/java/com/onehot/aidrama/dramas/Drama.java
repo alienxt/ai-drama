@@ -21,6 +21,7 @@ public class Drama {
     private boolean aiCoverGenerating;
     private Instant aiPreparationFailedAt;
     private Integer rating = 5;
+    private Integer totalMinutes;
     private List<String> categoryIds = new ArrayList<>();
     private String source = "BAIDU_PAN";
     private String sourcePath;
@@ -58,6 +59,8 @@ public class Drama {
         }
         this.rating = rating;
     }
+    public Integer getTotalMinutes() { return totalMinutes == null ? 0 : totalMinutes; }
+    public void setTotalMinutes(Integer totalMinutes) { this.totalMinutes = totalMinutes == null ? 0 : Math.max(totalMinutes, 0); }
     public List<String> getCategoryIds() { return categoryIds; }
     public void setCategoryIds(List<String> categoryIds) { this.categoryIds = categoryIds; }
     public String getSource() { return source; }
