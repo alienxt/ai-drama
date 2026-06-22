@@ -624,3 +624,32 @@ def test_open_current_media_account_backend_uses_current_account():
     DesktopWindow.open_current_media_account_backend(window)
 
     assert opened == [account]
+
+
+def test_publisher_for_media_account_uses_saved_login_state_ref(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    chrome = object()
+    saved_profile = tmp_path / "profiles" / "wechat_video" / "sph-id"
+    window.media_accounts = [
+        {
+            "id": "media-1",
+            "platform": "WECHAT_VIDEO",
+            "externalAccountId": "sph-id",
+            "loginStateRef": str(saved_profile),
+        }
+    ]
+    calls = []
+
+    class FakePublisher:
+        pass
+
+    def fake_get_publisher(platform, chrome_controller, account_id=None, profile_dir=None):
+        calls.append((platform, chrome_controller, account_id, profile_dir))
+        return FakePublisher()
+
+    monkeypatch.setattr("aidrama_desktop.gui.app.get_publisher", fake_get_publisher)
+
+    publisher = DesktopWindow.publisher_for_media_account(window, chrome, "media-1")
+
+    assert isinstance(publisher, FakePublisher)
+    assert calls == [("WECHAT_VIDEO", chrome, "sph-id", saved_profile)]
