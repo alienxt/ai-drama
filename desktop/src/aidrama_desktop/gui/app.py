@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
-from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QDate, QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -55,6 +56,7 @@ from aidrama_desktop.contracts import (
     build_contract_output_path,
     copy_contract_template,
     render_contract_docx,
+    safe_contract_filename,
 )
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
 from aidrama_desktop.local_agent import create_local_agent_server
@@ -278,6 +280,7 @@ class DesktopWindow(QMainWindow):
         self.cover_cache: dict[str, bytes | None] = {}
         self.cover_loading: dict[str, list[QLabel]] = {}
         self.active_workers: list[Worker] = []
+        self.contract_drama_options: list[dict[str, Any]] = []
         self.auto_task_enabled = False
         self.auto_task_busy = False
         self.current_task_id: str | None = None
@@ -489,9 +492,10 @@ class DesktopWindow(QMainWindow):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(18, 16, 18, 18)
         panel_layout.setSpacing(14)
-        title_label = QLabel(title)
-        title_label.setObjectName("panelTitle")
-        panel_layout.addWidget(title_label)
+        if title:
+            title_label = QLabel(title)
+            title_label.setObjectName("panelTitle")
+            panel_layout.addWidget(title_label)
         return panel, panel_layout
 
     def _metric_card(self, grid: QGridLayout, row: int, column: int, title: str, value: str) -> QLabel:
@@ -611,61 +615,96 @@ class DesktopWindow(QMainWindow):
 
     def _contracts_page(self) -> QWidget:
         page = QWidget()
-        layout = QHBoxLayout(page)
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        template_panel, template_layout = self._panel("合同模板")
+        template_panel, template_layout = self._panel("")
+        template_header = QHBoxLayout()
+        template_title = QLabel("合同模版")
+        template_title.setObjectName("panelTitle")
+        placeholder_help = QPushButton("?")
+        placeholder_help.setObjectName("helpButton")
+        placeholder_help.setFixedSize(24, 24)
+        placeholder_help.clicked.connect(self.show_contract_placeholder_help)
+        template_header.addWidget(template_title)
+        template_header.addWidget(placeholder_help)
+        template_header.addStretch(1)
+
         type_row = QHBoxLayout()
         self.contract_type_input = QComboBox()
         self.contract_type_input.addItem("成本合同", "cost")
         self.contract_type_input.addItem("买剧合同", "purchase")
+        self.contract_type_input.setMinimumHeight(34)
+        self.contract_type_input.setMinimumWidth(180)
+        self.contract_type_input.setMaximumWidth(240)
         self.contract_type_input.currentIndexChanged.connect(self.load_selected_contract_template)
-        choose_template = QPushButton("选择 Word 模板")
+        choose_template = QPushButton("选择")
         choose_template.clicked.connect(self.choose_contract_template)
-        open_template = QPushButton("打开模板")
+        download_template = QPushButton("下载系统模版")
+        download_template.clicked.connect(self.download_contract_template)
+        open_template = QPushButton("打开")
         open_template.clicked.connect(self.open_contract_template)
-        clear_template = QPushButton("清空模板")
+        clear_template = QPushButton("清空")
         clear_template.clicked.connect(self.clear_contract_template)
         type_row.addWidget(QLabel("类型"))
-        type_row.addWidget(self.contract_type_input, 1)
-        type_row.addWidget(choose_template)
-        type_row.addWidget(open_template)
-        type_row.addWidget(clear_template)
+        type_row.addWidget(self.contract_type_input)
+        type_row.addWidget(download_template)
+        type_row.addStretch(1)
+
+        current_template_row = QHBoxLayout()
         self.contract_template_path_input = QLineEdit()
         self.contract_template_path_input.setReadOnly(True)
-        placeholder_hint = QLabel(
-            "Word 模板里可用占位符：{{dramaTitle}}、{{episodeCount}}、{{episodeMinutes}}、{{price}}、{{buyer}}、{{seller}}、{{date}}、{{contractType}}"
+        current_template_row.addWidget(QLabel("当前模版"))
+        current_template_row.addWidget(self.contract_template_path_input, 1)
+        current_template_row.addWidget(choose_template)
+        current_template_row.addWidget(open_template)
+        current_template_row.addWidget(clear_template)
+
+        template_note = QLabel(
+            "1. 下载并打开系统模版，将主体的盖章和法人签名（透明底图片），添加到指定的位置上；\n"
+            "2. 选择整理后的模版作为当前模版。"
         )
-        placeholder_hint.setObjectName("mutedText")
-        template_note = QLabel("模板里的盖章、签字、页眉页脚和排版会保留；请把占位符作为连续文本输入。")
         template_note.setObjectName("mutedText")
+        template_note.setWordWrap(True)
+        template_layout.addLayout(template_header)
         template_layout.addLayout(type_row)
-        template_layout.addWidget(QLabel("当前模板"))
-        template_layout.addWidget(self.contract_template_path_input)
-        template_layout.addWidget(placeholder_hint)
         template_layout.addWidget(template_note)
+        template_layout.addLayout(current_template_row)
         template_layout.addStretch(1)
 
         preview_panel, preview_layout = self._panel("测试生成")
-        form = QFormLayout()
+        form = QGridLayout()
         form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(10)
-        self.contract_drama_input = QLineEdit("神医归来，开局抢婚校花老婆")
-        self.contract_episode_input = QLineEdit("80")
-        self.contract_episode_minutes_input = QLineEdit("80")
-        self.contract_price_input = QLineEdit("5000")
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        self.contract_drama_input = QComboBox()
+        self.contract_drama_input.setMinimumHeight(36)
+        self.contract_drama_input.addItem("正在加载短剧库...", None)
+        self.contract_drama_input.currentIndexChanged.connect(self.on_contract_drama_selected)
+        self.contract_episode_input = QLineEdit("0")
+        self.contract_episode_input.setReadOnly(True)
+        self.contract_episode_minutes_input = QLineEdit("0")
+        self.contract_episode_minutes_input.setReadOnly(True)
+        self.contract_price_input = QLineEdit("0.5")
         self.contract_buyer_input = QLineEdit("甲方公司")
         self.contract_seller_input = QLineEdit("乙方公司")
-        self.contract_date_input = QLineEdit("")
-        self.contract_date_input.setPlaceholderText("留空则使用今天")
-        form.addRow("剧名", self.contract_drama_input)
-        form.addRow("剧集", self.contract_episode_input)
-        form.addRow("总时长（分钟）", self.contract_episode_minutes_input)
-        form.addRow("价格（万）", self.contract_price_input)
-        form.addRow("买方/甲方", self.contract_buyer_input)
-        form.addRow("卖方/乙方", self.contract_seller_input)
-        form.addRow("签署日期", self.contract_date_input)
+        self.contract_date_input = QDateEdit()
+        self.contract_date_input.setCalendarPopup(True)
+        self.contract_date_input.setDisplayFormat("yyyy-MM-dd")
+        self.contract_date_input.setDate(QDate.currentDate())
+        self._add_contract_form_field(form, 0, 0, "剧名", self.contract_drama_input, column_span=2)
+        self._add_contract_form_field(form, 0, 2, "剧集", self.contract_episode_input)
+        self._add_contract_form_field(form, 0, 3, "总时长（分钟）", self.contract_episode_minutes_input)
+        self._add_contract_form_field(form, 0, 4, "价格（万）", self.contract_price_input)
+        self._add_contract_form_field(form, 1, 0, "买方/甲方", self.contract_buyer_input, column_span=2)
+        self._add_contract_form_field(form, 1, 2, "卖方/乙方", self.contract_seller_input, column_span=2)
+        self._add_contract_form_field(form, 1, 4, "签署日期", self.contract_date_input)
+        form.setColumnStretch(0, 1)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(2, 1)
+        form.setColumnStretch(3, 1)
+        form.setColumnStretch(4, 1)
         actions = QHBoxLayout()
         preview = QPushButton("测试生成并打开")
         generate = QPushButton("生成合同")
@@ -684,10 +723,31 @@ class DesktopWindow(QMainWindow):
         preview_layout.addLayout(actions)
         preview_layout.addWidget(self.contract_preview, 1)
 
-        layout.addWidget(template_panel, 1)
+        layout.addWidget(template_panel)
         layout.addWidget(preview_panel, 1)
         QTimer.singleShot(0, self.load_selected_contract_template)
         return page
+
+    @staticmethod
+    def _add_contract_form_field(
+        form: QGridLayout,
+        row: int,
+        column: int,
+        label_text: str,
+        editor: QWidget,
+        *,
+        column_span: int = 1,
+    ) -> None:
+        field = QWidget()
+        field_layout = QVBoxLayout(field)
+        field_layout.setContentsMargins(0, 0, 0, 0)
+        field_layout.setSpacing(6)
+        label = QLabel(label_text)
+        label.setObjectName("fieldLabel")
+        editor.setMinimumHeight(36)
+        field_layout.addWidget(label)
+        field_layout.addWidget(editor)
+        form.addWidget(field, row, column, 1, column_span)
 
     def _tasks_page(self) -> QWidget:
         page = QWidget()
@@ -791,6 +851,8 @@ class DesktopWindow(QMainWindow):
             self.load_media_accounts()
         if item.key == "dramas" and hasattr(self, "drama_table"):
             self.load_dramas(page=self.drama_page)
+        if item.key == "contracts" and hasattr(self, "contract_drama_input"):
+            self.load_contract_dramas()
         self.refresh_status()
 
     def on_logged_in(self) -> None:
@@ -1103,6 +1165,31 @@ class DesktopWindow(QMainWindow):
             except (TypeError, ValueError):
                 return 0
         return len(drama.get("episodes") or [])
+
+    @classmethod
+    def drama_total_minutes(cls, drama: dict[str, Any]) -> int:
+        for key in ("episodeMinutes", "totalMinutes", "durationMinutes", "totalDurationMinutes"):
+            value = drama.get(key)
+            if value is not None:
+                try:
+                    return max(int(value), 0)
+                except (TypeError, ValueError):
+                    pass
+        episodes = drama.get("episodes") or []
+        total_seconds = 0
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            value = episode.get("durationSeconds") or episode.get("seconds")
+            if value is None:
+                continue
+            try:
+                total_seconds += max(int(value), 0)
+            except (TypeError, ValueError):
+                pass
+        if total_seconds:
+            return max(round(total_seconds / 60), 1)
+        return cls.drama_episode_count(drama)
 
     def drama_download_status(self, drama: dict[str, Any]) -> str:
         return self.drama_download_info(drama)[0]
@@ -1673,6 +1760,10 @@ class DesktopWindow(QMainWindow):
     def current_contract_name(self) -> str:
         return self.contract_type_input.currentText() or "合同"
 
+    @staticmethod
+    def contract_api_type(key: str) -> str:
+        return "PURCHASE_CONTRACT" if key == "purchase" else "COST_CONTRACT"
+
     def current_contract_template_path(self) -> Path | None:
         value = self.contract_templates.get(self.current_contract_key())
         return Path(value) if value else None
@@ -1683,9 +1774,71 @@ class DesktopWindow(QMainWindow):
         self.contract_template_path_input.setText(display)
         if hasattr(self, "contract_preview"):
             self.contract_preview.setPlainText(
-                "点击“选择 Word 模板”上传用户整理好的 .docx 合同模板。\n"
+                "点击“选择”上传整理好的 .docx 合同模板。"
                 "测试生成会输出新的 .docx 文件并用系统默认应用打开。"
+                "测试生成会输出新的 .docx 文件并用系统默认应用打开"
             )
+
+    def load_contract_dramas(self) -> None:
+        if not hasattr(self, "contract_drama_input"):
+            return
+        self.contract_drama_input.blockSignals(True)
+        self.contract_drama_input.clear()
+        self.contract_drama_input.addItem("正在加载短剧库...", None)
+        self.contract_drama_input.setEnabled(False)
+        self.contract_drama_input.blockSignals(False)
+        self.contract_episode_input.setText("0")
+        self.contract_episode_minutes_input.setText("0")
+
+        def render(result: dict[str, Any]) -> None:
+            rows = result.get("content") or []
+            self.contract_drama_options = [row for row in rows if isinstance(row, dict)]
+            self.contract_drama_input.blockSignals(True)
+            self.contract_drama_input.clear()
+            if not self.contract_drama_options:
+                self.contract_drama_input.addItem("暂无可选短剧", None)
+                self.contract_drama_input.setEnabled(False)
+            else:
+                for drama in self.contract_drama_options:
+                    title = str(drama.get("aiTitle") or drama.get("title") or "未命名短剧")
+                    count = self.drama_episode_count(drama)
+                    self.contract_drama_input.addItem(f"{title}（{count}集）", drama)
+                self.contract_drama_input.setEnabled(True)
+            self.contract_drama_input.blockSignals(False)
+            self.on_contract_drama_selected()
+
+        self.run_async(
+            "加载合同短剧列表",
+            lambda: self.api().get(self.build_drama_list_path(page=0, size=1000)),
+            render,
+            log_result=False,
+        )
+
+    def on_contract_drama_selected(self) -> None:
+        drama = self.contract_drama_input.currentData()
+        if not isinstance(drama, dict):
+            self.contract_episode_input.setText("0")
+            self.contract_episode_minutes_input.setText("0")
+            return
+        episode_count = self.drama_episode_count(drama)
+        total_minutes = self.drama_total_minutes(drama)
+        self.contract_episode_input.setText(str(episode_count))
+        self.contract_episode_minutes_input.setText(str(total_minutes))
+
+    def show_contract_placeholder_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "Word 模版占位符",
+            "Word 模版里可用占位符：\n\n"
+            "{{dramaTitle}}：剧名\n"
+            "{{episodeCount}}：集数\n"
+            "{{episodeMinutes}}：总时长（分钟）\n"
+            "{{price}}：价格（万）\n"
+            "{{buyer}}：买方/甲方\n"
+            "{{seller}}：卖方/乙方\n"
+            "{{date}}：签署日期\n"
+            "{{contractType}}：合同类型",
+        )
 
     def choose_contract_template(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "选择 Word 合同模板", "", "Word 文档 (*.docx)")
@@ -1706,6 +1859,138 @@ class DesktopWindow(QMainWindow):
         self.append_log(f"合同模板已保存：{target}")
         QMessageBox.information(self, "合同配置", f"合同模板已保存：{target}")
 
+    def download_contract_template(self) -> None:
+        key = self.current_contract_key()
+        label = self.current_contract_name()
+        query = urlencode({"type": self.contract_api_type(key)})
+        self.run_async(
+            f"加载{label}系统模版",
+            lambda: (key, label, self.api().get(f"/desktop/contract-templates?{query}")),
+            self.prompt_contract_template_download,
+            log_result=False,
+        )
+
+    def prompt_contract_template_download(self, result: tuple[str, str, list[dict[str, Any]]]) -> None:
+        key, label, templates = result
+        available = [template for template in (templates or []) if template.get("downloadUrl")]
+        if not available:
+            QMessageBox.information(self, "下载系统模版", f"后台还没有配置可下载的{label}系统模版。")
+            return
+        if len(available) == 1:
+            self.download_remote_contract_template(key, label, available[0])
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"选择{label}系统模版")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(460)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        hint = QLabel("后台有多套系统模版，请选择要下载到本机的一套。")
+        hint.setObjectName("mutedText")
+        layout.addWidget(hint)
+
+        template_list = QListWidget()
+        template_list.setMinimumHeight(260)
+        template_list.setMaximumHeight(300)
+        for template in available:
+            item = QListWidgetItem(self.contract_template_item_label(template))
+            item.setData(Qt.UserRole, template)
+            template_list.addItem(item)
+        template_list.setCurrentRow(0)
+        layout.addWidget(template_list)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("下载并打开系统模版")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(lambda: self.accept_contract_template_download(dialog, key, label, template_list))
+        layout.addWidget(buttons)
+        dialog.open()
+
+    def accept_contract_template_download(
+        self,
+        dialog: QDialog,
+        key: str,
+        label: str,
+        template_list: QListWidget,
+    ) -> None:
+        item = template_list.currentItem()
+        if not item:
+            QMessageBox.warning(dialog, "下载系统模版", "请选择一套系统模版。")
+            return
+        dialog.accept()
+        self.download_remote_contract_template(key, label, item.data(Qt.UserRole))
+
+    def download_remote_contract_template(self, key: str, label: str, template: dict[str, Any]) -> None:
+        download_url = str(template.get("downloadUrl") or "")
+        if not download_url:
+            QMessageBox.warning(self, "下载系统模版", "这套系统模版没有可下载文件。")
+            return
+        url = self.resolve_resource_url(download_url)
+        headers = self.api().download_headers()
+        self.run_async(
+            f"下载{label}系统模版",
+            lambda: self.fetch_remote_contract_template(key, template, url, headers),
+            lambda path: self.on_contract_template_downloaded(key, Path(path)),
+            log_result=False,
+        )
+
+    def fetch_remote_contract_template(
+        self,
+        key: str,
+        template: dict[str, Any],
+        url: str,
+        headers: dict[str, str],
+    ) -> Path:
+        target_dir = self.settings.config_dir / "contract-templates"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        source_name = str(template.get("name") or template.get("fileName") or key)
+        file_name = safe_contract_filename(source_name)
+        if not file_name.lower().endswith(".docx"):
+            file_name = f"{file_name}.docx"
+        target = target_dir / f"{key}-{file_name}"
+        try:
+            with httpx.Client(timeout=60, follow_redirects=True) as client:
+                response = client.get(url, headers=headers)
+        except httpx.RequestError as exception:
+            raise RuntimeError("无法下载合同系统模版，请稍后重试。") from exception
+        if response.status_code >= 400:
+            raise RuntimeError(f"合同系统模版下载失败（HTTP {response.status_code}）。")
+        target.write_bytes(response.content)
+        return target
+
+    def on_contract_template_downloaded(self, key: str, path: Path) -> None:
+        self.contract_templates[key] = path
+        self.contract_store.save(self.contract_templates)
+        if self.current_contract_key() == key:
+            self.load_selected_contract_template()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        self.append_log(f"合同系统模版已下载并打开：{path}")
+        QMessageBox.information(self, "下载系统模版", f"合同系统模版已下载并打开：{path}")
+
+    @staticmethod
+    def contract_template_item_label(template: dict[str, Any]) -> str:
+        name = str(template.get("name") or "未命名系统模版")
+        file_name = str(template.get("fileName") or "")
+        file_size = DesktopWindow.format_file_size(template.get("fileSize"))
+        suffix = f" · {file_name}" if file_name and file_name != name else ""
+        return f"{name}{suffix} · {file_size}"
+
+    @staticmethod
+    def format_file_size(value: Any) -> str:
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return "未知大小"
+        if size <= 0:
+            return "未知大小"
+        if size < 1024 * 1024:
+            return f"{max(1, round(size / 1024))} KB"
+        return f"{size / 1024 / 1024:.1f} MB"
+
     def open_contract_template(self) -> None:
         template = self.current_contract_template_path()
         if not template or not template.exists():
@@ -1720,15 +2005,21 @@ class DesktopWindow(QMainWindow):
         self.append_log("合同模板已清空。")
 
     def contract_render_input(self) -> ContractRenderInput:
+        drama = self.contract_drama_input.currentData()
+        drama_title = ""
+        if isinstance(drama, dict):
+            drama_title = str(drama.get("aiTitle") or drama.get("title") or "")
+        if not drama_title:
+            drama_title = self.contract_drama_input.currentText().strip()
         return ContractRenderInput(
             contract_type=self.current_contract_name(),
-            drama_title=self.contract_drama_input.text().strip() or "未命名短剧",
+            drama_title=drama_title or "未命名短剧",
             episode_count=self.contract_episode_input.text().strip() or "0",
             episode_minutes=self.contract_episode_minutes_input.text().strip() or "0",
             price=self.contract_price_input.text().strip() or "0",
             buyer=self.contract_buyer_input.text().strip() or "甲方",
             seller=self.contract_seller_input.text().strip() or "乙方",
-            sign_date=self.contract_date_input.text().strip(),
+            sign_date=self.contract_date_input.date().toString("yyyy-MM-dd"),
         )
 
     def generate_contract(self) -> Path | None:
@@ -2158,6 +2449,18 @@ def apply_style(app: QApplication) -> None:
         QPushButton#tableActionButton:hover {
             background: #dfeeff;
             border-color: #b8d4ff;
+        }
+        QPushButton#helpButton {
+            color: #2563eb;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 12px;
+            padding: 0;
+            font-weight: 800;
+        }
+        QPushButton#helpButton:hover {
+            background: #dbeafe;
+            border-color: #93c5fd;
         }
         QLineEdit, QTextEdit, QTableWidget {
             background: #ffffff;

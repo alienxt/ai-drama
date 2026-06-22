@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.data.mongodb.config.EnableMongoAuditing;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.data.mongodb.core.index.IndexInfo;
 
 import static org.springframework.data.domain.Sort.Direction.ASC;
 import static org.springframework.data.domain.Sort.Direction.DESC;
@@ -15,10 +16,22 @@ import static org.springframework.data.domain.Sort.Direction.DESC;
 public class MongoConfig {
     @Bean
     ApplicationRunner ensureMongoIndexes(MongoTemplate mongoTemplate) {
-        return args -> mongoTemplate.indexOps("dramas")
+        return args -> {
+            mongoTemplate.indexOps("dramas")
                 .ensureIndex(new Index()
                         .on("status", ASC)
                         .on("updatedAt", DESC)
                         .named("drama_status_updated_at_idx"));
+            var contractTemplateIndexes = mongoTemplate.indexOps("contract_templates");
+            contractTemplateIndexes.getIndexInfo().stream()
+                    .filter(IndexInfo::isUnique)
+                    .filter(index -> index.getIndexFields().size() == 1)
+                    .filter(index -> "type".equals(index.getIndexFields().get(0).getKey()))
+                    .forEach(index -> contractTemplateIndexes.dropIndex(index.getName()));
+            contractTemplateIndexes.ensureIndex(new Index()
+                    .on("type", ASC)
+                    .on("uploadedAt", DESC)
+                    .named("contract_template_type_uploaded_at_idx"));
+        };
     }
 }

@@ -64,6 +64,7 @@ public class DramaDtos {
             List<String> categoryIds,
             List<String> categoryNames,
             int episodeCount,
+            int totalMinutes,
             Instant createdAt,
             boolean prioritized
     ) {
@@ -78,6 +79,7 @@ public class DramaDtos {
                 List<String> categoryIds,
                 List<String> categoryNames,
                 int episodeCount,
+                int totalMinutes,
                 Instant createdAt,
                 boolean prioritized
         ) {
@@ -92,6 +94,7 @@ public class DramaDtos {
                     categoryIds == null ? List.of() : categoryIds,
                     categoryNames,
                     episodeCount,
+                    totalMinutes,
                     createdAt,
                     prioritized
             );

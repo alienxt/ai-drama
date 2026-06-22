@@ -22,6 +22,7 @@ pnpm-debug.log*
 !.env.example
 
 # Java
+.m2/
 admin/server/target/
 admin/server/uploads/
 admin/server/uploads-test/

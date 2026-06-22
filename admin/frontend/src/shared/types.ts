@@ -193,6 +193,19 @@ export type DesktopVersion = {
   updatedAt?: string;
 };
 
+export type ContractTemplate = {
+  id: string;
+  type: 'COST_CONTRACT' | 'PURCHASE_CONTRACT';
+  label: string;
+  name: string;
+  fileName?: string;
+  fileSize: number;
+  downloadUrl?: string;
+  uploadedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type DownloadInvite = {
   id: string;
   code: string;

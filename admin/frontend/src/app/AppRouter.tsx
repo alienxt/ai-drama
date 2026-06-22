@@ -11,6 +11,7 @@ import { MediaAccountsPage } from '../features/media/MediaAccountsPage';
 import { TasksPage } from '../features/tasks/TasksPage';
 import { AiTasksPage } from '../features/ai-tasks/AiTasksPage';
 import { DesktopVersionsPage } from '../features/versions/DesktopVersionsPage';
+import { ContractTemplatesPage } from '../features/contracts/ContractTemplatesPage';
 import { DownloadInvitesPage } from '../features/download-invites/DownloadInvitesPage';
 import { ExceptionLogsPage, RequestLogsPage } from '../features/logs/LogsPage';
 import { SystemTasksPage } from '../features/system-tasks/SystemTasksPage';
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
       { path: 'configs', element: <ConfigsPage /> },
       { path: 'dramas', element: <DramasPage /> },
       { path: 'media-accounts', element: <MediaAccountsPage /> },
+      { path: 'contract-templates', element: <ContractTemplatesPage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'ai-tasks', element: <AiTasksPage /> },
       { path: 'desktop-versions', element: <DesktopVersionsPage /> },

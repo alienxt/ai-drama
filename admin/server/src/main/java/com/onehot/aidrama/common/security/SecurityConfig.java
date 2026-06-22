@@ -35,6 +35,7 @@ public class SecurityConfig {
                                 "/request-logs",
                                 "/exception-logs",
                                 "/media-accounts",
+                                "/contract-templates",
                                 "/tasks",
                                 "/desktop-versions",
                                 "/download-invites",

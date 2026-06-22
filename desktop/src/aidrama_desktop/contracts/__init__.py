@@ -5,6 +5,7 @@ from aidrama_desktop.contracts.generator import (
     copy_contract_template,
     default_contract_templates,
     render_contract_docx,
+    safe_contract_filename,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "copy_contract_template",
     "default_contract_templates",
     "render_contract_docx",
+    "safe_contract_filename",
 ]
