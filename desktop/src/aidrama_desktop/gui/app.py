@@ -781,6 +781,13 @@ class DesktopWindow(QMainWindow):
         self.current_task_label.setObjectName("mutedText")
         self.current_media_account_label = QLabel("当前媒体号：-")
         self.current_media_account_label.setObjectName("mutedText")
+        self.current_media_backend_button = QPushButton("打开媒体后台")
+        self.current_media_backend_button.setEnabled(False)
+        self.current_media_backend_button.clicked.connect(self.open_current_media_account_backend)
+        media_account_row = QHBoxLayout()
+        media_account_row.addWidget(self.current_media_account_label)
+        media_account_row.addWidget(self.current_media_backend_button)
+        media_account_row.addStretch(1)
         self.task_stage_label = QLabel("当前阶段：空闲")
         self.task_stage_label.setObjectName("mutedText")
         self.task_error_label = QLabel("最近错误：-")
@@ -791,7 +798,7 @@ class DesktopWindow(QMainWindow):
         panel_layout.addLayout(actions)
         panel_layout.addWidget(self.auto_task_state)
         panel_layout.addWidget(self.current_task_label)
-        panel_layout.addWidget(self.current_media_account_label)
+        panel_layout.addLayout(media_account_row)
         panel_layout.addWidget(self.task_stage_label)
         panel_layout.addWidget(self.task_error_label)
         panel_layout.addWidget(note)
@@ -2123,6 +2130,13 @@ class DesktopWindow(QMainWindow):
 
         self.run_async("绑定媒体号", task)
 
+    def open_current_media_account_backend(self) -> None:
+        account = self.current_media_account()
+        if not account:
+            QMessageBox.warning(self, "媒体后台", "当前任务没有可用的媒体号信息。")
+            return
+        self.open_media_account(account)
+
     @staticmethod
     def media_profile_key(account: dict[str, Any], fallback: Any) -> str | None:
         external_id = str(account.get("externalAccountId") or "").strip()
@@ -2585,14 +2599,16 @@ class DesktopWindow(QMainWindow):
             self.current_task_label.setText(f"当前任务：{task_id or '-'}")
         if hasattr(self, "current_media_account_label"):
             self.current_media_account_label.setText(f"当前媒体号：{self.current_media_account_display()}")
+        if hasattr(self, "current_media_backend_button"):
+            self.current_media_backend_button.setEnabled(self.current_media_account() is not None)
         if hasattr(self, "task_stage_label"):
             self.task_stage_label.setText(f"当前阶段：{display_stage}")
 
-    def current_media_account_display(self) -> str:
+    def current_media_account(self) -> dict[str, Any] | None:
         media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()
         if not media_account_id:
-            return "-"
-        account = next(
+            return None
+        return next(
             (
                 item
                 for item in getattr(self, "media_accounts", [])
@@ -2600,6 +2616,12 @@ class DesktopWindow(QMainWindow):
             ),
             None,
         )
+
+    def current_media_account_display(self) -> str:
+        media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()
+        if not media_account_id:
+            return "-"
+        account = self.current_media_account()
         if not account:
             return media_account_id
         return str(account.get("displayName") or account.get("externalAccountId") or media_account_id)

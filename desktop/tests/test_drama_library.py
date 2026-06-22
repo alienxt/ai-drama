@@ -595,6 +595,7 @@ def test_task_progress_displays_current_media_account_name():
     window.auto_task_state = QLabel()
     window.current_task_label = QLabel()
     window.current_media_account_label = QLabel()
+    window.current_media_backend_button = QPushButton()
     window.task_stage_label = QLabel()
     window.task_error_label = QLabel()
 
@@ -608,3 +609,18 @@ def test_task_progress_displays_current_media_account_name():
     assert app is not None
     assert window.current_task_label.text() == "当前任务：task-1"
     assert window.current_media_account_label.text() == "当前媒体号：染柒剧作"
+    assert window.current_media_backend_button.isEnabled() is True
+
+
+def test_open_current_media_account_backend_uses_current_account():
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    account = {"id": "media-1", "displayName": "染柒剧作"}
+    opened = []
+    window.current_media_account_id = "media-1"
+    window.media_accounts = [account]
+    window.open_media_account = lambda item: opened.append(item)
+
+    DesktopWindow.open_current_media_account_backend(window)
+
+    assert opened == [account]
