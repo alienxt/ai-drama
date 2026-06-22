@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import socket
+import time
 from pathlib import Path
 from typing import Any
 
@@ -56,29 +58,44 @@ class WeChatVideoPublisher(PlatformPublisher):
         profile_dir = self._profile_dir()
         with sync_playwright() as playwright:
             try:
-                context = playwright.chromium.launch_persistent_context(
-                    str(profile_dir),
-                    executable_path=self.chrome.chrome_path,
-                    headless=False,
-                    args=[
-                        "--no-first-run",
-                        "--disable-default-apps",
-                        "--disable-session-crashed-bubble",
-                    ],
-                )
+                target_url = self.playlet_url if metadata else self.login_url
+                browser = self._connect_to_chrome(playwright, profile_dir, target_url)
+                context = self._browser_context(browser)
             except Exception as exception:  # noqa: BLE001
-                raise RuntimeError("无法启动视频号发布浏览器，请关闭该媒体号已打开的 Chrome 窗口后重试") from exception
+                raise RuntimeError("无法接管视频号发布浏览器，请关闭该媒体号已打开的 Chrome 窗口后重试") from exception
             try:
-                page = self._open_publish_page(context, self.playlet_url if metadata else self.login_url)
+                page = self._open_publish_page(context, target_url)
                 if metadata:
                     self._upload_playlet(page, media_files, title, summary, metadata, PlaywrightTimeoutError)
                 else:
                     for media_file in media_files:
                         self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
             finally:
-                self._close_context(context)
+                self._close_browser(browser)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
+
+    def _connect_to_chrome(self, playwright, profile_dir: Path, target_url: str):
+        port = available_remote_debugging_port()
+        self.chrome.open_profile(profile_dir, target_url, remote_debugging_port=port)
+        endpoint = f"http://127.0.0.1:{port}"
+        last_exception: Exception | None = None
+        for _ in range(30):
+            try:
+                return playwright.chromium.connect_over_cdp(endpoint)
+            except Exception as exception:  # noqa: BLE001
+                last_exception = exception
+                time.sleep(0.2)
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Chrome remote debugging endpoint did not become ready")
+
+    @staticmethod
+    def _browser_context(browser):
+        contexts = list(getattr(browser, "contexts", []) or [])
+        if contexts:
+            return contexts[0]
+        return browser.new_context()
 
     def _open_publish_page(self, context, target_url: str):
         startup_pages = list(getattr(context, "pages", []) or [])
@@ -114,9 +131,9 @@ class WeChatVideoPublisher(PlatformPublisher):
                     pass
 
     @staticmethod
-    def _close_context(context) -> None:
+    def _close_browser(browser) -> None:
         try:
-            context.close()
+            browser.close()
         except Exception:
             pass
 
@@ -233,3 +250,9 @@ class WeChatVideoPublisher(PlatformPublisher):
             chooser.value.set_files(paths)
         except timeout_error as exception:
             raise RuntimeError("未找到视频号剧集管理上传入口，请确认已登录并停留在剧集管理页面") from exception
+
+
+def available_remote_debugging_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])

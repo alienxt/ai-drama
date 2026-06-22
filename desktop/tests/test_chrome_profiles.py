@@ -39,9 +39,14 @@ def test_wechat_video_publisher_prefers_saved_profile_dir(tmp_path: Path):
 def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_path: Path, monkeypatch):
     visited_urls = []
     uploaded = []
+    opened = []
+    connected = []
 
     class FakePage:
+        url = "about:blank"
+
         def goto(self, url, wait_until=None):
+            self.url = url
             visited_urls.append((url, wait_until))
 
         def wait_for_timeout(self, _timeout):
@@ -60,11 +65,15 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
             return None
 
     class FakeChromium:
-        def launch_persistent_context(self, user_data_dir, executable_path=None, headless=False, args=None):
-            assert user_data_dir == str(tmp_path / "wechat_video" / "media-1")
-            assert executable_path == "chrome"
-            assert headless is False
-            return FakeContext()
+        def connect_over_cdp(self, endpoint_url):
+            connected.append(endpoint_url)
+            return FakeBrowser()
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+
+        def close(self):
+            return None
 
     class FakePlaywright:
         chromium = FakeChromium()
@@ -75,6 +84,10 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
         def __exit__(self, exc_type, exc, traceback):
             return False
 
+    monkeypatch.setattr(
+        "aidrama_desktop.platforms.wechat_video.available_remote_debugging_port",
+        lambda: 9333,
+    )
     monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
     monkeypatch.setattr(
         WeChatVideoPublisher,
@@ -83,18 +96,23 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
             (media_files, title, summary, metadata)
         ),
     )
-    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+    chrome = ChromeController("chrome", tmp_path)
+    monkeypatch.setattr(chrome, "open_profile", lambda profile_dir, url, remote_debugging_port=None: opened.append((profile_dir, url, remote_debugging_port)))
+    publisher = get_publisher("WECHAT_VIDEO", chrome, account_id="media-1")
     media_file = tmp_path / "001.mp4"
 
     result = publisher.publish([media_file], "神医归来", summary="简介", metadata={"coverFile": tmp_path / "cover.jpg"})
 
     assert result == "wechat-playlet:神医归来:1"
+    assert opened == [(tmp_path / "wechat_video" / "media-1", WeChatVideoPublisher.playlet_url, 9333)]
+    assert connected == ["http://127.0.0.1:9333"]
     assert visited_urls == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
     assert uploaded == [([media_file], "神医归来", "简介", {"coverFile": tmp_path / "cover.jpg"})]
 
 
 def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tmp_path: Path, monkeypatch):
     uploaded_pages = []
+    opened = []
 
     class FakePage:
         def __init__(self, url="about:blank"):
@@ -129,9 +147,15 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
 
     context = FakeContext()
 
+    class FakeBrowser:
+        contexts = [context]
+
+        def close(self):
+            context.close()
+
     class FakeChromium:
-        def launch_persistent_context(self, *_args, **_kwargs):
-            return context
+        def connect_over_cdp(self, _endpoint_url):
+            return FakeBrowser()
 
     class FakePlaywright:
         chromium = FakeChromium()
@@ -142,19 +166,26 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
         def __exit__(self, exc_type, exc, traceback):
             return False
 
+    monkeypatch.setattr(
+        "aidrama_desktop.platforms.wechat_video.available_remote_debugging_port",
+        lambda: 9333,
+    )
     monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
     monkeypatch.setattr(
         WeChatVideoPublisher,
         "_upload_playlet",
         lambda self, page, media_files, title, summary, metadata, timeout_error: uploaded_pages.append(page),
     )
-    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+    chrome = ChromeController("chrome", tmp_path)
+    monkeypatch.setattr(chrome, "open_profile", lambda profile_dir, url, remote_debugging_port=None: opened.append((profile_dir, url, remote_debugging_port)))
+    publisher = get_publisher("WECHAT_VIDEO", chrome, account_id="media-1")
     media_file = tmp_path / "001.mp4"
 
     publisher.publish([media_file], "神医归来", metadata={"coverFile": tmp_path / "cover.jpg"})
 
     assert blank_page.closed is False
     assert uploaded_pages == [blank_page]
+    assert opened == [(tmp_path / "wechat_video" / "media-1", WeChatVideoPublisher.playlet_url, 9333)]
     assert blank_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
     assert unexpected_page.visited == []
     assert context.closed is True
