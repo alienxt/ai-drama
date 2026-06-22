@@ -482,6 +482,123 @@ body {
   color: #475569;
 }
 
+.task-monitor-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.task-status-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.task-status-total,
+.task-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 10px;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #e5eaf0;
+  border-radius: 8px;
+}
+
+.task-status-total {
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+.task-status-total strong,
+.task-status-item strong {
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.task-status-item .ant-tag {
+  margin-inline-end: 0;
+}
+
+.task-execution-chain {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  padding-inline: 2px;
+  white-space: nowrap;
+}
+
+.task-chain-fragment {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.task-chain-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  max-width: 62px;
+  min-height: 24px;
+  padding: 2px 6px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+}
+
+.task-chain-connector {
+  width: 12px;
+  height: 1px;
+  margin-inline: 3px;
+  background: #cbd5e1;
+}
+
+.task-chain-step-done {
+  color: #14532d;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.task-chain-step-active {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.task-chain-step-failed {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.task-chain-step-cancelled {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
+.task-chain-step-waiting {
+  color: #64748b;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.task-chain-connector-done {
+  background: #86efac;
+}
+
 .drama-detail {
   display: flex;
   flex-direction: column;

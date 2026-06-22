@@ -33,6 +33,11 @@ public class DistributionTaskController {
         return ApiResponse.ok(service.listAdminTasks(keyword, status, pageable), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @GetMapping("/api/admin/distribution-tasks/stats")
+    ApiResponse<List<DistributionDtos.TaskStatusCount>> stats(@RequestParam(required = false) String keyword) {
+        return ApiResponse.ok(service.adminTaskStatusCounts(keyword), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
     @PostMapping("/api/admin/distribution-tasks/generate")
     ApiResponse<List<DistributionTask>> generate() {
         return ApiResponse.ok(service.generateTasks(), MDC.get(TraceIdFilter.TRACE_ID));

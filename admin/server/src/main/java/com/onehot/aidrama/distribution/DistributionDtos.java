@@ -5,6 +5,8 @@ import java.time.Instant;
 public class DistributionDtos {
     public record AdminTaskResponse(
             String id,
+            String ownerAccountId,
+            String ownerUsername,
             String mediaAccountId,
             String mediaAccountName,
             String dramaId,
@@ -16,9 +18,17 @@ public class DistributionDtos {
             Instant createdAt,
             Instant finishedAt
     ) {
-        public static AdminTaskResponse from(DistributionTask task, String mediaAccountName, String dramaTitle) {
+        public static AdminTaskResponse from(
+                DistributionTask task,
+                String ownerAccountId,
+                String ownerUsername,
+                String mediaAccountName,
+                String dramaTitle
+        ) {
             return new AdminTaskResponse(
                     task.getId(),
+                    ownerAccountId,
+                    ownerUsername,
                     task.getMediaAccountId(),
                     mediaAccountName,
                     task.getDramaId(),
@@ -41,6 +51,9 @@ public class DistributionDtos {
                 default -> null;
             };
         }
+    }
+
+    public record TaskStatusCount(DistributionTaskStatus status, long count) {
     }
 
     public record ClaimRequest(String deviceId) {

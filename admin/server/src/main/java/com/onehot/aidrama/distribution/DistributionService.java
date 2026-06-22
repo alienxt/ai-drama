@@ -6,6 +6,8 @@ import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
+import com.onehot.aidrama.users.Account;
+import com.onehot.aidrama.users.AccountRepository;
 import org.bson.types.ObjectId;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Pageable;
@@ -21,6 +23,8 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,6 +37,7 @@ public class DistributionService {
     private final DramaRepository dramaRepository;
     private final MediaAccountRepository mediaAccountRepository;
     private final DistributionTaskRepository taskRepository;
+    private final AccountRepository accountRepository;
     private final MongoTemplate mongoTemplate;
     private final DistributionPlanner planner = new DistributionPlanner();
 
@@ -41,11 +46,13 @@ public class DistributionService {
             DramaRepository dramaRepository,
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository,
+            AccountRepository accountRepository,
             MongoTemplate mongoTemplate
     ) {
         this.dramaRepository = dramaRepository;
         this.mediaAccountRepository = mediaAccountRepository;
         this.taskRepository = taskRepository;
+        this.accountRepository = accountRepository;
         this.mongoTemplate = mongoTemplate;
     }
 
@@ -54,7 +61,7 @@ public class DistributionService {
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, null);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null);
     }
 
     public List<DistributionTask> generateTasks() {
@@ -75,6 +82,13 @@ public class DistributionService {
         return taskResponsePage(findTasks(keyword, status, pageable, null));
     }
 
+    public List<DistributionDtos.TaskStatusCount> adminTaskStatusCounts(String keyword) {
+        Map<DistributionTaskStatus, Long> counts = countAdminTasksByStatus(keyword);
+        return Arrays.stream(DistributionTaskStatus.values())
+                .map(status -> new DistributionDtos.TaskStatusCount(status, counts.getOrDefault(status, 0L)))
+                .toList();
+    }
+
     public PageResult<DistributionDtos.AdminTaskResponse> listDesktopTasks(
             String ownerAccountId,
             String keyword,
@@ -89,28 +103,46 @@ public class DistributionService {
     }
 
     private PageResult<DistributionDtos.AdminTaskResponse> taskResponsePage(PageImpl<DistributionTask> taskPage) {
-        List<String> mediaAccountIds = taskPage.getContent().stream()
-                .map(DistributionTask::getMediaAccountId)
-                .distinct()
-                .toList();
-        List<String> dramaIds = taskPage.getContent().stream()
-                .map(DistributionTask::getDramaId)
-                .distinct()
-                .toList();
-        Map<String, MediaAccount> mediaById = mediaAccountRepository.findAllById(mediaAccountIds).stream()
-                .collect(Collectors.toMap(MediaAccount::getId, Function.identity()));
-        Map<String, com.onehot.aidrama.dramas.Drama> dramaById = dramaRepository.findAllById(dramaIds).stream()
-                .collect(Collectors.toMap(com.onehot.aidrama.dramas.Drama::getId, Function.identity()));
-        var rows = taskPage.getContent().stream().map(task -> DistributionDtos.AdminTaskResponse.from(
-                task,
-                Optional.ofNullable(mediaById.get(task.getMediaAccountId()))
-                        .map(MediaAccount::getDisplayName)
-                        .orElse(task.getMediaAccountId()),
-                Optional.ofNullable(dramaById.get(task.getDramaId()))
-                        .map(this::dramaDisplayTitle)
-                        .orElse(task.getDramaId())
-        )).toList();
+        Map<String, MediaAccount> mediaById = mediaAccountsById(taskPage.getContent());
+        Map<String, com.onehot.aidrama.dramas.Drama> dramaById = dramasById(taskPage.getContent());
+        Map<String, Account> ownerById = ownerAccountsById(mediaById);
+        var rows = taskPage.getContent().stream().map(task -> {
+            MediaAccount mediaAccount = mediaById.get(task.getMediaAccountId());
+            String ownerAccountId = mediaAccount == null ? null : mediaAccount.getOwnerAccountId();
+            String ownerUsername = ownerAccountId == null
+                    ? null
+                    : Optional.ofNullable(ownerById.get(ownerAccountId))
+                            .map(Account::getUsername)
+                            .orElse(ownerAccountId);
+            return DistributionDtos.AdminTaskResponse.from(
+                    task,
+                    ownerAccountId,
+                    ownerUsername,
+                    Optional.ofNullable(mediaAccount)
+                            .map(MediaAccount::getDisplayName)
+                            .orElse(task.getMediaAccountId()),
+                    Optional.ofNullable(dramaById.get(task.getDramaId()))
+                            .map(this::dramaDisplayTitle)
+                            .orElse(task.getDramaId())
+            );
+        }).toList();
         return PageResult.from(new PageImpl<>(rows, taskPage.getPageable(), taskPage.getTotalElements()));
+    }
+
+    private Map<String, Account> ownerAccountsById(Map<String, MediaAccount> mediaById) {
+        if (accountRepository == null || mediaById.isEmpty()) {
+            return Map.of();
+        }
+        List<String> ownerAccountIds = mediaById.values().stream()
+                .map(MediaAccount::getOwnerAccountId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+        if (ownerAccountIds.isEmpty()) {
+            return Map.of();
+        }
+        return accountRepository.findAllById(ownerAccountIds).stream()
+                .collect(Collectors.toMap(Account::getId, Function.identity()));
     }
 
     private String dramaDisplayTitle(com.onehot.aidrama.dramas.Drama drama) {
@@ -126,6 +158,35 @@ public class DistributionService {
             Pageable pageable
     ) {
         return findTasks(keyword, status, pageable, null);
+    }
+
+    private Map<DistributionTaskStatus, Long> countAdminTasksByStatus(String keyword) {
+        EnumMap<DistributionTaskStatus, Long> counts = new EnumMap<>(DistributionTaskStatus.class);
+        if (mongoTemplate == null) {
+            List<DistributionTask> tasks = taskRepository.findAll();
+            Map<String, MediaAccount> mediaById = mediaAccountsById(tasks);
+            Map<String, com.onehot.aidrama.dramas.Drama> dramaById = dramasById(tasks);
+            tasks.stream()
+                    .filter(task -> fallbackKeywordMatches(
+                            task,
+                            keyword,
+                            mediaById.get(task.getMediaAccountId()),
+                            dramaById.get(task.getDramaId())
+                    ))
+                    .forEach(task -> incrementStatusCount(counts, task.getStatus()));
+            return counts;
+        }
+        Query query = new Query();
+        Optional.ofNullable(keywordCriteria(keyword)).ifPresent(query::addCriteria);
+        mongoTemplate.find(query, DistributionTask.class)
+                .forEach(task -> incrementStatusCount(counts, task.getStatus()));
+        return counts;
+    }
+
+    private void incrementStatusCount(Map<DistributionTaskStatus, Long> counts, DistributionTaskStatus status) {
+        if (status != null) {
+            counts.merge(status, 1L, Long::sum);
+        }
     }
 
     private PageImpl<DistributionTask> findTasks(
@@ -186,8 +247,12 @@ public class DistributionService {
     private Map<String, MediaAccount> mediaAccountsById(List<DistributionTask> tasks) {
         List<String> mediaAccountIds = tasks.stream()
                 .map(DistributionTask::getMediaAccountId)
+                .filter(value -> value != null && !value.isBlank())
                 .distinct()
                 .toList();
+        if (mediaAccountIds.isEmpty()) {
+            return Map.of();
+        }
         return mediaAccountRepository.findAllById(mediaAccountIds).stream()
                 .collect(Collectors.toMap(MediaAccount::getId, Function.identity()));
     }
@@ -195,8 +260,12 @@ public class DistributionService {
     private Map<String, com.onehot.aidrama.dramas.Drama> dramasById(List<DistributionTask> tasks) {
         List<String> dramaIds = tasks.stream()
                 .map(DistributionTask::getDramaId)
+                .filter(value -> value != null && !value.isBlank())
                 .distinct()
                 .toList();
+        if (dramaIds.isEmpty()) {
+            return Map.of();
+        }
         return dramaRepository.findAllById(dramaIds).stream()
                 .collect(Collectors.toMap(com.onehot.aidrama.dramas.Drama::getId, Function.identity()));
     }
@@ -217,6 +286,7 @@ public class DistributionService {
                 || containsIgnoreCase(task.getFailureReason(), clean)
                 || containsIgnoreCase(mediaAccount == null ? null : mediaAccount.getDisplayName(), clean)
                 || containsIgnoreCase(mediaAccount == null ? null : mediaAccount.getExternalAccountId(), clean)
+                || containsIgnoreCase(mediaAccount == null ? null : mediaAccount.getOwnerAccountId(), clean)
                 || containsIgnoreCase(drama == null ? null : drama.getTitle(), clean)
                 || containsIgnoreCase(drama == null ? null : drama.getAiTitle(), clean);
     }
@@ -240,6 +310,10 @@ public class DistributionService {
         if (!mediaAccountIds.isEmpty()) {
             criteria.add(Criteria.where("mediaAccountId").in(mediaAccountIds));
         }
+        List<String> ownerMediaAccountIds = matchingOwnerMediaAccountIds(clean);
+        if (!ownerMediaAccountIds.isEmpty()) {
+            criteria.add(Criteria.where("mediaAccountId").in(ownerMediaAccountIds));
+        }
         List<String> dramaIds = matchingDramaIds(clean);
         if (!dramaIds.isEmpty()) {
             criteria.add(Criteria.where("dramaId").in(dramaIds));
@@ -254,9 +328,25 @@ public class DistributionService {
         Pattern pattern = Pattern.compile(Pattern.quote(keyword), Pattern.CASE_INSENSITIVE);
         Query query = new Query(new Criteria().orOperator(
                 Criteria.where("displayName").regex(pattern),
-                Criteria.where("externalAccountId").regex(pattern)
+                Criteria.where("externalAccountId").regex(pattern),
+                Criteria.where("ownerAccountId").is(keyword)
         )).limit(200);
         return mongoTemplate.find(query, MediaAccount.class).stream()
+                .map(MediaAccount::getId)
+                .toList();
+    }
+
+    private List<String> matchingOwnerMediaAccountIds(String keyword) {
+        Pattern pattern = Pattern.compile(Pattern.quote(keyword), Pattern.CASE_INSENSITIVE);
+        Query accountQuery = new Query(Criteria.where("username").regex(pattern)).limit(200);
+        List<String> ownerAccountIds = mongoTemplate.find(accountQuery, Account.class).stream()
+                .map(Account::getId)
+                .toList();
+        if (ownerAccountIds.isEmpty()) {
+            return List.of();
+        }
+        Query mediaQuery = new Query(Criteria.where("ownerAccountId").in(ownerAccountIds)).limit(500);
+        return mongoTemplate.find(mediaQuery, MediaAccount.class).stream()
                 .map(MediaAccount::getId)
                 .toList();
     }

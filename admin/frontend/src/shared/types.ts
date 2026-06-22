@@ -132,6 +132,8 @@ export type MediaAccount = {
 
 export type DistributionTask = {
   id: string;
+  ownerAccountId?: string;
+  ownerUsername?: string;
   mediaAccountId: string;
   mediaAccountName?: string;
   dramaId: string;
@@ -142,6 +144,11 @@ export type DistributionTask = {
   platformPublishId?: string;
   createdAt?: string;
   finishedAt?: string;
+};
+
+export type DistributionTaskStatusCount = {
+  status: DistributionTask['status'];
+  count: number;
 };
 
 export type AiTask = {

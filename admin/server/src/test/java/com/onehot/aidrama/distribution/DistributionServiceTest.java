@@ -9,6 +9,8 @@ import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
 import com.onehot.aidrama.media.MediaAccountStatus;
 import com.onehot.aidrama.common.PageResult;
+import com.onehot.aidrama.users.Account;
+import com.onehot.aidrama.users.AccountRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -319,7 +321,14 @@ class DistributionServiceTest {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
-        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+        AccountRepository accountRepository = mock(AccountRepository.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                accountRepository,
+                null
+        );
 
         DistributionTask task = new DistributionTask();
         task.setId("task-1");
@@ -330,6 +339,11 @@ class DistributionServiceTest {
         MediaAccount media = new MediaAccount();
         media.setId("media-1");
         media.setDisplayName("视频号主账号");
+        media.setOwnerAccountId("owner-1");
+
+        Account account = new Account();
+        account.setId("owner-1");
+        account.setUsername("owner-user");
 
         Drama drama = new Drama();
         drama.setId("drama-1");
@@ -339,6 +353,7 @@ class DistributionServiceTest {
         PageRequest pageable = PageRequest.of(0, 10);
         when(taskRepository.findAll(pageable)).thenReturn(new PageImpl<>(List.of(task), pageable, 1));
         when(mediaAccountRepository.findAllById(List.of("media-1"))).thenReturn(List.of(media));
+        when(accountRepository.findAllById(List.of("owner-1"))).thenReturn(List.of(account));
         when(dramaRepository.findAllById(List.of("drama-1"))).thenReturn(List.of(drama));
 
         PageResult<DistributionDtos.AdminTaskResponse> result = service.listAdminTasks(pageable);
@@ -346,6 +361,8 @@ class DistributionServiceTest {
         assertThat(result.totalElements()).isEqualTo(1);
         assertThat(result.content()).singleElement()
                 .satisfies(item -> {
+                    assertThat(item.ownerAccountId()).isEqualTo("owner-1");
+                    assertThat(item.ownerUsername()).isEqualTo("owner-user");
                     assertThat(item.mediaAccountName()).isEqualTo("视频号主账号");
                     assertThat(item.dramaTitle()).isEqualTo("神医归来");
                 });
@@ -385,6 +402,43 @@ class DistributionServiceTest {
 
         assertThat(result.content()).singleElement()
                 .satisfies(item -> assertThat(item.dramaTitle()).isEqualTo("神医归来"));
+    }
+
+    @Test
+    void adminTaskStatusCountsIncludesAllStatuses() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-1");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+        DistributionTask failed = new DistributionTask();
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+
+        when(taskRepository.findAll()).thenReturn(List.of(pending, failed));
+        when(mediaAccountRepository.findAllById(List.of("media-1"))).thenReturn(List.of());
+        when(dramaRepository.findAllById(List.of("drama-1"))).thenReturn(List.of());
+
+        List<DistributionDtos.TaskStatusCount> counts = service.adminTaskStatusCounts(null);
+
+        assertThat(counts).hasSize(DistributionTaskStatus.values().length);
+        assertThat(counts)
+                .filteredOn(item -> item.status() == DistributionTaskStatus.PENDING)
+                .singleElement()
+                .satisfies(item -> assertThat(item.count()).isEqualTo(1));
+        assertThat(counts)
+                .filteredOn(item -> item.status() == DistributionTaskStatus.FAILED)
+                .singleElement()
+                .satisfies(item -> assertThat(item.count()).isEqualTo(1));
+        assertThat(counts)
+                .filteredOn(item -> item.status() == DistributionTaskStatus.SUCCEEDED)
+                .singleElement()
+                .satisfies(item -> assertThat(item.count()).isZero());
     }
 
     @Test
