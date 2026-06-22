@@ -12,10 +12,32 @@ from docx import Document
 
 CONTRACT_MEDIA_PLATFORMS = ("WECHAT_VIDEO",)
 CONTRACT_TEMPLATE_TYPES = ("cost", "purchase")
+CONTRACT_TEMPLATE_TYPE_LABELS = {
+    "cost": "成本合同",
+    "purchase": "购买合同",
+}
+CONTRACT_PLATFORM_TEMPLATE_TYPES = {
+    "WECHAT_VIDEO": ("cost", "purchase"),
+    "TIKTOK": ("purchase",),
+    "DOUYIN": ("purchase",),
+}
 
 
 def contract_template_key(platform: str, contract_type: str) -> str:
     return f"{platform.lower()}:{contract_type}"
+
+
+def required_contract_template_types(platform: str) -> tuple[tuple[str, str], ...]:
+    types = CONTRACT_PLATFORM_TEMPLATE_TYPES.get(platform, ("purchase",))
+    return tuple((contract_type, CONTRACT_TEMPLATE_TYPE_LABELS[contract_type]) for contract_type in types)
+
+
+def all_required_contract_templates_configured(templates: dict[str, Path | str | None], platform: str) -> bool:
+    for contract_type, _label in required_contract_template_types(platform):
+        value = templates.get(contract_template_key(platform, contract_type))
+        if not value or not Path(value).exists():
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -95,6 +117,15 @@ def copy_contract_template(source: Path, template_dir: Path, name: str) -> Path:
     target = template_dir / f"{safe_contract_filename(name)}.docx"
     shutil.copy2(source, target)
     return target
+
+
+def build_contract_template_download_path(target_dir: Path, key: str, template: dict[str, object]) -> Path:
+    source_name = str(template.get("name") or template.get("fileName") or key)
+    file_name = safe_contract_filename(source_name)
+    if not file_name.lower().endswith(".docx"):
+        file_name = f"{file_name}.docx"
+    prefix = safe_contract_filename(key)
+    return target_dir / f"{prefix}-{file_name}"
 
 
 def replace_contract_text(text: str, values: dict[str, str]) -> str:

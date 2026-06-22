@@ -5,9 +5,12 @@ from docx import Document
 from aidrama_desktop.contracts.generator import (
     ContractConfigStore,
     ContractRenderInput,
+    all_required_contract_templates_configured,
+    build_contract_template_download_path,
     copy_contract_template,
     contract_template_key,
     format_contract_date,
+    required_contract_template_types,
     render_contract_docx,
 )
 
@@ -81,3 +84,33 @@ def test_copy_contract_template_keeps_docx_and_safe_name(tmp_path):
 
     assert target.exists()
     assert target.name == "买剧_合同.docx"
+
+
+def test_build_contract_template_download_path_uses_selected_directory_and_safe_docx_name(tmp_path):
+    target = build_contract_template_download_path(
+        tmp_path,
+        "wechat_video:purchase",
+        {"name": "购买合同/标准版", "fileName": "系统模板"},
+    )
+
+    assert target == tmp_path / "wechat_video_purchase-购买合同_标准版.docx"
+
+
+def test_wechat_video_requires_cost_and_purchase_templates(tmp_path):
+    cost = tmp_path / "cost.docx"
+    purchase = tmp_path / "purchase.docx"
+    cost.write_text("cost", encoding="utf-8")
+    purchase.write_text("purchase", encoding="utf-8")
+
+    assert required_contract_template_types("WECHAT_VIDEO") == (("cost", "成本合同"), ("purchase", "购买合同"))
+    assert not all_required_contract_templates_configured(
+        {contract_template_key("WECHAT_VIDEO", "cost"): cost},
+        "WECHAT_VIDEO",
+    )
+    assert all_required_contract_templates_configured(
+        {
+            contract_template_key("WECHAT_VIDEO", "cost"): cost,
+            contract_template_key("WECHAT_VIDEO", "purchase"): purchase,
+        },
+        "WECHAT_VIDEO",
+    )
