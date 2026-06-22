@@ -12,16 +12,31 @@ class WeChatVideoPublisher(PlatformPublisher):
     login_url = "https://channels.weixin.qq.com/platform"
     playlet_url = "https://channels.weixin.qq.com/platform/playlet"
 
-    def __init__(self, chrome: ChromeController, account_id: str | None = None):
+    def __init__(
+        self,
+        chrome: ChromeController,
+        account_id: str | None = None,
+        profile_dir: str | Path | None = None,
+    ):
         self.chrome = chrome
         self.account_id = account_id
+        self.profile_dir = Path(profile_dir) if profile_dir else None
 
     def open_login(self) -> str:
-        self.chrome.open_platform_login("WECHAT_VIDEO", self.login_url, self.account_id)
+        if self.profile_dir:
+            self.chrome.open_profile(self._profile_dir(), self.login_url)
+        else:
+            self.chrome.open_platform_login("WECHAT_VIDEO", self.login_url, self.account_id)
         return self.export_login_state()
 
     def export_login_state(self) -> str:
-        return self.chrome.login_state_ref("WECHAT_VIDEO", self.account_id)
+        return str(self._profile_dir())
+
+    def _profile_dir(self) -> Path:
+        if self.profile_dir:
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
+            return self.profile_dir
+        return self.chrome.platform_profile_dir("WECHAT_VIDEO", self.account_id)
 
     def publish(
         self,
@@ -38,7 +53,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         except ImportError as exception:
             raise RuntimeError("Playwright is required for real WeChat Video publishing") from exception
 
-        profile_dir = self.chrome.platform_profile_dir("WECHAT_VIDEO", self.account_id)
+        profile_dir = self._profile_dir()
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),

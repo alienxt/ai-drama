@@ -22,6 +22,20 @@ def test_wechat_video_publisher_uses_media_account_profile(tmp_path: Path):
     assert publisher.export_login_state() == str(tmp_path / "wechat_video" / "media-1")
 
 
+def test_wechat_video_publisher_prefers_saved_profile_dir(tmp_path: Path):
+    chrome = ChromeController("chrome", tmp_path)
+    saved_profile = tmp_path / "wechat_video" / "external-account"
+    publisher = get_publisher(
+        "WECHAT_VIDEO",
+        chrome,
+        account_id="media-1",
+        profile_dir=saved_profile,
+    )
+
+    assert publisher.export_login_state() == str(saved_profile)
+    assert saved_profile.exists()
+
+
 def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_path: Path, monkeypatch):
     visited_urls = []
     uploaded = []

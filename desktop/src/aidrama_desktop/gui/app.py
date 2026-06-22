@@ -941,7 +941,7 @@ class DesktopWindow(QMainWindow):
             api=self.api(),
             processor=FfmpegProcessor(self.settings.ffmpeg_path),
             publisher=get_publisher("WECHAT_VIDEO", chrome),
-            publisher_factory=lambda media_account_id: get_publisher("WECHAT_VIDEO", chrome, media_account_id),
+            publisher_factory=lambda media_account_id: self.publisher_for_media_account(chrome, media_account_id),
             work_dir=self.settings.work_dir,
             device_id=self.settings.device_id,
             downloads_dir=self.settings.downloads_dir,
@@ -950,6 +950,24 @@ class DesktopWindow(QMainWindow):
             cancel_checker=self.task_cancel_event.is_set,
             download_concurrency=self.settings.download_concurrency,
         )
+
+    def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
+        account = next(
+            (
+                item
+                for item in self.media_accounts
+                if str(item.get("id") or "") == str(media_account_id)
+            ),
+            None,
+        )
+        if not account:
+            return get_publisher("WECHAT_VIDEO", chrome, media_account_id)
+
+        platform = str(account.get("platform") or "WECHAT_VIDEO")
+        profile_key = self.media_profile_key(account, media_account_id)
+        login_state_ref = str(account.get("loginStateRef") or "").strip()
+        profile_dir = Path(login_state_ref) if login_state_ref else None
+        return get_publisher(platform, chrome, profile_key, profile_dir=profile_dir)
 
     def run_async(
         self,
@@ -2074,6 +2092,8 @@ class DesktopWindow(QMainWindow):
         if hasattr(self, "publish_next_button"):
             self.publish_next_button.setEnabled(not busy)
             self.publish_next_button.setText("发布中..." if busy else "发布下一条")
+        if hasattr(self, "auto_task_button"):
+            self.auto_task_button.setEnabled(not busy)
 
     def publish_next(self) -> None:
         if self.manual_publish_busy:
