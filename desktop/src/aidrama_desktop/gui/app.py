@@ -11,9 +11,9 @@ from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
-from PySide6.QtCore import QDate, QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QDate, QObject, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -267,6 +267,7 @@ class DesktopWindow(QMainWindow):
         self.settings = settings
         self.token_store = TokenStore(settings.token_file)
         self.token_store.clear()
+        self.current_username = ""
         self.thread_pool = QThreadPool.globalInstance()
         self.agent = AgentController(settings)
         self.agent.log.connect(self.append_log)
@@ -373,12 +374,16 @@ class DesktopWindow(QMainWindow):
         account_layout = QVBoxLayout(account_panel)
         account_layout.setContentsMargins(12, 12, 12, 12)
         account_layout.setSpacing(8)
+        self.current_username_label = QLabel("当前登录：未登录")
+        self.current_username_label.setObjectName("accountHint")
+        self.current_username_label.setWordWrap(True)
         logout_button = QPushButton("退出登录")
         logout_button.setObjectName("sidebarDangerButton")
         logout_button.clicked.connect(self.logout)
         quit_button = QPushButton("退出应用")
         quit_button.setObjectName("sidebarGhostButton")
         quit_button.clicked.connect(self.quit_app)
+        account_layout.addWidget(self.current_username_label)
         account_layout.addWidget(logout_button)
         account_layout.addWidget(quit_button)
         sidebar_layout.addWidget(account_panel)
@@ -416,15 +421,52 @@ class DesktopWindow(QMainWindow):
         return page
 
     def nav_icon(self, key: str) -> QIcon:
+        if key in {"contracts", "tasks", "settings"}:
+            return self.colored_nav_icon(key)
         icons = {
             "dramas": QStyle.StandardPixmap.SP_DirHomeIcon,
             "media": QStyle.StandardPixmap.SP_DriveNetIcon,
-            "contracts": QStyle.StandardPixmap.SP_FileIcon,
-            "tasks": QStyle.StandardPixmap.SP_MediaPlay,
-            "settings": QStyle.StandardPixmap.SP_FileDialogDetailedView,
             "logs": QStyle.StandardPixmap.SP_FileDialogInfoView,
         }
         return self.style().standardIcon(icons.get(key, QStyle.StandardPixmap.SP_FileIcon))
+
+    @staticmethod
+    def colored_nav_icon(key: str) -> QIcon:
+        pixmap = QPixmap(22, 22)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if key == "contracts":
+            painter.setPen(QPen(QColor("#2563eb"), 1.6))
+            painter.setBrush(QBrush(QColor("#dbeafe")))
+            painter.drawRoundedRect(4, 2, 12, 17, 2, 2)
+            painter.setBrush(QBrush(QColor("#ffffff")))
+            painter.drawRect(7, 7, 6, 1)
+            painter.drawRect(7, 11, 6, 1)
+            painter.setPen(QPen(QColor("#dc2626"), 1.5))
+            painter.setBrush(QBrush(QColor("#fee2e2")))
+            painter.drawEllipse(QRectF(12, 12, 7, 7))
+        elif key == "tasks":
+            painter.setPen(QPen(QColor("#0f766e"), 1.8))
+            painter.setBrush(QBrush(QColor("#ccfbf1")))
+            painter.drawRoundedRect(3, 3, 16, 16, 4, 4)
+            painter.setPen(QPen(QColor("#0f766e"), 1.7))
+            for y in (8, 13):
+                painter.drawLine(8, y, 16, y)
+                painter.drawEllipse(QRectF(5, y - 1.5, 3, 3))
+        elif key == "settings":
+            painter.setPen(QPen(QColor("#7c3aed"), 1.8))
+            painter.setBrush(QBrush(QColor("#ede9fe")))
+            painter.drawEllipse(QRectF(5, 5, 12, 12))
+            painter.setBrush(QBrush(QColor("#ffffff")))
+            painter.drawEllipse(QRectF(9, 9, 4, 4))
+            painter.setPen(QPen(QColor("#7c3aed"), 1.6))
+            painter.drawLine(11, 1, 11, 5)
+            painter.drawLine(11, 17, 11, 21)
+            painter.drawLine(1, 11, 5, 11)
+            painter.drawLine(17, 11, 21, 11)
+        painter.end()
+        return QIcon(pixmap)
 
     def _dramas_page(self) -> QWidget:
         page = QWidget()
@@ -953,6 +995,8 @@ class DesktopWindow(QMainWindow):
     def on_logged_in(self) -> None:
         self.settings = update_settings(self.settings)
         self.agent.settings = self.settings
+        self.current_username = self.login_page.username_input.text().strip()
+        self.update_current_username_label()
         self.append_log("登录成功。")
         self.stack.setCurrentWidget(self.main_page)
         self.show_page(self.nav.currentRow())
@@ -961,9 +1005,15 @@ class DesktopWindow(QMainWindow):
 
     def logout(self) -> None:
         self.token_store.clear()
+        self.current_username = ""
+        self.update_current_username_label()
         self.stack.setCurrentWidget(self.login_page)
         self.append_log("已退出登录。")
         self.refresh_status()
+
+    def update_current_username_label(self) -> None:
+        if hasattr(self, "current_username_label"):
+            self.current_username_label.setText(f"当前登录：{self.current_username or '未登录'}")
 
     def quit_app(self) -> None:
         if self.agent.running:

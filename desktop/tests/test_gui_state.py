@@ -43,6 +43,14 @@ def test_desktop_nav_items_cover_core_gui_pages():
     ]
 
 
+def test_desktop_nav_items_use_current_sidebar_titles():
+    titles = {item.key: item.title for item in desktop_nav_items()}
+
+    assert titles["contracts"] == "合同配置"
+    assert titles["tasks"] == "任务管理"
+    assert titles["settings"] == "系统设置"
+
+
 def test_update_settings_preserves_existing_server_url_and_ignores_override(tmp_path: Path):
     settings = Settings(
         server_url="http://old/api",

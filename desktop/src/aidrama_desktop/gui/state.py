@@ -38,8 +38,8 @@ def desktop_nav_items() -> list[NavItem]:
         NavItem("dramas", "短剧库", "可分发短剧列表，默认展示近 7 天更新内容"),
         NavItem("media", "媒体号", "视频号账号、登录态与浏览器打开"),
         NavItem("contracts", "合同配置", "成本合同、购买合同 Word 模板与本地生成"),
-        NavItem("tasks", "任务执行", "心跳、领取任务与发布下一条"),
-        NavItem("settings", "设置", "设备 ID 和工具路径"),
+        NavItem("tasks", "任务管理", "任务历史、重试与自动发布"),
+        NavItem("settings", "系统设置", "设备 ID 和工具路径"),
         NavItem("logs", "运行日志", "桌面端操作与错误记录"),
     ]
 
