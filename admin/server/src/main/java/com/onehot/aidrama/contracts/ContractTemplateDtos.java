@@ -12,6 +12,7 @@ public class ContractTemplateDtos {
             ContractTemplateType type,
             String label,
             String name,
+            int weight,
             String fileName,
             long fileSize,
             String downloadUrl,
@@ -27,6 +28,7 @@ public class ContractTemplateDtos {
                     template.getType(),
                     template.getType().getLabel(),
                     template.getName(),
+                    template.getWeight(),
                     template.getFileName(),
                     template.getFileSize(),
                     template.getDownloadUrl(),
@@ -34,6 +36,12 @@ public class ContractTemplateDtos {
                     template.getCreatedAt(),
                     template.getUpdatedAt()
             );
+        }
+    }
+
+    public record WeightRequest(Integer weight) {
+        public int normalizedWeight() {
+            return weight == null ? 0 : weight;
         }
     }
 

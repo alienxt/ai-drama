@@ -200,6 +200,7 @@ export type ContractTemplate = {
   type: 'COST_CONTRACT' | 'PURCHASE_CONTRACT';
   label: string;
   name: string;
+  weight: number;
   fileName?: string;
   fileSize: number;
   downloadUrl?: string;

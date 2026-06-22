@@ -31,6 +31,11 @@ public class MongoConfig {
                     new Update().set("platform", "WECHAT_VIDEO"),
                     "contract_templates"
             );
+            mongoTemplate.updateMulti(
+                    new Query(Criteria.where("weight").exists(false)),
+                    new Update().set("weight", 0),
+                    "contract_templates"
+            );
             contractTemplateIndexes.getIndexInfo().stream()
                     .filter(IndexInfo::isUnique)
                     .filter(index -> index.getIndexFields().size() == 1)
@@ -39,8 +44,9 @@ public class MongoConfig {
             contractTemplateIndexes.ensureIndex(new Index()
                     .on("platform", ASC)
                     .on("type", ASC)
+                    .on("weight", DESC)
                     .on("uploadedAt", DESC)
-                    .named("contract_template_platform_type_uploaded_at_idx"));
+                    .named("contract_template_platform_type_weight_uploaded_at_idx"));
         };
     }
 }

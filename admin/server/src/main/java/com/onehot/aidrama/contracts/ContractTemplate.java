@@ -18,6 +18,7 @@ public class ContractTemplate {
     @Indexed
     private ContractTemplateType type;
     private String name;
+    private int weight;
     private String fileName;
     private long fileSize;
     private String downloadUrl;
@@ -35,6 +36,8 @@ public class ContractTemplate {
     public void setType(ContractTemplateType type) { this.type = type; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
+    public int getWeight() { return weight; }
+    public void setWeight(int weight) { this.weight = weight; }
     public String getFileName() { return fileName; }
     public void setFileName(String fileName) { this.fileName = fileName; }
     public long getFileSize() { return fileSize; }

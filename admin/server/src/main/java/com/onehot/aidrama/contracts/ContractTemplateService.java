@@ -21,6 +21,7 @@ public class ContractTemplateService {
     public List<ContractTemplateDtos.ContractTemplateResponse> list() {
         return repository.findAll(Sort.by(Sort.Direction.ASC, "platform")
                         .and(Sort.by(Sort.Direction.ASC, "type"))
+                        .and(Sort.by(Sort.Direction.DESC, "weight"))
                         .and(Sort.by(Sort.Direction.DESC, "uploadedAt")))
                 .stream()
                 .map(ContractTemplateDtos.ContractTemplateResponse::from)
@@ -28,20 +29,27 @@ public class ContractTemplateService {
     }
 
     public List<ContractTemplateDtos.ContractTemplateResponse> listByPlatformAndType(MediaPlatform platform, ContractTemplateType type) {
-        return repository.findByPlatformAndTypeOrderByUploadedAtDesc(platform, type)
+        return repository.findByPlatformAndTypeOrderByWeightDescUploadedAtDesc(platform, type)
                 .stream()
                 .filter(template -> template.getDownloadUrl() != null && !template.getDownloadUrl().isBlank())
                 .map(ContractTemplateDtos.ContractTemplateResponse::from)
                 .toList();
     }
 
-    public ContractTemplate create(MediaPlatform platform, ContractTemplateType type, String name, MultipartFile upload, ContractTemplateStorage storage) {
+    public ContractTemplate create(MediaPlatform platform, ContractTemplateType type, String name, int weight, MultipartFile upload, ContractTemplateStorage storage) {
         ContractTemplate template = new ContractTemplate();
         template.setPlatform(platform);
         template.setType(type);
         template.setName(normalizeName(name, upload.getOriginalFilename()));
+        template.setWeight(weight);
         template = repository.save(template);
         return attachFile(template, storage.store(template.getPlatform(), type, template.getId(), upload));
+    }
+
+    public ContractTemplate updateWeight(String id, int weight) {
+        ContractTemplate template = get(id);
+        template.setWeight(weight);
+        return repository.save(template);
     }
 
     public ContractTemplate replaceFile(String id, MultipartFile upload, ContractTemplateStorage storage) {

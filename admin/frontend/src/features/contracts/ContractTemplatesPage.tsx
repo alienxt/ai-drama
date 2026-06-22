@@ -2,12 +2,13 @@ import {
   CloudUploadOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
   EyeOutlined,
   FileWordOutlined,
   PlusOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, Form, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Tooltip, Upload } from 'antd';
+import { Button, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Tooltip, Upload } from 'antd';
 import type { UploadFile } from 'antd';
 import { renderAsync } from 'docx-preview';
 import type { UploadRequestOption } from 'rc-upload/lib/interface';
@@ -23,7 +24,12 @@ type TemplateForm = {
   platform: ContractTemplate['platform'];
   type: ContractTemplate['type'];
   name: string;
+  weight?: number;
   file?: UploadFile[];
+};
+
+type WeightForm = {
+  weight: number;
 };
 
 const platformOptions: { value: ContractTemplate['platform']; label: string }[] = [
@@ -124,7 +130,9 @@ export function ContractTemplatesPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [previewTemplate, setPreviewTemplate] = useState<ContractTemplate | null>(null);
+  const [weightTemplate, setWeightTemplate] = useState<ContractTemplate | null>(null);
   const [form] = Form.useForm<TemplateForm>();
+  const [weightForm] = Form.useForm<WeightForm>();
   const selectedPlatform = Form.useWatch('platform', form) ?? 'WECHAT_VIDEO';
   const { data, loading } = useAsyncData(
     () => apiGet<ContractTemplate[]>('/admin/contract-templates'),
@@ -132,8 +140,13 @@ export function ContractTemplatesPage() {
   );
 
   function showCreate() {
-    form.setFieldsValue({ platform: 'WECHAT_VIDEO', type: 'COST_CONTRACT', name: '', file: [] });
+    form.setFieldsValue({ platform: 'WECHAT_VIDEO', type: 'COST_CONTRACT', name: '', weight: 0, file: [] });
     setOpen(true);
+  }
+
+  function showWeightEdit(record: ContractTemplate) {
+    setWeightTemplate(record);
+    weightForm.setFieldsValue({ weight: record.weight ?? 0 });
   }
 
   async function submit(values: TemplateForm) {
@@ -145,6 +158,7 @@ export function ContractTemplatesPage() {
     const formData = new FormData();
     formData.append('platform', values.platform);
     formData.append('type', values.type);
+    formData.append('weight', String(values.weight ?? 0));
     formData.append('name', values.name);
     formData.append('file', file);
     setCreating(true);
@@ -201,6 +215,16 @@ export function ContractTemplatesPage() {
     setReload((value) => value + 1);
   }
 
+  async function submitWeight(values: WeightForm) {
+    if (!weightTemplate) return;
+    await http.patch(`/admin/contract-templates/${weightTemplate.id}/weight`, {
+      weight: values.weight ?? 0,
+    });
+    appMessage.success('权重已更新');
+    setWeightTemplate(null);
+    setReload((value) => value + 1);
+  }
+
   return (
     <DataPage
       title="合同模版"
@@ -224,6 +248,7 @@ export function ContractTemplatesPage() {
             width: 140,
             render: (label: string) => <Tag color="blue">{label}</Tag>,
           },
+          { title: '权重', dataIndex: 'weight', width: 90, sorter: (a, b) => a.weight - b.weight },
           {
             title: '模板名称',
             dataIndex: 'name',
@@ -274,6 +299,15 @@ export function ContractTemplatesPage() {
                     onClick={() => setPreviewTemplate(record)}
                   />
                 </Tooltip>
+                <Tooltip title="设置权重">
+                  <Button
+                    className="table-action"
+                    size="small"
+                    type="text"
+                    icon={<EditOutlined />}
+                    onClick={() => showWeightEdit(record)}
+                  />
+                </Tooltip>
                 <Tooltip title="下载模板">
                   <Button className="table-action" size="small" type="text" icon={<DownloadOutlined />} href={record.downloadUrl} target="_blank" />
                 </Tooltip>
@@ -310,6 +344,9 @@ export function ContractTemplatesPage() {
           <Form.Item name="name" label="模板名称" rules={[{ required: true, message: '请输入模板名称' }]}>
             <Input placeholder="例如：成本合同-标准版" />
           </Form.Item>
+          <Form.Item name="weight" label="权重" tooltip="权重越大，客户端下载系统模版时越靠前">
+            <InputNumber min={0} max={999999} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
           <Form.Item
             name="file"
             label="Word 模板"
@@ -329,6 +366,24 @@ export function ContractTemplatesPage() {
           <Progress percent={uploadProgress} status="active" />
         </Modal>
       ) : null}
+      <Modal
+        title={weightTemplate ? `设置权重：${weightTemplate.name}` : '设置权重'}
+        open={Boolean(weightTemplate)}
+        onCancel={() => setWeightTemplate(null)}
+        onOk={() => weightForm.submit()}
+        destroyOnClose
+      >
+        <Form form={weightForm} layout="vertical" onFinish={submitWeight}>
+          <Form.Item
+            name="weight"
+            label="权重"
+            tooltip="权重越大，客户端下载系统模版时越靠前；同权重按上传时间倒序"
+            rules={[{ required: true, message: '请输入权重' }]}
+          >
+            <InputNumber min={0} max={999999} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
       <ContractPreviewModal template={previewTemplate} onClose={() => setPreviewTemplate(null)} />
     </DataPage>
   );

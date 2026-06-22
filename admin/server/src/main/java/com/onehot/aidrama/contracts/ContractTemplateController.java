@@ -6,8 +6,10 @@ import com.onehot.aidrama.media.MediaPlatform;
 import org.slf4j.MDC;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -41,11 +43,23 @@ public class ContractTemplateController {
     ApiResponse<ContractTemplateDtos.ContractTemplateResponse> create(
             @RequestParam(defaultValue = "WECHAT_VIDEO") MediaPlatform platform,
             @RequestParam ContractTemplateType type,
+            @RequestParam(defaultValue = "0") int weight,
             @RequestParam(required = false) String name,
             @RequestParam("file") MultipartFile file
     ) {
         return ApiResponse.ok(
-                ContractTemplateDtos.ContractTemplateResponse.from(service.create(platform, type, name, file, storage)),
+                ContractTemplateDtos.ContractTemplateResponse.from(service.create(platform, type, name, weight, file, storage)),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @PatchMapping("/api/admin/contract-templates/{id}/weight")
+    ApiResponse<ContractTemplateDtos.ContractTemplateResponse> updateWeight(
+            @PathVariable String id,
+            @RequestBody ContractTemplateDtos.WeightRequest request
+    ) {
+        return ApiResponse.ok(
+                ContractTemplateDtos.ContractTemplateResponse.from(service.updateWeight(id, request.normalizedWeight())),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }

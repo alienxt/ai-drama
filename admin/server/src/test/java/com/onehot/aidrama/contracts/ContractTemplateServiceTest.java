@@ -15,7 +15,7 @@ class ContractTemplateServiceTest {
     void desktopListsTemplatesByPlatformAndContractType() {
         ContractTemplateRepository repository = mock(ContractTemplateRepository.class);
         ContractTemplate wechat = template(MediaPlatform.WECHAT_VIDEO, ContractTemplateType.COST_CONTRACT);
-        when(repository.findByPlatformAndTypeOrderByUploadedAtDesc(
+        when(repository.findByPlatformAndTypeOrderByWeightDescUploadedAtDesc(
                 MediaPlatform.WECHAT_VIDEO,
                 ContractTemplateType.COST_CONTRACT
         )).thenReturn(List.of(wechat));
@@ -27,7 +27,21 @@ class ContractTemplateServiceTest {
         assertThat(templates).singleElement().satisfies(response -> {
             assertThat(response.platform()).isEqualTo(MediaPlatform.WECHAT_VIDEO);
             assertThat(response.type()).isEqualTo(ContractTemplateType.COST_CONTRACT);
+            assertThat(response.weight()).isEqualTo(10);
         });
+    }
+
+    @Test
+    void adminCanUpdateTemplateWeight() {
+        ContractTemplateRepository repository = mock(ContractTemplateRepository.class);
+        ContractTemplate template = template(MediaPlatform.WECHAT_VIDEO, ContractTemplateType.PURCHASE_CONTRACT);
+        when(repository.findById("template-1")).thenReturn(java.util.Optional.of(template));
+        when(repository.save(template)).thenReturn(template);
+        ContractTemplateService service = new ContractTemplateService(repository);
+
+        ContractTemplate updated = service.updateWeight("template-1", 50);
+
+        assertThat(updated.getWeight()).isEqualTo(50);
     }
 
     private static ContractTemplate template(MediaPlatform platform, ContractTemplateType type) {
@@ -36,6 +50,7 @@ class ContractTemplateServiceTest {
         template.setPlatform(platform);
         template.setType(type);
         template.setName("模板");
+        template.setWeight(10);
         template.setFileName("template.docx");
         template.setDownloadUrl("/uploads/template.docx");
         template.setUploadedAt(Instant.now());
