@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.List;
 
 @RestController
@@ -64,6 +65,31 @@ public class DistributionTaskController {
         );
     }
 
+    @GetMapping("/api/desktop/tasks")
+    ApiResponse<PageResult<DistributionDtos.AdminTaskResponse>> listDesktopTasks(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) DistributionTaskStatus status,
+            Pageable pageable
+    ) {
+        return ApiResponse.ok(
+                service.listDesktopTasks(principal.accountId(), keyword, status, pageable),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @PostMapping("/api/desktop/tasks/{id}/retry")
+    ApiResponse<DistributionTask> retryDesktopTask(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @PathVariable String id,
+            @RequestBody DistributionDtos.ClaimRequest request
+    ) {
+        return ApiResponse.ok(
+                service.retryAndClaimForOwner(principal.accountId(), id, request.deviceId()),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @PostMapping("/api/desktop/dramas/{dramaId}/prioritize")
     ApiResponse<DistributionTask> prioritize(
             @AuthenticationPrincipal JwtPrincipal principal,
@@ -90,6 +116,7 @@ public class DistributionTaskController {
         task.setProgress(request.success() ? 100 : task.getProgress());
         task.setPlatformPublishId(request.platformPublishId());
         task.setFailureReason(request.failureReason());
+        task.setFinishedAt(Instant.now());
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
@@ -99,6 +126,7 @@ public class DistributionTaskController {
         task.setStatus(DistributionTaskStatus.PENDING);
         task.setLockedByDeviceId(null);
         task.setFailureReason(null);
+        task.setFinishedAt(null);
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
@@ -106,6 +134,7 @@ public class DistributionTaskController {
     ApiResponse<DistributionTask> cancel(@PathVariable String id) {
         DistributionTask task = get(id);
         task.setStatus(DistributionTaskStatus.CANCELLED);
+        task.setFinishedAt(Instant.now());
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
     }
 

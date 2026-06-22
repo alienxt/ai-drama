@@ -327,6 +327,38 @@ class DistributionServiceTest {
                 });
     }
 
+    @Test
+    void desktopRetryClaimsFailedTaskForCurrentOwnerAndClearsFailureState() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask failed = new DistributionTask();
+        failed.setId("task-1");
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setProgress(75);
+        failed.setFailureReason("upload failed");
+        failed.setPlatformPublishId("old-publish");
+        failed.setFinishedAt(Instant.now());
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
+        when(taskRepository.save(failed)).thenReturn(failed);
+
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
+
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
+        assertThat(task.getProgress()).isZero();
+        assertThat(task.getFailureReason()).isNull();
+        assertThat(task.getPlatformPublishId()).isNull();
+        assertThat(task.getFinishedAt()).isNull();
+    }
+
     private static MediaAccount activeMedia(String id, String ownerAccountId, String categoryId) {
         MediaAccount media = new MediaAccount();
         media.setId(id);

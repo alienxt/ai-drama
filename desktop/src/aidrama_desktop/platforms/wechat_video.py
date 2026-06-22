@@ -157,10 +157,23 @@ class WeChatVideoPublisher(PlatformPublisher):
             page.get_by_text(re.compile("变现类型|收益类型|付费类型")).first.click(timeout=3000)
         except timeout_error:
             pass
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError("浏览器页面已关闭，等待视频号剧集变现类型控件失败") from exception
+            raise RuntimeError("等待视频号剧集变现类型控件失败") from exception
         try:
             page.get_by_text(re.compile(re.escape(label))).first.click(timeout=5000)
         except timeout_error as exception:
             raise RuntimeError(f"未找到视频号剧集变现类型选项：{label}") from exception
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError(f"浏览器页面已关闭，选择视频号剧集变现类型失败：{label}") from exception
+            raise RuntimeError(f"选择视频号剧集变现类型失败：{label}") from exception
+
+    @staticmethod
+    def _is_page_closed_error(exception: Exception) -> bool:
+        message = str(exception)
+        return "Target page, context or browser has been closed" in message
 
     def _set_file_input(self, page, files: Path | list[Path], button_pattern, timeout_error) -> None:
         paths = [str(item) for item in files] if isinstance(files, list) else str(files)

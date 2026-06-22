@@ -39,6 +39,17 @@ def test_desktop_drama_list_path_supports_title_keyword_search():
     assert path == "/desktop/dramas?page=0&size=10&sort=updatedAt,desc&keyword=%E7%A5%9E%E5%8C%BB+%E5%A4%AA%E5%AD%90"
 
 
+def test_desktop_task_history_path_supports_keyword_and_status():
+    path = DesktopWindow.build_task_history_path(page=1, size=20, keyword="神医", status="FAILED")
+
+    assert path == "/desktop/tasks?page=1&size=20&sort=createdAt,desc&keyword=%E7%A5%9E%E5%8C%BB&status=FAILED"
+
+
+def test_desktop_distribution_task_status_label():
+    assert DesktopWindow.distribution_task_status_label("FAILED") == "失败"
+    assert DesktopWindow.distribution_task_status_label("UPLOADING") == "上传中"
+
+
 def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at():
     values = DesktopWindow.drama_row_values(
         {

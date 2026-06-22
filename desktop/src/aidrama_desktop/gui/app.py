@@ -288,6 +288,11 @@ class DesktopWindow(QMainWindow):
         self.auto_task_busy = False
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
+        self.task_history_rows: list[dict[str, Any]] = []
+        self.task_history_page = 0
+        self.task_history_size = 10
+        self.task_history_total_pages = 1
+        self.task_history_total_elements = 0
         self.task_cancel_event = threading.Event()
         self.contract_store = ContractConfigStore(settings.config_dir / "contract-templates.json")
         self.contract_templates = self.contract_store.load()
@@ -787,7 +792,65 @@ class DesktopWindow(QMainWindow):
         panel_layout.addWidget(self.task_error_label)
         panel_layout.addWidget(note)
         layout.addWidget(panel)
-        layout.addStretch(1)
+
+        history_panel, history_layout = self._panel("历史任务")
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.task_history_keyword = QLineEdit()
+        self.task_history_keyword.setPlaceholderText("搜索任务、短剧或媒体号")
+        self.task_history_keyword.returnPressed.connect(lambda: self.load_task_history(page=0))
+        filters.addWidget(self.task_history_keyword, 1)
+        self.task_history_status = QComboBox()
+        for label, value in self.distribution_task_status_options():
+            self.task_history_status.addItem(label, value)
+        self.task_history_status.currentIndexChanged.connect(lambda: self.load_task_history(page=0))
+        filters.addWidget(self.task_history_status)
+        refresh = QPushButton("刷新")
+        refresh.clicked.connect(lambda: self.load_task_history(page=self.task_history_page))
+        filters.addWidget(refresh)
+        history_layout.addLayout(filters)
+
+        self.task_history_table = QTableWidget(0, 8)
+        self.task_history_table.setHorizontalHeaderLabels(
+            ["短剧", "媒体号", "状态", "进度", "失败原因", "创建时间", "结束时间", "操作"]
+        )
+        self.task_history_table.verticalHeader().setVisible(False)
+        self.task_history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.task_history_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
+        self.task_history_table.setColumnWidth(1, 130)
+        self.task_history_table.setColumnWidth(2, 92)
+        self.task_history_table.setColumnWidth(3, 80)
+        self.task_history_table.setColumnWidth(5, 150)
+        self.task_history_table.setColumnWidth(6, 150)
+        self.task_history_table.setColumnWidth(7, 86)
+        self.align_table_header_left(self.task_history_table)
+        history_layout.addWidget(self.task_history_table, 1)
+
+        pager = QHBoxLayout()
+        self.task_history_page_label = QLabel("共 0 条 · 第 1/1 页")
+        self.task_history_page_label.setObjectName("mutedText")
+        previous_page = QPushButton("上一页")
+        previous_page.clicked.connect(lambda: self.load_task_history(page=max(self.task_history_page - 1, 0)))
+        next_page = QPushButton("下一页")
+        next_page.clicked.connect(
+            lambda: self.load_task_history(
+                page=min(self.task_history_page + 1, self.task_history_total_pages - 1)
+            )
+        )
+        pager.addWidget(self.task_history_page_label)
+        pager.addStretch(1)
+        pager.addWidget(previous_page)
+        pager.addWidget(next_page)
+        history_layout.addLayout(pager)
+        layout.addWidget(history_panel, 1)
         return page
 
     def _settings_page(self) -> QWidget:
@@ -858,6 +921,8 @@ class DesktopWindow(QMainWindow):
             self.load_media_accounts()
         if item.key == "dramas" and hasattr(self, "drama_table"):
             self.load_dramas(page=self.drama_page)
+        if item.key == "tasks" and hasattr(self, "task_history_table"):
+            self.load_task_history(page=self.task_history_page)
         if item.key == "contracts" and hasattr(self, "contract_drama_input"):
             self.load_contract_dramas()
         self.refresh_status()
@@ -1022,25 +1087,173 @@ class DesktopWindow(QMainWindow):
         if title == "自动执行任务":
             self.auto_task_busy = False
             self.update_task_progress("任务失败：自动执行请求失败", self.current_task_id)
-        if title in {"检查发布条件", "发布下一条"}:
+        if title in {"检查发布条件", "发布下一条", "检查重试条件", "重试任务"}:
             self.set_manual_publish_busy(False)
             if title == "检查发布条件":
                 self.update_task_progress("发布未启动：服务请求失败", None)
+            elif title == "检查重试条件":
+                self.update_task_progress("重试未启动：服务请求失败", None)
             else:
                 self.update_task_progress("任务失败：发布执行异常", self.current_task_id)
+            if title in {"检查重试条件", "重试任务"} and hasattr(self, "task_history_table"):
+                self.load_task_history(page=self.task_history_page)
         self.append_log(f"失败：{title}\n{error}")
         QMessageBox.critical(self, title, self.clean_error_message(error))
+
+    @staticmethod
+    def build_task_history_path(
+        page: int = 0,
+        size: int = 10,
+        keyword: str = "",
+        status: str = "ALL",
+    ) -> str:
+        params = [("page", str(page)), ("size", str(size)), ("sort", "createdAt,desc")]
+        if keyword.strip():
+            params.append(("keyword", keyword.strip()))
+        if status and status != "ALL":
+            params.append(("status", status))
+        return f"/desktop/tasks?{urlencode(params, safe=',')}"
+
+    def load_task_history(self, page: int = 0) -> None:
+        if not hasattr(self, "task_history_table"):
+            return
+        keyword = self.task_history_keyword.text().strip() if hasattr(self, "task_history_keyword") else ""
+        status = str(self.task_history_status.currentData() or "ALL") if hasattr(self, "task_history_status") else "ALL"
+        path = self.build_task_history_path(page=page, size=self.task_history_size, keyword=keyword, status=status)
+
+        def render(result: dict[str, Any]) -> None:
+            rows = result.get("content") or []
+            self.task_history_page = int(result.get("page") or 0)
+            self.task_history_total_pages = max(int(result.get("totalPages") or 1), 1)
+            self.task_history_total_elements = int(result.get("totalElements") or 0)
+            self.render_task_history_table(rows)
+            page_text = (
+                f"共 {self.task_history_total_elements} 条 · "
+                f"第 {self.task_history_page + 1}/{self.task_history_total_pages} 页"
+            )
+            self.task_history_page_label.setText(page_text)
+
+        self.run_async("加载任务历史", lambda: self.api().get(path), render, log_result=False)
+
+    def render_task_history_table(self, rows: list[dict[str, Any]]) -> None:
+        self.task_history_rows = rows
+        self.task_history_table.setRowCount(len(rows))
+        for row_index, task in enumerate(rows):
+            values = self.task_history_row_values(task)
+            for column, value in enumerate(values):
+                item = self.left_aligned_table_item(value)
+                item.setToolTip(value)
+                self.task_history_table.setItem(row_index, column, item)
+            self.task_history_table.setCellWidget(row_index, 7, self.task_history_actions_widget(task))
+            self.task_history_table.setRowHeight(row_index, 38)
+
+    def task_history_row_values(self, task: dict[str, Any]) -> list[str]:
+        return [
+            str(task.get("dramaTitle") or task.get("dramaId") or "-"),
+            str(task.get("mediaAccountName") or task.get("mediaAccountId") or "-"),
+            self.distribution_task_status_label(str(task.get("status") or "")),
+            f"{int(task.get('progress') or 0)}%",
+            str(task.get("failureReason") or "-"),
+            self.format_datetime(str(task.get("createdAt") or "")),
+            self.format_datetime(str(task.get("finishedAt") or "")),
+        ]
+
+    def task_history_actions_widget(self, task: dict[str, Any]) -> QWidget:
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        retry = QPushButton("重试")
+        retry.setEnabled(str(task.get("status") or "") == "FAILED")
+        retry.clicked.connect(lambda _=False, item=task: self.retry_distribution_task(item))
+        layout.addWidget(retry)
+        layout.addStretch(1)
+        return wrapper
+
+    def retry_distribution_task(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            QMessageBox.warning(self, "重试任务", "任务 ID 为空，无法重试。")
+            return
+        if str(task.get("status") or "") != "FAILED":
+            QMessageBox.information(self, "重试任务", "只有失败任务可以重试。")
+            return
+        if self.manual_publish_busy or self.auto_task_busy:
+            QMessageBox.information(
+                self,
+                "重试任务",
+                "已有发布任务在执行中，请等待当前任务结束。",
+            )
+            return
+        self.set_manual_publish_busy(True)
+        self.task_cancel_event.clear()
+        self.update_task_progress("正在检查重试条件", task_id)
+        self.run_async(
+            "检查重试条件",
+            lambda: self.api().get("/desktop/media-accounts"),
+            lambda media_accounts: self.retry_task_if_ready(task_id, media_accounts),
+            log_result=False,
+        )
+
+    def retry_task_if_ready(self, task_id: str, media_accounts: list[dict[str, Any]]) -> None:
+        self.media_accounts = media_accounts
+        block_reason = self.auto_task_block_reason(media_accounts)
+        if block_reason:
+            self.set_manual_publish_busy(False)
+            QMessageBox.warning(self, "重试任务", block_reason)
+            self.update_task_progress("重试未启动", task_id)
+            return
+        self.update_task_progress("重试请求已受理，正在执行任务", task_id)
+        self.run_async(
+            "重试任务",
+            lambda: self.retry_task_once(task_id),
+            self.handle_retry_task_done,
+        )
+
+    def retry_task_once(self, task_id: str) -> str:
+        task = self.api().post(f"/desktop/tasks/{task_id}/retry", {"deviceId": self.settings.device_id})
+        return self.runner().execute_task(task)
+
+    def handle_retry_task_done(self, result: str) -> None:
+        self.set_manual_publish_busy(False)
+        if result == "failed":
+            self.update_task_progress("任务失败", self.current_task_id)
+            reason = self.current_task_error_message() or "发布任务执行失败，请查看最近错误或日志。"
+            QMessageBox.warning(self, "重试任务", f"任务重试失败：\n{reason}")
+        elif result == "cancelled":
+            self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
+            QMessageBox.information(self, "重试任务", "任务已停止，可重新分发。")
+        else:
+            self.update_task_progress("任务完成", self.current_task_id)
+            QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
+        self.load_task_history(page=self.task_history_page)
 
     @staticmethod
     def clean_error_message(error: str) -> str:
         if not error:
             return "操作失败"
-        message = error.splitlines()[-1].strip()
+        lines = [line.strip() for line in error.splitlines() if line.strip()]
+        if not lines:
+            return "操作失败"
+        playwright_hint = DesktopWindow.playwright_error_hint(lines)
+        if playwright_hint:
+            return playwright_hint
+        message = lines[-1] if lines[0].startswith("Traceback") else lines[0]
         if ": " in message:
             prefix, detail = message.split(": ", 1)
             if prefix.endswith("Error") or prefix.endswith("Exception"):
                 return detail
         return message or "操作失败"
+
+    @staticmethod
+    def playwright_error_hint(lines: list[str]) -> str | None:
+        joined = "\n".join(lines)
+        hints = []
+        if "Target page, context or browser has been closed" in joined:
+            hints.append("浏览器页面已关闭")
+        if "变现类型|收益类型|付费类型" in joined or "变现类型" in joined:
+            hints.append("等待变现类型控件失败")
+        return " / ".join(hints) if hints else None
 
     def load_dramas(self, page: int = 0) -> None:
         filter_value = self.current_drama_download_filter()
@@ -1466,6 +1679,33 @@ class DesktopWindow(QMainWindow):
             "PAUSED": "暂停",
             "EXPIRED": "登录过期",
             "DISABLED": "已停用",
+        }
+        return labels.get(status, status or "-")
+
+    @staticmethod
+    def distribution_task_status_options() -> list[tuple[str, str]]:
+        return [
+            ("全部状态", "ALL"),
+            ("待执行", "PENDING"),
+            ("已领取", "CLAIMED"),
+            ("下载中", "DOWNLOADING"),
+            ("上传中", "UPLOADING"),
+            ("成功", "SUCCEEDED"),
+            ("失败", "FAILED"),
+            ("已取消", "CANCELLED"),
+        ]
+
+    @staticmethod
+    def distribution_task_status_label(status: str) -> str:
+        labels = {
+            "PENDING": "待执行",
+            "CLAIMED": "已领取",
+            "DOWNLOADING": "下载中",
+            "PROCESSING": "处理中",
+            "UPLOADING": "上传中",
+            "SUCCEEDED": "成功",
+            "FAILED": "失败",
+            "CANCELLED": "已取消",
         }
         return labels.get(status, status or "-")
 
@@ -2132,7 +2372,8 @@ class DesktopWindow(QMainWindow):
             QMessageBox.information(self, "发布下一条", "当前没有可发布任务。请确认短剧可分发，且媒体号策略匹配。")
         elif result == "failed":
             self.update_task_progress("任务失败", self.current_task_id)
-            QMessageBox.warning(self, "发布下一条", "发布任务执行失败，请查看最近错误或日志。")
+            reason = self.current_task_error_message() or "发布任务执行失败，请查看最近错误或日志。"
+            QMessageBox.warning(self, "发布下一条", f"发布任务执行失败：\n{reason}")
         elif result == "cancelled":
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已停止，可重新分发。")
@@ -2185,7 +2426,7 @@ class DesktopWindow(QMainWindow):
         return None
 
     def run_auto_task_cycle(self) -> None:
-        if not self.auto_task_enabled or self.auto_task_busy:
+        if not self.auto_task_enabled or self.auto_task_busy or self.manual_publish_busy:
             return
         self.auto_task_busy = True
         self.update_task_progress("发送心跳", self.current_task_id)
@@ -2209,14 +2450,24 @@ class DesktopWindow(QMainWindow):
 
     def update_task_progress(self, stage: str, task_id: str | None) -> None:
         self.current_task_id = task_id
+        display_stage = stage
+        if stage.startswith("任务失败："):
+            reason = self.clean_error_message(stage.removeprefix("任务失败："))
+            display_stage = f"任务失败：{reason}"
+            if hasattr(self, "task_error_label"):
+                self.task_error_label.setText(f"最近错误：{reason}")
         if hasattr(self, "auto_task_state"):
             self.auto_task_state.setText(f"自动执行：{'运行中' if self.auto_task_enabled else '未启动'}")
         if hasattr(self, "current_task_label"):
             self.current_task_label.setText(f"当前任务：{task_id or '-'}")
         if hasattr(self, "task_stage_label"):
-            self.task_stage_label.setText(f"当前阶段：{stage}")
-        if hasattr(self, "task_error_label") and stage.startswith("任务失败"):
-            self.task_error_label.setText(f"最近错误：{stage.removeprefix('任务失败：')}")
+            self.task_stage_label.setText(f"当前阶段：{display_stage}")
+
+    def current_task_error_message(self) -> str | None:
+        if not hasattr(self, "task_error_label"):
+            return None
+        text = self.task_error_label.text().removeprefix("最近错误：").strip()
+        return text if text and text != "-" else None
 
     def refresh_status(self) -> None:
         status = AppStatus.from_settings(self.settings, logged_in=bool(self.token_store.get()))

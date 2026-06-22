@@ -140,6 +140,8 @@ export type DistributionTask = {
   progress: number;
   failureReason?: string;
   platformPublishId?: string;
+  createdAt?: string;
+  finishedAt?: string;
 };
 
 export type AiTask = {

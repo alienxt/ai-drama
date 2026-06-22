@@ -1,5 +1,7 @@
 package com.onehot.aidrama.distribution;
 
+import java.time.Instant;
+
 public class DistributionDtos {
     public record AdminTaskResponse(
             String id,
@@ -10,7 +12,9 @@ public class DistributionDtos {
             DistributionTaskStatus status,
             int progress,
             String failureReason,
-            String platformPublishId
+            String platformPublishId,
+            Instant createdAt,
+            Instant finishedAt
     ) {
         public static AdminTaskResponse from(DistributionTask task, String mediaAccountName, String dramaTitle) {
             return new AdminTaskResponse(
@@ -22,8 +26,20 @@ public class DistributionDtos {
                     task.getStatus(),
                     task.getProgress(),
                     task.getFailureReason(),
-                    task.getPlatformPublishId()
+                    task.getPlatformPublishId(),
+                    task.getCreatedAt(),
+                    resolveFinishedAt(task)
             );
+        }
+
+        private static Instant resolveFinishedAt(DistributionTask task) {
+            if (task.getFinishedAt() != null) {
+                return task.getFinishedAt();
+            }
+            return switch (task.getStatus()) {
+                case SUCCEEDED, FAILED, CANCELLED -> task.getUpdatedAt();
+                default -> null;
+            };
         }
     }
 

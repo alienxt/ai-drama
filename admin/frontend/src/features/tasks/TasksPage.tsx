@@ -5,6 +5,7 @@ import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
+import { formatDateTime } from '../../shared/format';
 import { apiGetPage, apiPost } from '../../shared/http';
 import { distributionTaskStatusColors, distributionTaskStatusLabel, distributionTaskStatusOptions } from '../../shared/labels';
 import type { DistributionTask } from '../../shared/types';
@@ -61,6 +62,8 @@ export function TasksPage() {
           },
           { title: '进度', dataIndex: 'progress', render: (value: number) => <Progress percent={value} size="small" /> },
           { title: '失败原因', dataIndex: 'failureReason' },
+          { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
+          { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
           {
             title: '操作',
             render: (_, record) => (

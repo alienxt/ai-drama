@@ -51,6 +51,9 @@ class TaskRunner:
         task = self.api.post("/desktop/tasks/publish-next", {"deviceId": self.device_id})
         return self._execute_task(task)
 
+    def execute_task(self, task: dict | None) -> str:
+        return self._execute_task(task)
+
     def _execute_task(self, task: dict | None) -> str:
         if not task:
             self._notify("空闲", None)

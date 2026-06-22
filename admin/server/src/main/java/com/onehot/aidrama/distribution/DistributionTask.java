@@ -22,6 +22,7 @@ public class DistributionTask {
     private int priority;
     private String failureReason;
     private String platformPublishId;
+    private Instant finishedAt;
     @CreatedDate
     private Instant createdAt;
     @LastModifiedDate
@@ -47,6 +48,8 @@ public class DistributionTask {
     public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
     public String getPlatformPublishId() { return platformPublishId; }
     public void setPlatformPublishId(String platformPublishId) { this.platformPublishId = platformPublishId; }
+    public Instant getFinishedAt() { return finishedAt; }
+    public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }
