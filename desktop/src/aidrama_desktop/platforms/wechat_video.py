@@ -188,7 +188,7 @@ class WeChatVideoPublisher(PlatformPublisher):
     ) -> None:
         publish_title = str(metadata.get("publishTitle") or title)
         publish_summary = str(metadata.get("summary") or summary or "")
-        self._accept_playlet_agreement(page, timeout_error)
+        self._enter_playlet_plan(page, timeout_error)
         create_button = page.get_by_text(re.compile("创建剧集|新建剧集|新增剧集|上传剧集|添加剧集")).first
         try:
             create_button.click(timeout=8000)
@@ -224,6 +224,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             page.get_by_text(re.compile("保存|提交审核|发布|上架")).first.click(timeout=15000)
         except timeout_error as exception:
             raise RuntimeError("短剧文件已选择，但未找到剧集保存/提交按钮，请检查视频号剧集管理页面") from exception
+
+    def _enter_playlet_plan(self, page, timeout_error) -> None:
+        self._accept_playlet_agreement(page, timeout_error)
+        try:
+            page.get_by_text(re.compile("上架剧目并参与计划|上架剧目|参与计划")).first.click(timeout=5000)
+            page.wait_for_timeout(1000)
+        except timeout_error:
+            pass
 
     def _accept_playlet_agreement(self, page, timeout_error) -> None:
         try:

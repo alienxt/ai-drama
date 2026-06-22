@@ -280,6 +280,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     monetization = []
     files = []
     agreement_clicks = []
+    entry_clicks = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 
     class FakeLocator:
@@ -289,6 +290,8 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
         def click(self, timeout=None):
             if self.kind == "agreement":
                 agreement_clicks.append(timeout)
+            if self.kind == "entry":
+                entry_clicks.append(timeout)
             return None
 
     class FakePage:
@@ -300,6 +303,8 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
         def first(self):
             if "已阅读并同意" in self.pattern.pattern:
                 return FakeLocator("agreement")
+            if "上架剧目" in self.pattern.pattern:
+                return FakeLocator("entry")
             return FakeLocator()
 
         def wait_for_timeout(self, _timeout):
@@ -339,6 +344,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
 
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
+    assert entry_clicks == [5000]
     assert any(value == "6" and "免费集数" in labels for labels, value in fills)
     assert files == [tmp_path / "cover.jpg", [tmp_path / "001.mp4"]]
 
