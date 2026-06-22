@@ -93,6 +93,72 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
     assert uploaded == [([media_file], "神医归来", "简介", {"coverFile": tmp_path / "cover.jpg"})]
 
 
+def test_wechat_video_publisher_uses_fresh_page_instead_of_startup_blank_page(tmp_path: Path, monkeypatch):
+    uploaded_pages = []
+
+    class FakePage:
+        def __init__(self, url="about:blank"):
+            self.url = url
+            self.closed = False
+            self.visited = []
+
+        def goto(self, url, wait_until=None):
+            self.url = url
+            self.visited.append((url, wait_until))
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    blank_page = FakePage()
+    publish_page = FakePage()
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = [blank_page]
+            self.closed = False
+
+        def new_page(self):
+            self.pages.append(publish_page)
+            return publish_page
+
+        def close(self):
+            self.closed = True
+
+    context = FakeContext()
+
+    class FakeChromium:
+        def launch_persistent_context(self, *_args, **_kwargs):
+            return context
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(
+        WeChatVideoPublisher,
+        "_upload_playlet",
+        lambda self, page, media_files, title, summary, metadata, timeout_error: uploaded_pages.append(page),
+    )
+    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+    media_file = tmp_path / "001.mp4"
+
+    publisher.publish([media_file], "神医归来", metadata={"coverFile": tmp_path / "cover.jpg"})
+
+    assert blank_page.closed is True
+    assert uploaded_pages == [publish_page]
+    assert publish_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
+    assert context.closed is True
+
+
 def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count(tmp_path: Path, monkeypatch):
     fills = []
     monetization = []

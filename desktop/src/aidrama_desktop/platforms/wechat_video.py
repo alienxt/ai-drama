@@ -55,24 +55,62 @@ class WeChatVideoPublisher(PlatformPublisher):
 
         profile_dir = self._profile_dir()
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile_dir),
-                executable_path=self.chrome.chrome_path,
-                headless=False,
-                args=["--no-first-run", "--disable-default-apps"],
-            )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(self.playlet_url if metadata else self.login_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
-
-            if metadata:
-                self._upload_playlet(page, media_files, title, summary, metadata, PlaywrightTimeoutError)
-            else:
-                for media_file in media_files:
-                    self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
-            context.close()
+            try:
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile_dir),
+                    executable_path=self.chrome.chrome_path,
+                    headless=False,
+                    args=[
+                        "--no-first-run",
+                        "--disable-default-apps",
+                        "--disable-session-crashed-bubble",
+                    ],
+                )
+            except Exception as exception:  # noqa: BLE001
+                raise RuntimeError("无法启动视频号发布浏览器，请关闭该媒体号已打开的 Chrome 窗口后重试") from exception
+            try:
+                page = self._open_publish_page(context, self.playlet_url if metadata else self.login_url)
+                if metadata:
+                    self._upload_playlet(page, media_files, title, summary, metadata, PlaywrightTimeoutError)
+                else:
+                    for media_file in media_files:
+                        self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
+            finally:
+                self._close_context(context)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
+
+    def _open_publish_page(self, context, target_url: str):
+        startup_pages = list(getattr(context, "pages", []) or [])
+        page = context.new_page()
+        try:
+            page.goto(target_url, wait_until="domcontentloaded")
+            page.wait_for_timeout(1000)
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError("浏览器页面已关闭，无法打开视频号发布页面") from exception
+            raise RuntimeError("无法打开视频号发布页面，请确认网络正常并已登录视频号助手") from exception
+        self._close_startup_blank_pages(startup_pages, active_page=page)
+        return page
+
+    def _close_startup_blank_pages(self, pages, active_page) -> None:
+        for page in pages:
+            if page is active_page:
+                continue
+            url = str(getattr(page, "url", "") or "")
+            close = getattr(page, "close", None)
+            if callable(close) and url in {"", "about:blank"}:
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _close_context(context) -> None:
+        try:
+            context.close()
+        except Exception:
+            pass
 
     def _upload_playlet(
         self,

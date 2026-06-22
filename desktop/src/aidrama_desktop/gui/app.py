@@ -812,7 +812,7 @@ class DesktopWindow(QMainWindow):
 
         self.task_history_table = QTableWidget(0, 8)
         self.task_history_table.setHorizontalHeaderLabels(
-            ["短剧", "媒体号", "状态", "进度", "失败原因", "创建时间", "结束时间", "操作"]
+            ["短剧", "媒体号", "状态", "执行链路", "失败原因", "创建时间", "结束时间", "操作"]
         )
         self.task_history_table.verticalHeader().setVisible(False)
         self.task_history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -827,7 +827,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
         self.task_history_table.setColumnWidth(1, 130)
         self.task_history_table.setColumnWidth(2, 92)
-        self.task_history_table.setColumnWidth(3, 80)
+        self.task_history_table.setColumnWidth(3, 330)
         self.task_history_table.setColumnWidth(5, 150)
         self.task_history_table.setColumnWidth(6, 150)
         self.task_history_table.setColumnWidth(7, 86)
@@ -1144,19 +1144,133 @@ class DesktopWindow(QMainWindow):
                 item = self.left_aligned_table_item(value)
                 item.setToolTip(value)
                 self.task_history_table.setItem(row_index, column, item)
+            self.task_history_table.setCellWidget(row_index, 3, self.task_history_chain_widget(task))
             self.task_history_table.setCellWidget(row_index, 7, self.task_history_actions_widget(task))
-            self.task_history_table.setRowHeight(row_index, 38)
+            self.task_history_table.setRowHeight(row_index, 46)
 
     def task_history_row_values(self, task: dict[str, Any]) -> list[str]:
         return [
             str(task.get("dramaTitle") or task.get("dramaId") or "-"),
             str(task.get("mediaAccountName") or task.get("mediaAccountId") or "-"),
             self.distribution_task_status_label(str(task.get("status") or "")),
-            f"{int(task.get('progress') or 0)}%",
+            self.task_history_chain_summary(task),
             str(task.get("failureReason") or "-"),
             self.format_datetime(str(task.get("createdAt") or "")),
             self.format_datetime(str(task.get("finishedAt") or "")),
         ]
+
+    def task_history_chain_widget(self, task: dict[str, Any]) -> QWidget:
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        for index, label in enumerate(self.task_history_chain_labels(task)):
+            state = self.task_history_chain_state(task, index)
+            badge = QLabel(label)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setMinimumWidth(54)
+            badge.setStyleSheet(self.task_history_chain_style(state))
+            layout.addWidget(badge)
+            if index < 4:
+                arrow = QLabel(">")
+                arrow.setObjectName("mutedText")
+                layout.addWidget(arrow)
+        layout.addStretch(1)
+        return wrapper
+
+    def task_history_chain_labels(self, task: dict[str, Any]) -> list[str]:
+        labels = ["排队", "领取", "下载", "上传", "完成"]
+        status = str(task.get("status") or "")
+        if status == "FAILED":
+            labels[self.task_history_problem_step(task)] += "失败"
+        elif status == "CANCELLED":
+            labels[self.task_history_problem_step(task)] += "停止"
+        elif status in {"DOWNLOADING", "UPLOADING", "PROCESSING"}:
+            labels[self.task_history_active_step(task)] += "中"
+        return labels
+
+    def task_history_chain_state(self, task: dict[str, Any], step: int) -> str:
+        status = str(task.get("status") or "")
+        if status == "SUCCEEDED":
+            return "done"
+        if status == "FAILED":
+            failed_step = self.task_history_problem_step(task)
+            if step < failed_step:
+                return "done"
+            return "failed" if step == failed_step else "waiting"
+        if status == "CANCELLED":
+            stopped_step = self.task_history_problem_step(task)
+            if step < stopped_step:
+                return "done"
+            return "cancelled" if step == stopped_step else "waiting"
+        active_step = self.task_history_active_step(task)
+        if step < active_step:
+            return "done"
+        if step == active_step:
+            return "active"
+        return "waiting"
+
+    def task_history_chain_summary(self, task: dict[str, Any]) -> str:
+        labels = self.task_history_chain_labels(task)
+        states = [
+            self.task_history_chain_state(task, index)
+            for index in range(len(labels))
+        ]
+        if "failed" in states:
+            return labels[states.index("failed")]
+        if "cancelled" in states:
+            return labels[states.index("cancelled")]
+        if str(task.get("status") or "") == "SUCCEEDED":
+            return "已完成"
+        if "active" in states:
+            return labels[states.index("active")]
+        return "-"
+
+    @staticmethod
+    def task_history_chain_style(state: str) -> str:
+        styles = {
+            "done": ("#14532d", "#dcfce7", "#86efac"),
+            "active": ("#1d4ed8", "#dbeafe", "#93c5fd"),
+            "failed": ("#991b1b", "#fee2e2", "#fca5a5"),
+            "cancelled": ("#92400e", "#fef3c7", "#fcd34d"),
+            "waiting": ("#64748b", "#f1f5f9", "#cbd5e1"),
+        }
+        color, background, border = styles.get(state, styles["waiting"])
+        return (
+            "QLabel {"
+            f" color: {color};"
+            f" background: {background};"
+            f" border: 1px solid {border};"
+            " border-radius: 4px;"
+            " padding: 3px 5px;"
+            " font-size: 12px;"
+            "}"
+        )
+
+    def task_history_active_step(self, task: dict[str, Any]) -> int:
+        status = str(task.get("status") or "")
+        status_steps = {
+            "PENDING": 0,
+            "CLAIMED": 1,
+            "DOWNLOADING": 2,
+            "PROCESSING": 2,
+            "UPLOADING": 3,
+            "SUCCEEDED": 4,
+        }
+        return status_steps.get(status, self.task_history_problem_step(task))
+
+    def task_history_problem_step(self, task: dict[str, Any]) -> int:
+        try:
+            progress = int(task.get("progress") or 0)
+        except (TypeError, ValueError):
+            progress = 0
+        if progress >= 75:
+            return 3
+        if progress >= 10:
+            return 2
+        if str(task.get("status") or "") == "PENDING":
+            return 0
+        return 1
 
     def task_history_actions_widget(self, task: dict[str, Any]) -> QWidget:
         wrapper = QWidget()

@@ -50,6 +50,14 @@ def test_desktop_distribution_task_status_label():
     assert DesktopWindow.distribution_task_status_label("UPLOADING") == "上传中"
 
 
+def test_desktop_task_history_chain_summary_pinpoints_failed_step():
+    window = DesktopWindow.__new__(DesktopWindow)
+
+    assert window.task_history_chain_summary({"status": "FAILED", "progress": 75}) == "上传失败"
+    assert window.task_history_chain_summary({"status": "FAILED", "progress": 10}) == "下载失败"
+    assert window.task_history_chain_summary({"status": "SUCCEEDED", "progress": 100}) == "已完成"
+
+
 def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at():
     values = DesktopWindow.drama_row_values(
         {
