@@ -289,12 +289,16 @@ class DesktopWindow(QMainWindow):
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
         self.current_media_account_id: str | None = None
+        self.task_paused = False
+        self.resume_auto_after_pause = False
         self.task_history_rows: list[dict[str, Any]] = []
         self.task_history_page = 0
         self.task_history_size = 10
         self.task_history_total_pages = 1
         self.task_history_total_elements = 0
         self.task_cancel_event = threading.Event()
+        self.task_pause_event = threading.Event()
+        self.task_skip_event = threading.Event()
         self.contract_store = ContractConfigStore(settings.config_dir / "contract-templates.json")
         self.contract_templates = self.contract_store.load()
         self.last_contract_path: Path | None = None
@@ -770,10 +774,18 @@ class DesktopWindow(QMainWindow):
         actions = QHBoxLayout()
         self.publish_next_button = QPushButton("发布下一条")
         self.auto_task_button = QPushButton("启动自动执行")
+        self.pause_task_button = QPushButton("暂停")
+        self.skip_task_button = QPushButton("跳过")
         self.publish_next_button.clicked.connect(self.publish_next)
         self.auto_task_button.clicked.connect(self.toggle_auto_tasks)
+        self.pause_task_button.clicked.connect(self.toggle_task_pause)
+        self.skip_task_button.clicked.connect(self.skip_current_task)
+        self.pause_task_button.setEnabled(False)
+        self.skip_task_button.setEnabled(False)
         actions.addWidget(self.publish_next_button)
         actions.addWidget(self.auto_task_button)
+        actions.addWidget(self.pause_task_button)
+        actions.addWidget(self.skip_task_button)
         actions.addStretch(1)
         self.auto_task_state = QLabel("自动执行：未启动")
         self.auto_task_state.setObjectName("mutedText")
@@ -1024,6 +1036,8 @@ class DesktopWindow(QMainWindow):
             processed_dir=self.settings.processed_dir,
             progress_callback=self.update_task_progress,
             cancel_checker=self.task_cancel_event.is_set,
+            pause_checker=self.task_pause_event.is_set,
+            skip_checker=self.task_skip_event.is_set,
             download_concurrency=self.settings.download_concurrency,
         )
 
@@ -1312,6 +1326,9 @@ class DesktopWindow(QMainWindow):
             return
         self.set_manual_publish_busy(True)
         self.task_cancel_event.clear()
+        self.task_pause_event.clear()
+        self.task_skip_event.clear()
+        self.task_paused = False
         self.update_task_progress("正在检查重试条件", task_id)
         self.run_async(
             "检查重试条件",
@@ -1348,6 +1365,15 @@ class DesktopWindow(QMainWindow):
         elif result == "cancelled":
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已停止，可重新分发。")
+        elif result == "paused":
+            self.task_paused = True
+            self.update_task_progress("任务已暂停，可恢复执行", self.current_task_id)
+            QMessageBox.information(self, "重试任务", "任务已暂停，可点击“恢复”继续。")
+        elif result == "skipped":
+            self.task_paused = False
+            self.task_skip_event.clear()
+            self.update_task_progress("任务已跳过，已放回池里", None)
+            QMessageBox.information(self, "重试任务", "任务已跳过，并已放回待执行池。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
@@ -2466,13 +2492,17 @@ class DesktopWindow(QMainWindow):
             self.publish_next_button.setText("发布中..." if busy else "发布下一条")
         if hasattr(self, "auto_task_button"):
             self.auto_task_button.setEnabled(not busy)
+        self.update_task_control_buttons()
 
     def publish_next(self) -> None:
         if self.manual_publish_busy:
             QMessageBox.information(self, "发布下一条", "已有发布任务在执行中，请等待当前任务结束。")
             return
+        self.task_paused = False
         self.set_manual_publish_busy(True)
         self.task_cancel_event.clear()
+        self.task_pause_event.clear()
+        self.task_skip_event.clear()
         self.update_task_progress("正在检查发布条件", self.current_task_id)
         self.run_async(
             "检查发布条件",
@@ -2509,9 +2539,19 @@ class DesktopWindow(QMainWindow):
         elif result == "cancelled":
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已停止，可重新分发。")
+        elif result == "paused":
+            self.task_paused = True
+            self.update_task_progress("任务已暂停，可恢复执行", self.current_task_id)
+            QMessageBox.information(self, "发布下一条", "任务已暂停，可点击“恢复”继续。")
+        elif result == "skipped":
+            self.task_paused = False
+            self.task_skip_event.clear()
+            self.update_task_progress("任务已跳过，已放回池里", None)
+            QMessageBox.information(self, "发布下一条", "任务已跳过，并已放回待执行池。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已执行完成。")
+        self.update_task_control_buttons()
 
     def run_once(self) -> None:
         self.run_async("领取并执行", lambda: self.runner().run_once())
@@ -2520,6 +2560,8 @@ class DesktopWindow(QMainWindow):
         if self.auto_task_enabled:
             self.auto_task_enabled = False
             self.task_cancel_event.set()
+            self.task_pause_event.clear()
+            self.task_skip_event.clear()
             self.auto_task_timer.stop()
             self.auto_task_button.setText("启动自动执行")
             stage = "正在停止当前下载..." if self.auto_task_busy else "自动执行已停止"
@@ -2530,6 +2572,9 @@ class DesktopWindow(QMainWindow):
 
     def start_auto_tasks_if_ready(self, media_accounts: list[dict[str, Any]]) -> None:
         self.task_cancel_event.clear()
+        self.task_pause_event.clear()
+        self.task_skip_event.clear()
+        self.task_paused = False
         self.media_accounts = media_accounts
         block_reason = self.auto_task_block_reason(media_accounts)
         if block_reason:
@@ -2577,8 +2622,85 @@ class DesktopWindow(QMainWindow):
             self.update_task_progress("任务失败，等待下一轮", self.current_task_id)
         elif result == "cancelled":
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
+        elif result == "paused":
+            self.task_paused = True
+            self.update_task_progress("任务已暂停，可恢复执行", self.current_task_id)
+        elif result == "skipped":
+            self.task_paused = False
+            self.task_skip_event.clear()
+            self.update_task_progress("任务已跳过，已放回池里", None)
         else:
             self.update_task_progress("任务完成，等待下一轮", self.current_task_id)
+        self.update_task_control_buttons()
+
+    def toggle_task_pause(self) -> None:
+        if self.task_paused:
+            self.resume_paused_task()
+            return
+        if not self.current_task_id or not (self.manual_publish_busy or self.auto_task_busy):
+            QMessageBox.information(self, "暂停任务", "当前没有正在执行的任务。")
+            return
+        self.resume_auto_after_pause = self.auto_task_enabled
+        self.auto_task_enabled = False
+        self.auto_task_timer.stop()
+        if hasattr(self, "auto_task_button"):
+            self.auto_task_button.setText("启动自动执行")
+        self.task_pause_event.set()
+        self.task_skip_event.clear()
+        self.update_task_progress("正在暂停当前任务...", self.current_task_id)
+        self.update_task_control_buttons()
+
+    def resume_paused_task(self) -> None:
+        self.task_paused = False
+        self.task_pause_event.clear()
+        self.task_skip_event.clear()
+        self.task_cancel_event.clear()
+        if self.resume_auto_after_pause:
+            self.resume_auto_after_pause = False
+            self.run_async("检查自动执行条件", lambda: self.api().get("/desktop/media-accounts"), self.start_auto_tasks_if_ready)
+            return
+        self.publish_next()
+
+    def skip_current_task(self) -> None:
+        if not self.current_task_id:
+            QMessageBox.information(self, "跳过任务", "当前没有可跳过的任务。")
+            return
+        self.task_paused = False
+        self.task_pause_event.clear()
+        self.task_skip_event.set()
+        self.resume_auto_after_pause = False
+        self.auto_task_enabled = False
+        self.auto_task_timer.stop()
+        if hasattr(self, "auto_task_button"):
+            self.auto_task_button.setText("启动自动执行")
+        if self.manual_publish_busy or self.auto_task_busy:
+            self.update_task_progress("正在跳过当前任务...", self.current_task_id)
+            self.update_task_control_buttons()
+            return
+        task_id = self.current_task_id
+        self.run_async(
+            "跳过任务",
+            lambda: self.api().post(f"/desktop/tasks/{task_id}/skip", {"deviceId": self.settings.device_id}),
+            lambda _task: self.handle_task_skipped(task_id),
+            log_result=False,
+        )
+
+    def handle_task_skipped(self, task_id: str) -> None:
+        self.task_skip_event.clear()
+        if self.current_task_id == task_id:
+            self.update_task_progress("任务已跳过，已放回池里", None)
+        self.load_task_history(page=self.task_history_page)
+        self.update_task_control_buttons()
+
+    def update_task_control_buttons(self) -> None:
+        running = bool(getattr(self, "manual_publish_busy", False) or getattr(self, "auto_task_busy", False))
+        paused = bool(getattr(self, "task_paused", False))
+        has_task = bool(getattr(self, "current_task_id", None))
+        if hasattr(self, "pause_task_button"):
+            self.pause_task_button.setText("恢复" if paused else "暂停")
+            self.pause_task_button.setEnabled(paused or running)
+        if hasattr(self, "skip_task_button"):
+            self.skip_task_button.setEnabled(has_task and (running or paused))
 
     def update_task_progress(self, stage: str, task_id: str | None, task: dict[str, Any] | None = None) -> None:
         self.current_task_id = task_id
@@ -2603,6 +2725,7 @@ class DesktopWindow(QMainWindow):
             self.current_media_backend_button.setEnabled(self.current_media_account() is not None)
         if hasattr(self, "task_stage_label"):
             self.task_stage_label.setText(f"当前阶段：{display_stage}")
+        self.update_task_control_buttons()
 
     def current_media_account(self) -> dict[str, Any] | None:
         media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()

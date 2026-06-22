@@ -1,5 +1,6 @@
 import os
 import pytest
+import threading
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -653,3 +654,60 @@ def test_publisher_for_media_account_uses_saved_login_state_ref(tmp_path, monkey
 
     assert isinstance(publisher, FakePublisher)
     assert calls == [("WECHAT_VIDEO", chrome, "sph-id", saved_profile)]
+
+
+def test_task_control_buttons_support_pause_resume_and_skip():
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.current_task_id = "task-1"
+    window.manual_publish_busy = True
+    window.auto_task_busy = False
+    window.task_paused = False
+    window.pause_task_button = QPushButton()
+    window.skip_task_button = QPushButton()
+
+    DesktopWindow.update_task_control_buttons(window)
+
+    assert window.pause_task_button.text() == "暂停"
+    assert window.pause_task_button.isEnabled() is True
+    assert window.skip_task_button.isEnabled() is True
+
+    window.manual_publish_busy = False
+    window.task_paused = True
+
+    DesktopWindow.update_task_control_buttons(window)
+
+    assert window.pause_task_button.text() == "恢复"
+    assert window.pause_task_button.isEnabled() is True
+    assert window.skip_task_button.isEnabled() is True
+
+
+def test_pause_current_task_sets_pause_event_and_stops_auto_timer():
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    stopped = []
+    window.current_task_id = "task-1"
+    window.manual_publish_busy = False
+    window.auto_task_busy = True
+    window.auto_task_enabled = True
+    window.task_paused = False
+    window.resume_auto_after_pause = False
+    window.task_pause_event = threading.Event()
+    window.task_skip_event = threading.Event()
+    window.auto_task_timer = SimpleNamespace(stop=lambda: stopped.append(True))
+    window.auto_task_button = QPushButton()
+    window.pause_task_button = QPushButton()
+    window.skip_task_button = QPushButton()
+    window.auto_task_state = QLabel()
+    window.current_task_label = QLabel()
+    window.current_media_account_label = QLabel()
+    window.task_stage_label = QLabel()
+    window.media_accounts = []
+
+    DesktopWindow.toggle_task_pause(window)
+
+    assert window.task_pause_event.is_set() is True
+    assert window.auto_task_enabled is False
+    assert window.resume_auto_after_pause is True
+    assert stopped == [True]
+    assert window.task_stage_label.text() == "当前阶段：正在暂停当前任务..."

@@ -419,6 +419,39 @@ class DistributionServiceTest {
         assertThat(task.getFinishedAt()).isNull();
     }
 
+    @Test
+    void desktopReleaseTaskReturnsItToPendingPoolForCurrentOwner() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.DOWNLOADING);
+        task.setProgress(40);
+        task.setLockedByDeviceId("device-1");
+        task.setFailureReason("old error");
+        task.setPlatformPublishId("old-publish");
+        task.setFinishedAt(Instant.now());
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(taskRepository.save(task)).thenReturn(task);
+
+        DistributionTask released = service.releaseTaskForOwner("owner-1", "task-1");
+
+        assertThat(released.getStatus()).isEqualTo(DistributionTaskStatus.PENDING);
+        assertThat(released.getProgress()).isZero();
+        assertThat(released.getLockedByDeviceId()).isNull();
+        assertThat(released.getFailureReason()).isNull();
+        assertThat(released.getPlatformPublishId()).isNull();
+        assertThat(released.getFinishedAt()).isNull();
+    }
+
     private static MediaAccount activeMedia(String id, String ownerAccountId, String categoryId) {
         MediaAccount media = new MediaAccount();
         media.setId(id);

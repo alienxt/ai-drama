@@ -338,6 +338,22 @@ public class DistributionService {
         return claim(task, deviceId);
     }
 
+    public DistributionTask releaseTaskForOwner(String ownerAccountId, String taskId) {
+        List<String> mediaAccountIds = ownerMediaAccountIds(ownerAccountId);
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        if (!mediaAccountIds.contains(task.getMediaAccountId())) {
+            throw new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        task.setStatus(DistributionTaskStatus.PENDING);
+        task.setProgress(0);
+        task.setLockedByDeviceId(null);
+        task.setFailureReason(null);
+        task.setPlatformPublishId(null);
+        task.setFinishedAt(null);
+        return taskRepository.save(task);
+    }
+
     public DistributionTask prioritizeDramaForOwner(String ownerAccountId, String dramaId) {
         var drama = dramaRepository.findById(dramaId)
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));

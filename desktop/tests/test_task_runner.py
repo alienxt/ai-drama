@@ -18,6 +18,8 @@ class FakeApi:
         self.calls.append(("POST", path, payload))
         if path == "/desktop/tasks/publish-next":
             return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1"}
+        if path.endswith("/pause") or path.endswith("/skip"):
+            return {"id": "task-1", "status": "PENDING"}
         if path.endswith("/result"):
             return {"ok": True}
         return {}
@@ -79,7 +81,7 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     publisher = FakePublisher()
     progress_events = []
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         files = []
         total = len(download_plan["episodes"])
         for index, episode in enumerate(download_plan["episodes"], start=1):
@@ -120,7 +122,7 @@ def test_publish_once_notifies_claimed_media_account(tmp_path, monkeypatch):
     publisher = FakePublisher()
     progress_events = []
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         target = target_dir / "001.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("video")
@@ -146,7 +148,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     publisher = FakePublisher()
     cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         cover_file.parent.mkdir(parents=True, exist_ok=True)
         cover_file.write_text("cover")
         targets = []
@@ -185,7 +187,7 @@ def test_publish_once_uses_media_account_specific_publisher(tmp_path, monkeypatc
     api = FakeApi()
     publishers = {}
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         target = target_dir / "001.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("video")
@@ -214,7 +216,7 @@ def test_publish_once_uses_media_account_specific_publisher(tmp_path, monkeypatc
 def test_publish_once_marks_task_failed_when_upload_fails(tmp_path, monkeypatch):
     api = FakeApi()
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         target = target_dir / "001.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("video")
@@ -242,7 +244,7 @@ def test_publish_once_marks_task_failed_when_upload_fails(tmp_path, monkeypatch)
 def test_publish_once_marks_task_cancelled_when_download_is_stopped(tmp_path, monkeypatch):
     api = FakeApi()
 
-    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         from aidrama_desktop.tasks.runner import TaskCancelled
 
         raise TaskCancelled("用户停止下载")
@@ -262,6 +264,50 @@ def test_publish_once_marks_task_cancelled_when_download_is_stopped(tmp_path, mo
         "/desktop/tasks/task-1/progress",
         {"status": "CANCELLED", "progress": 0},
     ) in api.calls
+
+
+def test_publish_once_pauses_task_without_cancelling(tmp_path, monkeypatch):
+    api = FakeApi()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        from aidrama_desktop.tasks.runner import TaskPaused
+
+        raise TaskPaused("用户暂停任务")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "paused"
+    assert ("POST", "/desktop/tasks/task-1/pause", {"deviceId": "device-1"}) in api.calls
+    assert not any(call[1] == "/desktop/tasks/task-1/progress" and call[2]["status"] == "CANCELLED" for call in api.calls)
+
+
+def test_publish_once_skips_task_without_cancelling(tmp_path, monkeypatch):
+    api = FakeApi()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        from aidrama_desktop.tasks.runner import TaskSkipped
+
+        raise TaskSkipped("用户跳过任务")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "skipped"
+    assert ("POST", "/desktop/tasks/task-1/skip", {"deviceId": "device-1"}) in api.calls
+    assert not any(call[1] == "/desktop/tasks/task-1/progress" and call[2]["status"] == "CANCELLED" for call in api.calls)
 
 
 def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):

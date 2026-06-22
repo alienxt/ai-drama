@@ -35,6 +35,8 @@ class TaskRunner:
     publisher_factory: Callable[[str], PlatformPublisher] | None = None
     progress_callback: Callable[..., None] | None = None
     cancel_checker: Callable[[], bool] | None = None
+    pause_checker: Callable[[], bool] | None = None
+    skip_checker: Callable[[], bool] | None = None
     download_concurrency: int = 6
 
     def heartbeat(self) -> None:
@@ -65,6 +67,7 @@ class TaskRunner:
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
             drama_title = self._drama_title(download_plan, task)
             source_files = self._download(download_plan, task_id, drama_title)
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
             publish_id = self._publisher_for(task).publish(
@@ -80,6 +83,14 @@ class TaskRunner:
             self._notify("任务完成", task_id)
             return "succeeded"
         except Exception as exception:  # noqa: BLE001
+            if isinstance(exception, TaskPaused):
+                self.api.post(f"/desktop/tasks/{task_id}/pause", {"deviceId": self.device_id})
+                self._notify("任务已暂停，可恢复执行", task_id, task)
+                return "paused"
+            if isinstance(exception, TaskSkipped):
+                self.api.post(f"/desktop/tasks/{task_id}/skip", {"deviceId": self.device_id})
+                self._notify("任务已跳过，已放回池里", task_id, task)
+                return "skipped"
             if isinstance(exception, TaskCancelled):
                 self.api.put(f"/desktop/tasks/{task_id}/progress", {"status": "CANCELLED", "progress": 0})
                 self._notify("任务已停止，可重新分发", task_id, task)
@@ -121,6 +132,8 @@ class TaskRunner:
                 task_id,
             ),
             should_stop=self.cancel_checker,
+            should_pause=self.pause_checker,
+            should_skip=self.skip_checker,
             max_concurrent_downloads=self.download_concurrency,
         )
 
@@ -180,12 +193,22 @@ def download_episodes(
     headers: dict[str, str] | None = None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
     max_concurrent_downloads: int = 6,
     episode_retry_count: int = EPISODE_DOWNLOAD_RETRIES,
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
-    cover_file = download_cover(download_plan, target_dir, base_url, headers=headers, should_stop=should_stop)
+    cover_file = download_cover(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
     write_drama_metadata(download_plan, target_dir, cover_file)
     episodes = download_plan["episodes"]
     total = len(episodes)
@@ -206,6 +229,8 @@ def download_episodes(
                 headers,
                 progress_callback,
                 should_stop,
+                should_pause,
+                should_skip,
                 episode_retry_count,
                 retry_delay_seconds,
             ): index
@@ -226,11 +251,12 @@ def download_episode(
     headers: dict[str, str] | None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
     should_stop: Callable[[], bool] | None,
+    should_pause: Callable[[], bool] | None,
+    should_skip: Callable[[], bool] | None,
     retry_count: int = EPISODE_DOWNLOAD_RETRIES,
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> Path:
-    if should_stop and should_stop():
-        raise TaskCancelled("用户停止下载")
+    raise_if_task_interrupted(should_stop, should_pause, should_skip)
     target = target_dir / f"{episode['episodeNo']:03d}.mp4"
     if is_complete_episode_file(target, episode):
         if progress_callback:
@@ -242,9 +268,11 @@ def download_episode(
     attempts = max(1, retry_count)
     last_exception: BaseException | None = None
     for attempt in range(1, attempts + 1):
-        if should_stop and should_stop():
+        try:
+            raise_if_task_interrupted(should_stop, should_pause, should_skip)
+        except TaskInterrupted:
             cleanup_part_file(part_file)
-            raise TaskCancelled("用户停止下载")
+            raise
         try:
             cleanup_part_file(part_file)
             download_episode_attempt(
@@ -256,6 +284,8 @@ def download_episode(
                 headers,
                 progress_callback,
                 should_stop,
+                should_pause,
+                should_skip,
             )
             if not is_downloaded_file_complete(part_file, episode):
                 expected_size = episode_size(episode)
@@ -263,7 +293,7 @@ def download_episode(
                 raise RuntimeError(f"第 {episode['episodeNo']} 集下载不完整：{actual_size}/{expected_size} bytes")
             part_file.replace(target)
             return target
-        except TaskCancelled:
+        except TaskInterrupted:
             cleanup_part_file(part_file)
             raise
         except Exception as exception:  # noqa: BLE001
@@ -271,7 +301,7 @@ def download_episode(
             cleanup_part_file(part_file)
             if attempt >= attempts or not is_retryable_download_error(exception):
                 break
-            sleep_before_retry(retry_delay_seconds, should_stop)
+            sleep_before_retry(retry_delay_seconds, should_stop, should_pause, should_skip)
     if last_exception:
         raise last_exception
     raise RuntimeError(f"第 {episode['episodeNo']} 集下载失败")
@@ -286,6 +316,8 @@ def download_episode_attempt(
     headers: dict[str, str] | None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
     should_stop: Callable[[], bool] | None,
+    should_pause: Callable[[], bool] | None,
+    should_skip: Callable[[], bool] | None,
 ) -> None:
     url = resolve_download_url(str(episode["downloadUrl"]), base_url)
     request = urllib.request.Request(url, headers=headers or {})
@@ -293,8 +325,7 @@ def download_episode_attempt(
         total_bytes = _content_length(response) or episode_size(episode)
         downloaded = 0
         while True:
-            if should_stop and should_stop():
-                raise TaskCancelled("用户停止下载")
+            raise_if_task_interrupted(should_stop, should_pause, should_skip)
             chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break
@@ -344,11 +375,15 @@ def is_retryable_download_error(exception: BaseException) -> bool:
     return False
 
 
-def sleep_before_retry(delay_seconds: float, should_stop: Callable[[], bool] | None) -> None:
+def sleep_before_retry(
+    delay_seconds: float,
+    should_stop: Callable[[], bool] | None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> None:
     deadline = time.monotonic() + max(delay_seconds, 0)
     while time.monotonic() < deadline:
-        if should_stop and should_stop():
-            raise TaskCancelled("用户停止下载")
+        raise_if_task_interrupted(should_stop, should_pause, should_skip)
         remaining = max(deadline - time.monotonic(), 0)
         time.sleep(min(0.2, remaining))
 
@@ -359,18 +394,18 @@ def download_cover(
     base_url: str,
     headers: dict[str, str] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
 ) -> Path | None:
     cover_url = download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl")
     if not cover_url:
         return None
-    if should_stop and should_stop():
-        raise TaskCancelled("用户停止下载")
+    raise_if_task_interrupted(should_stop, should_pause, should_skip)
     target = target_dir / "fengmian.jpg"
     request = urllib.request.Request(resolve_download_url(str(cover_url), base_url), headers=headers or {})
     with urllib.request.urlopen(request) as response, target.open("wb") as output:
         while True:
-            if should_stop and should_stop():
-                raise TaskCancelled("用户停止下载")
+            raise_if_task_interrupted(should_stop, should_pause, should_skip)
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
@@ -413,8 +448,33 @@ def resolve_download_url(url: str, base_url: str) -> str:
     return url
 
 
-class TaskCancelled(RuntimeError):
+class TaskInterrupted(RuntimeError):
     pass
+
+
+class TaskCancelled(TaskInterrupted):
+    pass
+
+
+class TaskPaused(TaskInterrupted):
+    pass
+
+
+class TaskSkipped(TaskInterrupted):
+    pass
+
+
+def raise_if_task_interrupted(
+    should_stop: Callable[[], bool] | None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> None:
+    if should_skip and should_skip():
+        raise TaskSkipped("用户跳过任务")
+    if should_pause and should_pause():
+        raise TaskPaused("用户暂停任务")
+    if should_stop and should_stop():
+        raise TaskCancelled("用户停止下载")
 
 
 def _content_length(response: object) -> int | None:

@@ -90,6 +90,30 @@ public class DistributionTaskController {
         );
     }
 
+    @PostMapping("/api/desktop/tasks/{id}/pause")
+    ApiResponse<DistributionTask> pauseDesktopTask(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @PathVariable String id,
+            @RequestBody DistributionDtos.ClaimRequest request
+    ) {
+        return ApiResponse.ok(
+                service.releaseTaskForOwner(principal.accountId(), id),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @PostMapping("/api/desktop/tasks/{id}/skip")
+    ApiResponse<DistributionTask> skipDesktopTask(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @PathVariable String id,
+            @RequestBody DistributionDtos.ClaimRequest request
+    ) {
+        return ApiResponse.ok(
+                service.releaseTaskForOwner(principal.accountId(), id),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @PostMapping("/api/desktop/dramas/{dramaId}/prioritize")
     ApiResponse<DistributionTask> prioritize(
             @AuthenticationPrincipal JwtPrincipal principal,
