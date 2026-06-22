@@ -107,10 +107,17 @@ public class DistributionService {
                         .map(MediaAccount::getDisplayName)
                         .orElse(task.getMediaAccountId()),
                 Optional.ofNullable(dramaById.get(task.getDramaId()))
-                        .map(com.onehot.aidrama.dramas.Drama::getTitle)
+                        .map(this::dramaDisplayTitle)
                         .orElse(task.getDramaId())
         )).toList();
         return PageResult.from(new PageImpl<>(rows, taskPage.getPageable(), taskPage.getTotalElements()));
+    }
+
+    private String dramaDisplayTitle(com.onehot.aidrama.dramas.Drama drama) {
+        if (drama.getAiTitle() != null && !drama.getAiTitle().isBlank()) {
+            return drama.getAiTitle();
+        }
+        return drama.getTitle();
     }
 
     private PageImpl<DistributionTask> findAdminTasks(

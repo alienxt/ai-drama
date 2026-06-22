@@ -310,7 +310,8 @@ class DistributionServiceTest {
 
         Drama drama = new Drama();
         drama.setId("drama-1");
-        drama.setTitle("神医归来");
+        drama.setTitle("原始剧名");
+        drama.setAiTitle("神医归来");
 
         PageRequest pageable = PageRequest.of(0, 10);
         when(taskRepository.findAll(pageable)).thenReturn(new PageImpl<>(List.of(task), pageable, 1));
