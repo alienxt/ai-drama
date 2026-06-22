@@ -635,7 +635,7 @@ class DesktopWindow(QMainWindow):
         self.contract_template_path_input = QLineEdit()
         self.contract_template_path_input.setReadOnly(True)
         placeholder_hint = QLabel(
-            "Word 模板里可用占位符：{{dramaTitle}}、{{episodeCount}}、{{price}}、{{buyer}}、{{seller}}、{{date}}、{{contractType}}"
+            "Word 模板里可用占位符：{{dramaTitle}}、{{episodeCount}}、{{episodeMinutes}}、{{price}}、{{buyer}}、{{seller}}、{{date}}、{{contractType}}"
         )
         placeholder_hint.setObjectName("mutedText")
         template_note = QLabel("模板里的盖章、签字、页眉页脚和排版会保留；请把占位符作为连续文本输入。")
@@ -653,6 +653,7 @@ class DesktopWindow(QMainWindow):
         form.setSpacing(10)
         self.contract_drama_input = QLineEdit("神医归来，开局抢婚校花老婆")
         self.contract_episode_input = QLineEdit("80")
+        self.contract_episode_minutes_input = QLineEdit("80")
         self.contract_price_input = QLineEdit("5000")
         self.contract_buyer_input = QLineEdit("甲方公司")
         self.contract_seller_input = QLineEdit("乙方公司")
@@ -660,7 +661,8 @@ class DesktopWindow(QMainWindow):
         self.contract_date_input.setPlaceholderText("留空则使用今天")
         form.addRow("剧名", self.contract_drama_input)
         form.addRow("剧集", self.contract_episode_input)
-        form.addRow("价格", self.contract_price_input)
+        form.addRow("总时长（分钟）", self.contract_episode_minutes_input)
+        form.addRow("价格（万）", self.contract_price_input)
         form.addRow("买方/甲方", self.contract_buyer_input)
         form.addRow("卖方/乙方", self.contract_seller_input)
         form.addRow("签署日期", self.contract_date_input)
@@ -1722,6 +1724,7 @@ class DesktopWindow(QMainWindow):
             contract_type=self.current_contract_name(),
             drama_title=self.contract_drama_input.text().strip() or "未命名短剧",
             episode_count=self.contract_episode_input.text().strip() or "0",
+            episode_minutes=self.contract_episode_minutes_input.text().strip() or "0",
             price=self.contract_price_input.text().strip() or "0",
             buyer=self.contract_buyer_input.text().strip() or "甲方",
             seller=self.contract_seller_input.text().strip() or "乙方",

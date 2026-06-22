@@ -4,6 +4,7 @@ from aidrama_desktop.contracts.generator import (
     ContractConfigStore,
     ContractRenderInput,
     copy_contract_template,
+    format_contract_date,
     render_contract_docx,
 )
 
@@ -13,9 +14,10 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
     output = tmp_path / "output.docx"
     doc = Document()
     doc.add_paragraph("合同剧名：{{dramaTitle}}")
+    doc.add_paragraph("签署日期：{{date}}")
     table = doc.add_table(rows=1, cols=2)
     table.cell(0, 0).text = "集数"
-    table.cell(0, 1).text = "{{ episodeCount }} 集"
+    table.cell(0, 1).text = "{{ episodeCount }} 集，共 {{episodeMinutes}} 分钟"
     doc.save(template)
 
     result = render_contract_docx(
@@ -25,6 +27,7 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
             contract_type="成本合同",
             drama_title="神医归来",
             episode_count="80",
+            episode_minutes="80",
             price="5000",
             buyer="甲方",
             seller="乙方",
@@ -34,7 +37,12 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
 
     rendered = Document(result)
     assert rendered.paragraphs[0].text == "合同剧名：神医归来"
-    assert rendered.tables[0].cell(0, 1).text == "80 集"
+    assert rendered.paragraphs[1].text == "签署日期：2026 年 06 月 15 日"
+    assert rendered.tables[0].cell(0, 1).text == "80 集，共 80 分钟"
+
+
+def test_format_contract_date_supports_chinese_date_input():
+    assert format_contract_date("2026年6月5日") == "2026 年 06 月 05 日"
 
 
 def test_contract_config_store_round_trips_template_paths(tmp_path):

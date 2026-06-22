@@ -22,16 +22,18 @@ class ContractRenderInput:
     buyer: str
     seller: str
     sign_date: str = ""
+    episode_minutes: str = ""
 
     def placeholders(self) -> dict[str, str]:
         return {
             "contractType": self.contract_type,
             "dramaTitle": self.drama_title,
             "episodeCount": self.episode_count,
+            "episodeMinutes": self.episode_minutes,
             "price": self.price,
             "buyer": self.buyer,
             "seller": self.seller,
-            "date": self.sign_date or date.today().isoformat(),
+            "date": format_contract_date(self.sign_date),
         }
 
 
@@ -87,6 +89,30 @@ def replace_contract_text(text: str, values: dict[str, str]) -> str:
         return values.get(key, "")
 
     return re.sub(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}", replace, text)
+
+
+def format_contract_date(value: str = "") -> str:
+    clean = value.strip()
+    if not clean:
+        parsed = date.today()
+    else:
+        normalized = (
+            clean.replace("年", "-")
+            .replace("月", "-")
+            .replace("日", "")
+            .replace("/", "-")
+            .replace(".", "-")
+        )
+        normalized = re.sub(r"\s+", "", normalized)
+        match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", normalized)
+        if not match:
+            return clean
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            parsed = date(year, month, day)
+        except ValueError:
+            return clean
+    return f"{parsed.year:04d} 年 {parsed.month:02d} 月 {parsed.day:02d} 日"
 
 
 def replace_paragraph_text(paragraph, values: dict[str, str]) -> None:
