@@ -57,10 +57,15 @@ class WeChatVideoPublisher(PlatformPublisher):
 
         profile_dir = self._profile_dir()
         with sync_playwright() as playwright:
+            browser = None
+            context = None
             try:
                 target_url = self.playlet_url if metadata else self.login_url
-                browser = self._connect_to_chrome(playwright, profile_dir, target_url)
-                context = self._browser_context(browser)
+                try:
+                    browser = self._connect_to_chrome(playwright, profile_dir, target_url)
+                    context = self._browser_context(browser)
+                except Exception:
+                    context = self._launch_persistent_context(playwright, profile_dir)
             except Exception as exception:  # noqa: BLE001
                 raise RuntimeError("无法接管视频号发布浏览器，请关闭该媒体号已打开的 Chrome 窗口后重试") from exception
             try:
@@ -71,13 +76,16 @@ class WeChatVideoPublisher(PlatformPublisher):
                     for media_file in media_files:
                         self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
             finally:
-                self._close_browser(browser)
+                if browser:
+                    self._close_browser(browser)
+                elif context:
+                    self._close_context(context)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
 
     def _connect_to_chrome(self, playwright, profile_dir: Path, target_url: str):
         port = available_remote_debugging_port()
-        self.chrome.open_profile(profile_dir, target_url, remote_debugging_port=port)
+        process = self.chrome.open_profile(profile_dir, target_url, remote_debugging_port=port)
         endpoint = f"http://127.0.0.1:{port}"
         last_exception: Exception | None = None
         for _ in range(30):
@@ -86,9 +94,22 @@ class WeChatVideoPublisher(PlatformPublisher):
             except Exception as exception:  # noqa: BLE001
                 last_exception = exception
                 time.sleep(0.2)
+        self._terminate_process(process)
         if last_exception:
             raise last_exception
         raise RuntimeError("Chrome remote debugging endpoint did not become ready")
+
+    def _launch_persistent_context(self, playwright, profile_dir: Path):
+        return playwright.chromium.launch_persistent_context(
+            str(profile_dir),
+            executable_path=self.chrome.chrome_path,
+            headless=False,
+            args=[
+                "--no-first-run",
+                "--disable-default-apps",
+                "--disable-session-crashed-bubble",
+            ],
+        )
 
     @staticmethod
     def _browser_context(browser):
@@ -136,6 +157,25 @@ class WeChatVideoPublisher(PlatformPublisher):
             browser.close()
         except Exception:
             pass
+
+    @staticmethod
+    def _close_context(context) -> None:
+        try:
+            context.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _terminate_process(process) -> None:
+        poll = getattr(process, "poll", None)
+        terminate = getattr(process, "terminate", None)
+        if callable(poll) and poll() is not None:
+            return
+        if callable(terminate):
+            try:
+                terminate()
+            except Exception:
+                pass
 
     def _upload_playlet(
         self,

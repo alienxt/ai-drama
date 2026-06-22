@@ -64,6 +64,7 @@ class ChromeController:
             "--disable-default-apps",
         ]
         if remote_debugging_port is not None:
+            args.append("--remote-debugging-address=127.0.0.1")
             args.append(f"--remote-debugging-port={remote_debugging_port}")
         args.append(url)
         return subprocess.Popen(

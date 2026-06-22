@@ -191,6 +191,90 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
     assert context.closed is True
 
 
+def test_wechat_video_publisher_falls_back_when_cdp_attach_fails(tmp_path: Path, monkeypatch):
+    uploaded_pages = []
+    launched = []
+    terminated = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            terminated.append(True)
+
+    class FakePage:
+        url = "about:blank"
+
+        def goto(self, url, wait_until=None):
+            self.url = url
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = [FakePage()]
+            self.closed = False
+
+        def new_page(self):
+            page = FakePage()
+            self.pages.append(page)
+            return page
+
+        def close(self):
+            self.closed = True
+
+    fallback_context = FakeContext()
+
+    class FakeChromium:
+        def connect_over_cdp(self, _endpoint_url):
+            raise RuntimeError("cdp unavailable")
+
+        def launch_persistent_context(self, user_data_dir, executable_path=None, headless=False, args=None):
+            launched.append((user_data_dir, executable_path, headless, args))
+            return fallback_context
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(
+        "aidrama_desktop.platforms.wechat_video.available_remote_debugging_port",
+        lambda: 9333,
+    )
+    monkeypatch.setattr("aidrama_desktop.platforms.wechat_video.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(
+        WeChatVideoPublisher,
+        "_upload_playlet",
+        lambda self, page, media_files, title, summary, metadata, timeout_error: uploaded_pages.append(page),
+    )
+    chrome = ChromeController("chrome", tmp_path)
+    monkeypatch.setattr(chrome, "open_profile", lambda profile_dir, url, remote_debugging_port=None: FakeProcess())
+    publisher = get_publisher("WECHAT_VIDEO", chrome, account_id="media-1")
+
+    result = publisher.publish([tmp_path / "001.mp4"], "神医归来", metadata={"coverFile": tmp_path / "cover.jpg"})
+
+    assert result == "wechat-playlet:神医归来:1"
+    assert terminated == [True]
+    assert launched == [
+        (
+            str(tmp_path / "wechat_video" / "media-1"),
+            "chrome",
+            False,
+            ["--no-first-run", "--disable-default-apps", "--disable-session-crashed-bubble"],
+        )
+    ]
+    assert uploaded_pages == [fallback_context.pages[0]]
+    assert fallback_context.closed is True
+
+
 def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count(tmp_path: Path, monkeypatch):
     fills = []
     monetization = []
@@ -266,6 +350,7 @@ def test_open_platform_login_can_enable_remote_debugging(tmp_path: Path, monkeyp
     )
 
     assert isinstance(process, FakeProcess)
+    assert "--remote-debugging-address=127.0.0.1" in calls[0]
     assert "--remote-debugging-port=19001" in calls[0]
 
 
