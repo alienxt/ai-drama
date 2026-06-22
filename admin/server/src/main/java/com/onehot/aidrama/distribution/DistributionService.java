@@ -293,8 +293,27 @@ public class DistributionService {
     }
 
     public Optional<DistributionTask> prepareAndClaimForOwner(String ownerAccountId, String deviceId) {
-        generateTasksForOwner(ownerAccountId);
-        return claimForOwner(ownerAccountId, deviceId);
+        Optional<DistributionTask> pendingTask = claimForOwner(ownerAccountId, deviceId);
+        if (pendingTask.isPresent()) {
+            return pendingTask;
+        }
+        return generateNextTaskForOwner(ownerAccountId)
+                .map(task -> claim(task, deviceId));
+    }
+
+    private Optional<DistributionTask> generateNextTaskForOwner(String ownerAccountId) {
+        var dramas = recentReadyDramas();
+        var mediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
+        for (var drama : dramas) {
+            for (var media : mediaAccounts) {
+                if (hasSavedLoginState(media)
+                        && planner.canDistribute(media, drama)
+                        && !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), drama.getId())) {
+                    return Optional.of(createTask(media.getId(), drama.getId(), 0));
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     public DistributionTask retryAndClaimForOwner(String ownerAccountId, String taskId, String deviceId) {

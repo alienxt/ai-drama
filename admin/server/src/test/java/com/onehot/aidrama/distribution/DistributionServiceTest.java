@@ -31,21 +31,11 @@ import static org.mockito.Mockito.when;
 
 class DistributionServiceTest {
     @Test
-    void preparesAndClaimsTaskForCurrentOwnerOnly() {
+    void preparesAndClaimsExistingTaskForCurrentOwnerWithoutGeneratingQueue() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
         DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
-
-        Drama drama = new Drama();
-        drama.setId("drama-1");
-        drama.setStatus(DramaStatus.READY);
-        drama.setCategoryIds(List.of("urban"));
-        markUpdatedNow(drama);
-        DramaEpisode episode = new DramaEpisode();
-        episode.setEpisodeNo(1);
-        episode.setSourcePath("/drama/1.mp4");
-        drama.setEpisodes(List.of(episode));
 
         MediaAccount owned = new MediaAccount();
         owned.setId("media-owned");
@@ -56,11 +46,6 @@ class DistributionServiceTest {
         policy.setCategoryIds(List.of("urban"));
         owned.setDistributionPolicy(policy);
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
-                any(DramaStatus.class),
-                any(Instant.class),
-                any(Sort.class)
-        )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(owned));
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
@@ -80,12 +65,49 @@ class DistributionServiceTest {
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-owned");
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
-        verify(dramaRepository).findByStatusAndUpdatedAtGreaterThanEqual(
+        verify(dramaRepository, never()).findByStatusAndUpdatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
         );
         verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
+    }
+
+    @Test
+    void prepareGeneratesOnlyOneTaskWhenNoPendingTaskExists() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama firstDrama = readyDrama("drama-1", "urban");
+        Drama secondDrama = readyDrama("drama-2", "urban");
+        MediaAccount firstMedia = activeMedia("media-1", "owner-1", "urban");
+        MediaAccount secondMedia = activeMedia("media-2", "owner-1", "urban");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(firstMedia, secondMedia));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1", "media-2")
+        )).thenReturn(Optional.empty());
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(firstDrama, secondDrama));
+        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-1")).thenReturn(false);
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<DistributionTask> claimed = service.prepareAndClaimForOwner("owner-1", "device-1");
+
+        assertThat(claimed).isPresent();
+        assertThat(claimed.get().getDramaId()).isEqualTo("drama-1");
+        assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-1");
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
+        verify(taskRepository, times(2)).save(any(DistributionTask.class));
+        verify(taskRepository, never()).existsByMediaAccountIdAndDramaId("media-2", "drama-1");
+        verify(taskRepository, never()).existsByMediaAccountIdAndDramaId("media-1", "drama-2");
     }
 
     @Test
@@ -408,6 +430,19 @@ class DistributionServiceTest {
         policy.setCategoryIds(List.of(categoryId));
         media.setDistributionPolicy(policy);
         return media;
+    }
+
+    private static Drama readyDrama(String id, String categoryId) {
+        Drama drama = new Drama();
+        drama.setId(id);
+        drama.setStatus(DramaStatus.READY);
+        drama.setCategoryIds(List.of(categoryId));
+        markUpdatedNow(drama);
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/drama/" + id + ".mp4");
+        drama.setEpisodes(List.of(episode));
+        return drama;
     }
 
     private static void markUpdatedNow(Drama drama) {
