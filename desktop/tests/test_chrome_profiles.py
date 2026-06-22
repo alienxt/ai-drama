@@ -93,7 +93,7 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
     assert uploaded == [([media_file], "神医归来", "简介", {"coverFile": tmp_path / "cover.jpg"})]
 
 
-def test_wechat_video_publisher_uses_fresh_page_instead_of_startup_blank_page(tmp_path: Path, monkeypatch):
+def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tmp_path: Path, monkeypatch):
     uploaded_pages = []
 
     class FakePage:
@@ -113,7 +113,7 @@ def test_wechat_video_publisher_uses_fresh_page_instead_of_startup_blank_page(tm
             self.closed = True
 
     blank_page = FakePage()
-    publish_page = FakePage()
+    unexpected_page = FakePage()
 
     class FakeContext:
         def __init__(self):
@@ -121,8 +121,8 @@ def test_wechat_video_publisher_uses_fresh_page_instead_of_startup_blank_page(tm
             self.closed = False
 
         def new_page(self):
-            self.pages.append(publish_page)
-            return publish_page
+            self.pages.append(unexpected_page)
+            return unexpected_page
 
         def close(self):
             self.closed = True
@@ -153,9 +153,10 @@ def test_wechat_video_publisher_uses_fresh_page_instead_of_startup_blank_page(tm
 
     publisher.publish([media_file], "神医归来", metadata={"coverFile": tmp_path / "cover.jpg"})
 
-    assert blank_page.closed is True
-    assert uploaded_pages == [publish_page]
-    assert publish_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
+    assert blank_page.closed is False
+    assert uploaded_pages == [blank_page]
+    assert blank_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
+    assert unexpected_page.visited == []
     assert context.closed is True
 
 

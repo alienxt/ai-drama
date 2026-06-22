@@ -82,7 +82,7 @@ class WeChatVideoPublisher(PlatformPublisher):
 
     def _open_publish_page(self, context, target_url: str):
         startup_pages = list(getattr(context, "pages", []) or [])
-        page = context.new_page()
+        page = self._startup_blank_page(startup_pages) or context.new_page()
         try:
             page.goto(target_url, wait_until="domcontentloaded")
             page.wait_for_timeout(1000)
@@ -92,6 +92,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             raise RuntimeError("无法打开视频号发布页面，请确认网络正常并已登录视频号助手") from exception
         self._close_startup_blank_pages(startup_pages, active_page=page)
         return page
+
+    @staticmethod
+    def _startup_blank_page(pages):
+        for page in pages:
+            url = str(getattr(page, "url", "") or "")
+            if url in {"", "about:blank"}:
+                return page
+        return None
 
     def _close_startup_blank_pages(self, pages, active_page) -> None:
         for page in pages:
