@@ -33,7 +33,7 @@ class TaskRunner:
     downloads_dir: Path | None = None
     processed_dir: Path | None = None
     publisher_factory: Callable[[str], PlatformPublisher] | None = None
-    progress_callback: Callable[[str, str | None], None] | None = None
+    progress_callback: Callable[..., None] | None = None
     cancel_checker: Callable[[], bool] | None = None
     download_concurrency: int = 6
 
@@ -59,7 +59,7 @@ class TaskRunner:
             self._notify("空闲", None)
             return "no-task"
         task_id = task["id"]
-        self._notify("任务已领取", task_id)
+        self._notify("任务已领取", task_id, task)
         try:
             self._progress(task_id, "DOWNLOADING", 10)
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
@@ -82,13 +82,13 @@ class TaskRunner:
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, TaskCancelled):
                 self.api.put(f"/desktop/tasks/{task_id}/progress", {"status": "CANCELLED", "progress": 0})
-                self._notify("任务已停止，可重新分发", task_id)
+                self._notify("任务已停止，可重新分发", task_id, task)
                 return "cancelled"
             self.api.put(
                 f"/desktop/tasks/{task_id}/result",
                 {"success": False, "platformPublishId": None, "failureReason": str(exception)},
             )
-            self._notify(f"任务失败：{exception}", task_id)
+            self._notify(f"任务失败：{exception}", task_id, task)
             return "failed"
 
     def _progress(self, task_id: str, status: str, progress: int) -> None:
@@ -101,9 +101,9 @@ class TaskRunner:
             return self.publisher_factory(str(media_account_id))
         return self.publisher
 
-    def _notify(self, stage: str, task_id: str | None) -> None:
+    def _notify(self, stage: str, task_id: str | None, task: dict | None = None) -> None:
         if self.progress_callback:
-            self.progress_callback(stage, task_id)
+            self.progress_callback(stage, task_id, task)
 
     @staticmethod
     def _drama_title(download_plan: dict, task: dict) -> str:

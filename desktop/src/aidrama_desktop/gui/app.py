@@ -288,6 +288,7 @@ class DesktopWindow(QMainWindow):
         self.auto_task_busy = False
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
+        self.current_media_account_id: str | None = None
         self.task_history_rows: list[dict[str, Any]] = []
         self.task_history_page = 0
         self.task_history_size = 10
@@ -778,6 +779,8 @@ class DesktopWindow(QMainWindow):
         self.auto_task_state.setObjectName("mutedText")
         self.current_task_label = QLabel("当前任务：-")
         self.current_task_label.setObjectName("mutedText")
+        self.current_media_account_label = QLabel("当前媒体号：-")
+        self.current_media_account_label.setObjectName("mutedText")
         self.task_stage_label = QLabel("当前阶段：空闲")
         self.task_stage_label.setObjectName("mutedText")
         self.task_error_label = QLabel("最近错误：-")
@@ -788,6 +791,7 @@ class DesktopWindow(QMainWindow):
         panel_layout.addLayout(actions)
         panel_layout.addWidget(self.auto_task_state)
         panel_layout.addWidget(self.current_task_label)
+        panel_layout.addWidget(self.current_media_account_label)
         panel_layout.addWidget(self.task_stage_label)
         panel_layout.addWidget(self.task_error_label)
         panel_layout.addWidget(note)
@@ -2562,8 +2566,13 @@ class DesktopWindow(QMainWindow):
         else:
             self.update_task_progress("任务完成，等待下一轮", self.current_task_id)
 
-    def update_task_progress(self, stage: str, task_id: str | None) -> None:
+    def update_task_progress(self, stage: str, task_id: str | None, task: dict[str, Any] | None = None) -> None:
         self.current_task_id = task_id
+        media_account_id = str((task or {}).get("mediaAccountId") or "").strip()
+        if media_account_id:
+            self.current_media_account_id = media_account_id
+        elif task_id is None:
+            self.current_media_account_id = None
         display_stage = stage
         if stage.startswith("任务失败："):
             reason = self.clean_error_message(stage.removeprefix("任务失败："))
@@ -2574,8 +2583,26 @@ class DesktopWindow(QMainWindow):
             self.auto_task_state.setText(f"自动执行：{'运行中' if self.auto_task_enabled else '未启动'}")
         if hasattr(self, "current_task_label"):
             self.current_task_label.setText(f"当前任务：{task_id or '-'}")
+        if hasattr(self, "current_media_account_label"):
+            self.current_media_account_label.setText(f"当前媒体号：{self.current_media_account_display()}")
         if hasattr(self, "task_stage_label"):
             self.task_stage_label.setText(f"当前阶段：{display_stage}")
+
+    def current_media_account_display(self) -> str:
+        media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()
+        if not media_account_id:
+            return "-"
+        account = next(
+            (
+                item
+                for item in getattr(self, "media_accounts", [])
+                if str(item.get("id") or "") == media_account_id
+            ),
+            None,
+        )
+        if not account:
+            return media_account_id
+        return str(account.get("displayName") or account.get("externalAccountId") or media_account_id)
 
     def current_task_error_message(self) -> str | None:
         if not hasattr(self, "task_error_label"):

@@ -99,7 +99,7 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
         publisher=publisher,
         work_dir=tmp_path,
         device_id="device-1",
-        progress_callback=lambda stage, task_id: progress_events.append((stage, task_id)),
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
     )
 
     result = runner.publish_once()
@@ -113,6 +113,32 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert processor.calls == []
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
+
+
+def test_publish_once_notifies_claimed_media_account(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+    progress_events = []
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id, task)),
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert ("任务已领取", "task-1", {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1"}) in progress_events
 
 
 def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch):
