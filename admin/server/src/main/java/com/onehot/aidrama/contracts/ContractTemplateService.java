@@ -19,9 +19,9 @@ public class ContractTemplateService {
     }
 
     public List<ContractTemplateDtos.ContractTemplateResponse> list() {
-        return repository.findAll(Sort.by(Sort.Direction.ASC, "platform")
+        return repository.findAll(Sort.by(Sort.Direction.DESC, "weight")
+                        .and(Sort.by(Sort.Direction.ASC, "platform"))
                         .and(Sort.by(Sort.Direction.ASC, "type"))
-                        .and(Sort.by(Sort.Direction.DESC, "weight"))
                         .and(Sort.by(Sort.Direction.DESC, "uploadedAt")))
                 .stream()
                 .map(ContractTemplateDtos.ContractTemplateResponse::from)

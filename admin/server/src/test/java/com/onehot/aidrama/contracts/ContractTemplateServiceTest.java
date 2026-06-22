@@ -2,11 +2,14 @@ package com.onehot.aidrama.contracts;
 
 import com.onehot.aidrama.media.MediaPlatform;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.Sort;
 
 import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +45,22 @@ class ContractTemplateServiceTest {
         ContractTemplate updated = service.updateWeight("template-1", 50);
 
         assertThat(updated.getWeight()).isEqualTo(50);
+    }
+
+    @Test
+    void adminListSortsByWeightDescendingByDefault() {
+        ContractTemplateRepository repository = mock(ContractTemplateRepository.class);
+        when(repository.findAll(org.mockito.ArgumentMatchers.any(Sort.class))).thenReturn(List.of());
+        ContractTemplateService service = new ContractTemplateService(repository);
+
+        service.list();
+
+        ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
+        verify(repository).findAll(sortCaptor.capture());
+        assertThat(sortCaptor.getValue().stream().toList()).first().satisfies(order -> {
+            assertThat(order.getProperty()).isEqualTo("weight");
+            assertThat(order.getDirection()).isEqualTo(Sort.Direction.DESC);
+        });
     }
 
     private static ContractTemplate template(MediaPlatform platform, ContractTemplateType type) {
