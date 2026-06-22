@@ -142,10 +142,18 @@ public class DistributionService {
                 var page = taskRepository.findAll(pageable);
                 return new PageImpl<>(page.getContent(), page.getPageable(), page.getTotalElements());
             }
-            List<DistributionTask> filtered = taskRepository.findAll().stream()
+            List<DistributionTask> tasks = taskRepository.findAll();
+            Map<String, MediaAccount> mediaById = mediaAccountsById(tasks);
+            Map<String, com.onehot.aidrama.dramas.Drama> dramaById = dramasById(tasks);
+            List<DistributionTask> filtered = tasks.stream()
                     .filter(task -> status == null || task.getStatus() == status)
                     .filter(task -> mediaAccountIds == null || mediaAccountIds.contains(task.getMediaAccountId()))
-                    .filter(task -> fallbackKeywordMatches(task, keyword))
+                    .filter(task -> fallbackKeywordMatches(
+                            task,
+                            keyword,
+                            mediaById.get(task.getMediaAccountId()),
+                            dramaById.get(task.getDramaId())
+                    ))
                     .toList();
             int start = (int) Math.min(pageable.getOffset(), filtered.size());
             int end = Math.min(start + pageable.getPageSize(), filtered.size());
@@ -175,7 +183,30 @@ public class DistributionService {
         return new PageImpl<>(tasks, effectivePageable, total);
     }
 
-    private boolean fallbackKeywordMatches(DistributionTask task, String keyword) {
+    private Map<String, MediaAccount> mediaAccountsById(List<DistributionTask> tasks) {
+        List<String> mediaAccountIds = tasks.stream()
+                .map(DistributionTask::getMediaAccountId)
+                .distinct()
+                .toList();
+        return mediaAccountRepository.findAllById(mediaAccountIds).stream()
+                .collect(Collectors.toMap(MediaAccount::getId, Function.identity()));
+    }
+
+    private Map<String, com.onehot.aidrama.dramas.Drama> dramasById(List<DistributionTask> tasks) {
+        List<String> dramaIds = tasks.stream()
+                .map(DistributionTask::getDramaId)
+                .distinct()
+                .toList();
+        return dramaRepository.findAllById(dramaIds).stream()
+                .collect(Collectors.toMap(com.onehot.aidrama.dramas.Drama::getId, Function.identity()));
+    }
+
+    private boolean fallbackKeywordMatches(
+            DistributionTask task,
+            String keyword,
+            MediaAccount mediaAccount,
+            com.onehot.aidrama.dramas.Drama drama
+    ) {
         if (keyword == null || keyword.isBlank()) {
             return true;
         }
@@ -183,7 +214,11 @@ public class DistributionService {
         return containsIgnoreCase(task.getId(), clean)
                 || containsIgnoreCase(task.getMediaAccountId(), clean)
                 || containsIgnoreCase(task.getDramaId(), clean)
-                || containsIgnoreCase(task.getFailureReason(), clean);
+                || containsIgnoreCase(task.getFailureReason(), clean)
+                || containsIgnoreCase(mediaAccount == null ? null : mediaAccount.getDisplayName(), clean)
+                || containsIgnoreCase(mediaAccount == null ? null : mediaAccount.getExternalAccountId(), clean)
+                || containsIgnoreCase(drama == null ? null : drama.getTitle(), clean)
+                || containsIgnoreCase(drama == null ? null : drama.getAiTitle(), clean);
     }
 
     private boolean containsIgnoreCase(String value, String cleanKeyword) {

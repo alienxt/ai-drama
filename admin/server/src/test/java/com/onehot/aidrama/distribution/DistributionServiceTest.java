@@ -22,6 +22,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -326,6 +327,42 @@ class DistributionServiceTest {
                     assertThat(item.mediaAccountName()).isEqualTo("视频号主账号");
                     assertThat(item.dramaTitle()).isEqualTo("神医归来");
                 });
+    }
+
+    @Test
+    void fallbackAdminTaskSearchMatchesAiDramaTitle() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.PENDING);
+
+        MediaAccount media = new MediaAccount();
+        media.setId("media-1");
+        media.setDisplayName("视频号主账号");
+
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("原始剧名");
+        drama.setAiTitle("神医归来");
+
+        when(taskRepository.findAll()).thenReturn(List.of(task));
+        when(mediaAccountRepository.findAllById(eq(List.of("media-1")))).thenReturn(List.of(media));
+        when(dramaRepository.findAllById(eq(List.of("drama-1")))).thenReturn(List.of(drama));
+
+        PageResult<DistributionDtos.AdminTaskResponse> result = service.listAdminTasks(
+                "神医归来",
+                null,
+                PageRequest.of(0, 10)
+        );
+
+        assertThat(result.content()).singleElement()
+                .satisfies(item -> assertThat(item.dramaTitle()).isEqualTo("神医归来"));
     }
 
     @Test
