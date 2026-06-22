@@ -12,7 +12,7 @@ from aidrama_desktop.platforms.base import PlatformPublisher
 
 class WeChatVideoPublisher(PlatformPublisher):
     login_url = "https://channels.weixin.qq.com/platform"
-    playlet_url = "https://channels.weixin.qq.com/platform/playlet"
+    playlet_url = "https://channels.weixin.qq.com/platform/native-drama-post"
 
     def __init__(
         self,

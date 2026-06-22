@@ -22,6 +22,10 @@ def test_wechat_video_publisher_uses_media_account_profile(tmp_path: Path):
     assert publisher.export_login_state() == str(tmp_path / "wechat_video" / "media-1")
 
 
+def test_wechat_video_publisher_uses_native_drama_post_url():
+    assert WeChatVideoPublisher.playlet_url == "https://channels.weixin.qq.com/platform/native-drama-post"
+
+
 def test_wechat_video_publisher_prefers_saved_profile_dir(tmp_path: Path):
     chrome = ChromeController("chrome", tmp_path)
     saved_profile = tmp_path / "wechat_video" / "external-account"
