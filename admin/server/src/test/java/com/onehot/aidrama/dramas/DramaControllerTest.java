@@ -476,6 +476,7 @@ class DramaControllerTest {
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/短剧/001.mp4");
+        episode.setSize(12345);
         drama.setEpisodes(List.of(episode));
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
 
@@ -489,6 +490,7 @@ class DramaControllerTest {
         assertThat(plan.aiCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(plan.effectiveCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(plan.categoryIds()).containsExactly("urban");
+        assertThat(plan.episodes().getFirst().size()).isEqualTo(12345);
         assertThat(plan.episodes().getFirst().downloadUrl())
                 .isEqualTo("/api/desktop/dramas/drama-1/episodes/1/download");
         verifyNoInteractions(baiduPanClient);

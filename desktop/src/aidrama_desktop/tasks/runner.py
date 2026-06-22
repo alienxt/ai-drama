@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import random
-import urllib.request
 import json
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,6 +15,12 @@ from aidrama_desktop import __version__
 from aidrama_desktop.api.client import ApiClient
 from aidrama_desktop.platforms.base import PlatformPublisher
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
+
+
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+EPISODE_DOWNLOAD_RETRIES = 3
+EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
+RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -170,6 +178,8 @@ def download_episodes(
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     max_concurrent_downloads: int = 6,
+    episode_retry_count: int = EPISODE_DOWNLOAD_RETRIES,
+    retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
     cover_file = download_cover(download_plan, target_dir, base_url, headers=headers, should_stop=should_stop)
@@ -193,6 +203,8 @@ def download_episodes(
                 headers,
                 progress_callback,
                 should_stop,
+                episode_retry_count,
+                retry_delay_seconds,
             ): index
             for index, episode in enumerate(episodes, start=1)
         }
@@ -211,26 +223,131 @@ def download_episode(
     headers: dict[str, str] | None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
     should_stop: Callable[[], bool] | None,
+    retry_count: int = EPISODE_DOWNLOAD_RETRIES,
+    retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> Path:
     if should_stop and should_stop():
         raise TaskCancelled("用户停止下载")
     target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+    if is_complete_episode_file(target, episode):
+        if progress_callback:
+            downloaded = target.stat().st_size
+            progress_callback(index, total, episode, downloaded, episode_size(episode) or downloaded)
+        return target
+
+    part_file = target.with_name(f"{target.name}.part")
+    attempts = max(1, retry_count)
+    last_exception: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        if should_stop and should_stop():
+            cleanup_part_file(part_file)
+            raise TaskCancelled("用户停止下载")
+        try:
+            cleanup_part_file(part_file)
+            download_episode_attempt(
+                episode,
+                index,
+                total,
+                part_file,
+                base_url,
+                headers,
+                progress_callback,
+                should_stop,
+            )
+            if not is_downloaded_file_complete(part_file, episode):
+                expected_size = episode_size(episode)
+                actual_size = part_file.stat().st_size if part_file.exists() else 0
+                raise RuntimeError(f"第 {episode['episodeNo']} 集下载不完整：{actual_size}/{expected_size} bytes")
+            part_file.replace(target)
+            return target
+        except TaskCancelled:
+            cleanup_part_file(part_file)
+            raise
+        except Exception as exception:  # noqa: BLE001
+            last_exception = exception
+            cleanup_part_file(part_file)
+            if attempt >= attempts or not is_retryable_download_error(exception):
+                break
+            sleep_before_retry(retry_delay_seconds, should_stop)
+    if last_exception:
+        raise last_exception
+    raise RuntimeError(f"第 {episode['episodeNo']} 集下载失败")
+
+
+def download_episode_attempt(
+    episode: dict,
+    index: int,
+    total: int,
+    target: Path,
+    base_url: str,
+    headers: dict[str, str] | None,
+    progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
+    should_stop: Callable[[], bool] | None,
+) -> None:
     url = resolve_download_url(str(episode["downloadUrl"]), base_url)
     request = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(request) as response, target.open("wb") as output:
-        total_bytes = _content_length(response)
+        total_bytes = _content_length(response) or episode_size(episode)
         downloaded = 0
         while True:
             if should_stop and should_stop():
                 raise TaskCancelled("用户停止下载")
-            chunk = response.read(1024 * 1024)
+            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break
             output.write(chunk)
             downloaded += len(chunk)
             if progress_callback:
                 progress_callback(index, total, episode, downloaded, total_bytes)
-    return target
+
+
+def episode_size(episode: dict) -> int | None:
+    try:
+        size = int(episode.get("size") or 0)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
+
+
+def is_complete_episode_file(target: Path, episode: dict) -> bool:
+    return target.exists() and target.is_file() and is_downloaded_file_complete(target, episode)
+
+
+def is_downloaded_file_complete(target: Path, episode: dict) -> bool:
+    if not target.exists() or not target.is_file():
+        return False
+    actual_size = target.stat().st_size
+    expected_size = episode_size(episode)
+    if expected_size:
+        return actual_size >= expected_size
+    return actual_size > 0
+
+
+def cleanup_part_file(part_file: Path) -> None:
+    try:
+        if part_file.exists():
+            part_file.unlink()
+    except OSError:
+        pass
+
+
+def is_retryable_download_error(exception: BaseException) -> bool:
+    if isinstance(exception, urllib.error.HTTPError):
+        return exception.code in RETRYABLE_HTTP_STATUS_CODES
+    if isinstance(exception, urllib.error.URLError):
+        return True
+    if isinstance(exception, TimeoutError):
+        return True
+    return False
+
+
+def sleep_before_retry(delay_seconds: float, should_stop: Callable[[], bool] | None) -> None:
+    deadline = time.monotonic() + max(delay_seconds, 0)
+    while time.monotonic() < deadline:
+        if should_stop and should_stop():
+            raise TaskCancelled("用户停止下载")
+        remaining = max(deadline - time.monotonic(), 0)
+        time.sleep(min(0.2, remaining))
 
 
 def download_cover(
@@ -276,6 +393,7 @@ def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path
                 "episodeNo": episode.get("episodeNo"),
                 "title": episode.get("title"),
                 "sourcePath": episode.get("sourcePath"),
+                "size": episode.get("size"),
                 "fileName": f"{int(episode['episodeNo']):03d}.mp4",
             }
             for episode in episodes

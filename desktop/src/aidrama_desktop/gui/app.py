@@ -286,6 +286,7 @@ class DesktopWindow(QMainWindow):
         self.contract_drama_options: list[dict[str, Any]] = []
         self.auto_task_enabled = False
         self.auto_task_busy = False
+        self.manual_publish_busy = False
         self.current_task_id: str | None = None
         self.task_cancel_event = threading.Event()
         self.contract_store = ContractConfigStore(settings.config_dir / "contract-templates.json")
@@ -757,11 +758,11 @@ class DesktopWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         actions = QHBoxLayout()
-        publish = QPushButton("发布下一条")
+        self.publish_next_button = QPushButton("发布下一条")
         self.auto_task_button = QPushButton("启动自动执行")
-        publish.clicked.connect(self.publish_next)
+        self.publish_next_button.clicked.connect(self.publish_next)
         self.auto_task_button.clicked.connect(self.toggle_auto_tasks)
-        actions.addWidget(publish)
+        actions.addWidget(self.publish_next_button)
         actions.addWidget(self.auto_task_button)
         actions.addStretch(1)
         self.auto_task_state = QLabel("自动执行：未启动")
@@ -999,6 +1000,12 @@ class DesktopWindow(QMainWindow):
         if title == "自动执行任务":
             self.auto_task_busy = False
             self.update_task_progress("任务失败：自动执行请求失败", self.current_task_id)
+        if title in {"检查发布条件", "发布下一条"}:
+            self.set_manual_publish_busy(False)
+            if title == "检查发布条件":
+                self.update_task_progress("发布未启动：服务请求失败", None)
+            else:
+                self.update_task_progress("任务失败：发布执行异常", self.current_task_id)
         self.append_log(f"失败：{title}\n{error}")
         QMessageBox.critical(self, title, self.clean_error_message(error))
 
@@ -2022,13 +2029,61 @@ class DesktopWindow(QMainWindow):
         self.run_async("打开视频号浏览器", task)
 
     def heartbeat(self) -> None:
-        self.run_async("发送心跳", self.runner().heartbeat)
+        self.run_async("发送心跳", lambda: self.runner().heartbeat())
+
+    def set_manual_publish_busy(self, busy: bool) -> None:
+        self.manual_publish_busy = busy
+        if hasattr(self, "publish_next_button"):
+            self.publish_next_button.setEnabled(not busy)
+            self.publish_next_button.setText("发布中..." if busy else "发布下一条")
 
     def publish_next(self) -> None:
-        self.run_async("发布下一条", self.runner().publish_once)
+        if self.manual_publish_busy:
+            QMessageBox.information(self, "发布下一条", "已有发布任务在执行中，请等待当前任务结束。")
+            return
+        self.set_manual_publish_busy(True)
+        self.task_cancel_event.clear()
+        self.update_task_progress("正在检查发布条件", self.current_task_id)
+        self.run_async(
+            "检查发布条件",
+            lambda: self.api().get("/desktop/media-accounts"),
+            self.publish_next_if_ready,
+            log_result=False,
+        )
+        QMessageBox.information(self, "发布下一条", "发布请求已收到，正在检查媒体号和任务队列。可在当前页面查看执行进度。")
+
+    def publish_next_if_ready(self, media_accounts: list[dict[str, Any]]) -> None:
+        self.media_accounts = media_accounts
+        block_reason = self.auto_task_block_reason(media_accounts)
+        if block_reason:
+            self.set_manual_publish_busy(False)
+            QMessageBox.warning(self, "发布下一条", block_reason)
+            self.update_task_progress("发布未启动", None)
+            return
+        self.update_task_progress("发布请求已受理，正在领取任务", self.current_task_id)
+        self.run_async(
+            "发布下一条",
+            lambda: self.runner().publish_once(),
+            self.handle_manual_publish_done,
+        )
+
+    def handle_manual_publish_done(self, result: str) -> None:
+        self.set_manual_publish_busy(False)
+        if result == "no-task":
+            self.update_task_progress("空闲：没有可发布任务", None)
+            QMessageBox.information(self, "发布下一条", "当前没有可发布任务。请确认短剧可分发，且媒体号策略匹配。")
+        elif result == "failed":
+            self.update_task_progress("任务失败", self.current_task_id)
+            QMessageBox.warning(self, "发布下一条", "发布任务执行失败，请查看最近错误或日志。")
+        elif result == "cancelled":
+            self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
+            QMessageBox.information(self, "发布下一条", "发布任务已停止，可重新分发。")
+        else:
+            self.update_task_progress("任务完成", self.current_task_id)
+            QMessageBox.information(self, "发布下一条", "发布任务已执行完成。")
 
     def run_once(self) -> None:
-        self.run_async("领取并执行", self.runner().run_once)
+        self.run_async("领取并执行", lambda: self.runner().run_once())
 
     def toggle_auto_tasks(self) -> None:
         if self.auto_task_enabled:

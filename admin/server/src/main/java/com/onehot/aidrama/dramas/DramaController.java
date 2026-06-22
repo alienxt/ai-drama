@@ -379,6 +379,7 @@ public class DramaController {
                 .map(episode -> new DramaDtos.EpisodeDownload(
                         episode.getEpisodeNo(),
                         episode.getSourcePath(),
+                        episode.getSize(),
                         "/api/desktop/dramas/" + id + "/episodes/" + episode.getEpisodeNo() + "/download"
                 ))
                 .toList();

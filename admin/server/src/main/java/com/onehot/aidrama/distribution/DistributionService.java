@@ -125,12 +125,10 @@ public class DistributionService {
                 return taskRepository.save(task);
             }
         }
-        if (taskRepository.existsActiveByDramaId(dramaId)) {
-            throw new BusinessException("DRAMA_ALREADY_DISTRIBUTING", "这部剧已经有分发任务", HttpStatus.CONFLICT);
-        }
         return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .filter(this::hasSavedLoginState)
                 .filter(media -> planner.canDistribute(media, drama))
+                .filter(media -> !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), dramaId))
                 .findFirst()
                 .map(media -> createTask(media.getId(), dramaId, 100))
                 .orElseThrow(() -> new BusinessException("NO_ELIGIBLE_MEDIA_ACCOUNT", "没有可用媒体号可分发这部剧", HttpStatus.BAD_REQUEST));
@@ -138,12 +136,10 @@ public class DistributionService {
 
     private List<DistributionTask> generateTasksForMediaAccounts(List<MediaAccount> mediaAccounts, List<com.onehot.aidrama.dramas.Drama> dramas) {
         return dramas.stream()
-                .filter(drama -> !taskRepository.existsActiveByDramaId(drama.getId()))
                 .flatMap(drama -> mediaAccounts.stream()
                         .filter(media -> hasSavedLoginState(media))
                         .filter(media -> planner.canDistribute(media, drama))
-                        .findFirst()
-                        .stream()
+                        .filter(media -> !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), drama.getId()))
                         .map(media -> createTask(media.getId(), drama.getId(), 0)))
                 .toList();
     }

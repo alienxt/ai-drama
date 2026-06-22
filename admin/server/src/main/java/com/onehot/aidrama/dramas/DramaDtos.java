@@ -36,7 +36,7 @@ public class DramaDtos {
     ) {
     }
 
-    public record EpisodeDownload(int episodeNo, String sourcePath, String downloadUrl) {
+    public record EpisodeDownload(int episodeNo, String sourcePath, long size, String downloadUrl) {
     }
 
     public record AdminEpisodeResponse(

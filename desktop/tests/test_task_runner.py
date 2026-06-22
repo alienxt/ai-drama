@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+import urllib.error
 from pathlib import Path
 
 from aidrama_desktop.tasks.runner import TaskRunner, download_episodes
@@ -291,7 +292,91 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert metadata["coverFile"] == "fengmian.jpg"
     assert metadata["episodeCount"] == 1
     assert metadata["episodes"][0]["fileName"] == "001.mp4"
+    assert metadata["episodes"][0]["size"] is None
     assert opened_urls == ["http://server/uploads/covers/drama.jpg", "http://server/files/1.mp4"]
+
+
+def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch):
+    target_dir = tmp_path / "drama-1"
+    target_dir.mkdir()
+    existing_file = target_dir / "001.mp4"
+    existing_file.write_bytes(b"already-downloaded")
+    opened_urls = []
+
+    def fake_urlopen(request):
+        opened_urls.append(request.full_url)
+        raise AssertionError("complete episode should not be downloaded again")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "续传短剧",
+        "episodes": [
+            {
+                "episodeNo": 1,
+                "sourcePath": "/pan/001.mp4",
+                "size": len(b"already-downloaded"),
+                "downloadUrl": "/files/1.mp4",
+            },
+        ],
+    }
+
+    files = download_episodes(download_plan, target_dir, "http://server/api")
+
+    assert files == [existing_file]
+    assert existing_file.read_bytes() == b"already-downloaded"
+    assert opened_urls == []
+
+
+def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatch):
+    opened_urls = []
+    attempts = 0
+
+    class FakeResponse:
+        headers = {"Content-Length": "5"}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"video"
+
+    def fake_urlopen(request):
+        nonlocal attempts
+        opened_urls.append(request.full_url)
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "重试短剧",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "size": 5, "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    files = download_episodes(
+        download_plan,
+        tmp_path / "drama-1",
+        "http://server/api",
+        episode_retry_count=2,
+        retry_delay_seconds=0,
+    )
+
+    assert files == [tmp_path / "drama-1" / "001.mp4"]
+    assert (tmp_path / "drama-1" / "001.mp4").read_bytes() == b"video"
+    assert not (tmp_path / "drama-1" / "001.mp4.part").exists()
+    assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
 
 
 def test_download_episodes_downloads_episodes_concurrently_with_limit(tmp_path, monkeypatch):
