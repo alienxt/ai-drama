@@ -132,7 +132,14 @@ public class DramaController {
         } else if (assetState == DramaAssetState.MISSING_SUMMARY) {
             query.missingText("summary");
         }
-        return ApiResponse.ok(PageResult.from(query.page(mongoTemplate, Drama.class, pageable)), MDC.get(TraceIdFilter.TRACE_ID));
+        PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, pageable));
+        List<Drama> content = page.content().stream()
+                .map(this::ensureCostAmountWan)
+                .toList();
+        return ApiResponse.ok(
+                new PageResult<>(content, page.totalElements(), page.totalPages(), page.page(), page.size()),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
     }
 
     @GetMapping("/api/desktop/dramas")
@@ -362,6 +369,14 @@ public class DramaController {
         drama.setStatus(request.status());
         ensureReadyAllowed(drama);
         return drama;
+    }
+
+    private Drama ensureCostAmountWan(Drama drama) {
+        if (!DramaDurationEstimator.needsCostAmountWan(drama)) {
+            return drama;
+        }
+        drama.setCostAmountWan(DramaDurationEstimator.estimateCostAmountWan(drama));
+        return repository.save(drama);
     }
 
     @PostMapping("/api/admin/dramas/{id}/generate-title")
