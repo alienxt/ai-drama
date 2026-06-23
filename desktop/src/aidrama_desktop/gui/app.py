@@ -1757,6 +1757,7 @@ class DesktopWindow(QMainWindow):
 
     def on_drama_prioritized(self, title: str) -> None:
         self.append_log(f"已加入优先分发：{title}")
+        QMessageBox.information(self, "优先分发", "已加入优先队列，点击发布下一条执行。")
         self.load_dramas(page=self.drama_page)
 
     @staticmethod

@@ -26,6 +26,11 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             List<String> mediaAccountIds
     );
     boolean existsByMediaAccountIdAndDramaId(String mediaAccountId, String dramaId);
+    boolean existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+            String mediaAccountId,
+            String dramaId,
+            List<DistributionTaskStatus> statuses
+    );
 
     default boolean existsActiveByDramaId(String dramaId) {
         return existsByDramaIdAndStatusNotIn(dramaId, List.of(DistributionTaskStatus.FAILED, DistributionTaskStatus.CANCELLED));

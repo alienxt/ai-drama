@@ -32,6 +32,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DistributionServiceTest {
+    private static final List<DistributionTaskStatus> NON_BLOCKING_GENERATION_STATUSES = List.of(
+            DistributionTaskStatus.FAILED,
+            DistributionTaskStatus.CANCELLED
+    );
+
     @Test
     void preparesAndClaimsExistingTaskForCurrentOwnerWithoutGeneratingQueue() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
@@ -97,7 +102,11 @@ class DistributionServiceTest {
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(firstDrama, secondDrama));
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-1")).thenReturn(false);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Optional<DistributionTask> claimed = service.prepareAndClaimForOwner("owner-1", "device-1");
@@ -108,8 +117,16 @@ class DistributionServiceTest {
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         verify(taskRepository, times(2)).save(any(DistributionTask.class));
-        verify(taskRepository, never()).existsByMediaAccountIdAndDramaId("media-2", "drama-1");
-        verify(taskRepository, never()).existsByMediaAccountIdAndDramaId("media-1", "drama-2");
+        verify(taskRepository, never()).existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-2",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        );
+        verify(taskRepository, never()).existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-2",
+                NON_BLOCKING_GENERATION_STATUSES
+        );
     }
 
     @Test
@@ -138,8 +155,16 @@ class DistributionServiceTest {
                 any(Sort.class)
         )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(first, second));
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-1")).thenReturn(false);
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-2", "drama-1")).thenReturn(false);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-2",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
@@ -151,7 +176,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void skipsDramaWhenTaskAlreadyExistsForSameMediaAccount() {
+    void skipsDramaWhenBlockingTaskAlreadyExistsForSameMediaAccount() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -172,7 +197,11 @@ class DistributionServiceTest {
                 any(Sort.class)
         )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-2", "owner-1", "urban")));
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-2", "drama-1")).thenReturn(true);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-2",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(true);
 
         assertThat(service.generateTasksForOwner("owner-1")).isEmpty();
         verify(taskRepository, never()).save(any(DistributionTask.class));
@@ -202,7 +231,11 @@ class DistributionServiceTest {
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
         )).thenReturn(Optional.empty());
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-1")).thenReturn(false);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         DistributionTask task = service.prioritizeDramaForOwner("owner-1", "drama-1");
@@ -210,6 +243,11 @@ class DistributionServiceTest {
         assertThat(task.getDramaId()).isEqualTo("drama-1");
         assertThat(task.getMediaAccountId()).isEqualTo("media-1");
         assertThat(task.getPriority()).isEqualTo(100);
+        verify(taskRepository).existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        );
     }
 
     @Test
@@ -288,10 +326,19 @@ class DistributionServiceTest {
                 any(Sort.class)
         )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-1")).thenReturn(false);
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         assertThat(service.generateTasksForOwner("owner-1")).hasSize(1);
+        verify(taskRepository).existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        );
     }
 
     @Test

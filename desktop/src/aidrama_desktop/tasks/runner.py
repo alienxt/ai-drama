@@ -197,6 +197,7 @@ class TaskRunner:
             "monetizationType": "IAA_AD",
             "monetizationLabel": "IAA广告变现",
             "freeEpisodeCount": random.randint(3, 10),
+            "episodeCount": len(episodes),
             "episodes": [
                 {
                     "episodeNo": episode.get("episodeNo"),
@@ -452,7 +453,7 @@ def download_cover(
         return None
     raise_if_task_interrupted(should_stop, should_pause, should_skip)
     target = target_dir / "fengmian.jpg"
-    request = urllib.request.Request(resolve_download_url(str(cover_url), base_url), headers=headers or {})
+    request = urllib.request.Request(resolve_download_url(str(cover_url), base_url), headers=episode_download_headers(headers))
     with urllib.request.urlopen(request) as response, target.open("wb") as output:
         while True:
             raise_if_task_interrupted(should_stop, should_pause, should_skip)

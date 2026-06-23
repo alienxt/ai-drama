@@ -42,6 +42,10 @@ public class DistributionService {
             DistributionTaskStatus.PROCESSING,
             DistributionTaskStatus.UPLOADING
     );
+    private static final List<DistributionTaskStatus> NON_BLOCKING_GENERATION_STATUSES = List.of(
+            DistributionTaskStatus.FAILED,
+            DistributionTaskStatus.CANCELLED
+    );
     private final DramaRepository dramaRepository;
     private final MediaAccountRepository mediaAccountRepository;
     private final DistributionTaskRepository taskRepository;
@@ -406,7 +410,7 @@ public class DistributionService {
             for (var media : mediaAccounts) {
                 if (hasSavedLoginState(media)
                         && planner.canDistribute(media, drama)
-                        && !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), drama.getId())) {
+                        && !hasBlockingGeneratedTask(media.getId(), drama.getId())) {
                     return Optional.of(createTask(media.getId(), drama.getId(), 0));
                 }
             }
@@ -520,7 +524,7 @@ public class DistributionService {
         return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .filter(this::hasSavedLoginState)
                 .filter(media -> planner.canDistribute(media, drama))
-                .filter(media -> !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), dramaId))
+                .filter(media -> !hasBlockingGeneratedTask(media.getId(), dramaId))
                 .findFirst()
                 .map(media -> createTask(media.getId(), dramaId, 100))
                 .orElseThrow(() -> new BusinessException("NO_ELIGIBLE_MEDIA_ACCOUNT", "没有可用媒体号可分发这部剧", HttpStatus.BAD_REQUEST));
@@ -531,9 +535,17 @@ public class DistributionService {
                 .flatMap(drama -> mediaAccounts.stream()
                         .filter(media -> hasSavedLoginState(media))
                         .filter(media -> planner.canDistribute(media, drama))
-                        .filter(media -> !taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), drama.getId()))
+                        .filter(media -> !hasBlockingGeneratedTask(media.getId(), drama.getId()))
                         .map(media -> createTask(media.getId(), drama.getId(), 0)))
                 .toList();
+    }
+
+    private boolean hasBlockingGeneratedTask(String mediaAccountId, String dramaId) {
+        return taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                mediaAccountId,
+                dramaId,
+                NON_BLOCKING_GENERATION_STATUSES
+        );
     }
 
     private List<com.onehot.aidrama.dramas.Drama> recentReadyDramas() {

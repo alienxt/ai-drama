@@ -178,6 +178,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
     assert publisher.metadata["freeEpisodeCount"] == 7
+    assert publisher.metadata["episodeCount"] == 2
     assert publisher.metadata["episodes"] == [
         {"episodeNo": 1, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"},
         {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
@@ -452,7 +453,7 @@ def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatc
     assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
 
 
-def test_download_episode_uses_baidu_download_headers(tmp_path, monkeypatch):
+def test_download_resources_use_baidu_download_headers(tmp_path, monkeypatch):
     opened_headers = []
 
     class FakeResponse:
@@ -479,6 +480,7 @@ def test_download_episode_uses_baidu_download_headers(tmp_path, monkeypatch):
     download_plan = {
         "dramaId": "drama-1",
         "title": "百度下载头",
+        "effectiveCoverUrl": "/covers/drama.jpg",
         "episodes": [
             {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "size": 5, "downloadUrl": "/files/1.mp4"},
         ],
@@ -491,9 +493,11 @@ def test_download_episode_uses_baidu_download_headers(tmp_path, monkeypatch):
         headers={"Authorization": "Bearer token"},
     )
 
-    assert opened_headers[0]["User-agent"] == "pan.baidu.com"
-    assert opened_headers[0]["Referer"] == "https://pan.baidu.com/"
-    assert opened_headers[0]["Authorization"] == "Bearer token"
+    assert len(opened_headers) == 2
+    for headers in opened_headers:
+        assert headers["User-agent"] == "pan.baidu.com"
+        assert headers["Referer"] == "https://pan.baidu.com/"
+        assert headers["Authorization"] == "Bearer token"
 
 
 def test_download_episodes_downloads_episodes_concurrently_with_limit(tmp_path, monkeypatch):

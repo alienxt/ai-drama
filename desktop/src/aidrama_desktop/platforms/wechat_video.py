@@ -57,15 +57,10 @@ class WeChatVideoPublisher(PlatformPublisher):
 
         profile_dir = self._profile_dir()
         with sync_playwright() as playwright:
-            browser = None
             context = None
             try:
                 target_url = self.playlet_url if metadata else self.login_url
-                try:
-                    browser = self._connect_to_chrome(playwright, profile_dir, target_url)
-                    context = self._browser_context(browser)
-                except Exception:
-                    context = self._launch_persistent_context(playwright, profile_dir)
+                context = self._launch_persistent_context(playwright, profile_dir)
             except Exception as exception:  # noqa: BLE001
                 raise RuntimeError("无法接管视频号发布浏览器，请关闭该媒体号已打开的 Chrome 窗口后重试") from exception
             try:
@@ -76,9 +71,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                     for media_file in media_files:
                         self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
             finally:
-                if browser:
-                    self._close_browser(browser)
-                elif context:
+                if context:
                     self._close_context(context)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
@@ -208,22 +201,71 @@ class WeChatVideoPublisher(PlatformPublisher):
         except timeout_error:
             pass
 
-        self._fill_first(page, ["剧集名称", "短剧名称", "标题", "请输入剧集名称", "请输入标题"], publish_title)
+        self._fill_first(
+            page,
+            [
+                "剧目名称",
+                "剧集名称",
+                "短剧名称",
+                "标题",
+                "请填写待提审剧目的名称",
+                "请输入剧目名称",
+                "请输入剧集名称",
+                "请输入标题",
+            ],
+            publish_title,
+        )
         if publish_summary:
-            self._fill_first(page, ["简介", "剧情简介", "描述", "请输入简介", "请输入剧情简介"], publish_summary)
+            self._fill_first(
+                page,
+                [
+                    "剧目简介",
+                    "简介",
+                    "剧情简介",
+                    "描述",
+                    "请介绍相关剧情概要",
+                    "请输入简介",
+                    "请输入剧情简介",
+                ],
+                publish_summary,
+            )
+
+        episode_count = metadata.get("episodeCount") or len(metadata.get("episodes", []) or media_files)
+        if episode_count:
+            self._fill_first(
+                page,
+                [
+                    "总集数",
+                    "剧集总数",
+                    "总剧集数量",
+                    "请填写待提审剧目的总剧集数量",
+                    "请输入总集数",
+                ],
+                str(episode_count),
+            )
 
         self._set_monetization_type(page, str(metadata.get("monetizationLabel") or "IAA广告变现"), timeout_error)
         free_episode_count = metadata.get("freeEpisodeCount")
         if free_episode_count is not None:
             self._fill_first(
                 page,
-                ["免费集数", "免费试看集数", "免费观看集数", "请输入免费集数", "请输入免费试看集数"],
+                [
+                    "试看集数",
+                    "免费集数",
+                    "免费试看集数",
+                    "免费观看集数",
+                    "请填写试看集数",
+                    "请输入免费集数",
+                    "请输入免费试看集数",
+                ],
                 str(free_episode_count),
             )
 
         cover_file = metadata.get("coverFile")
         if cover_file:
-            self._set_file_input(page, Path(cover_file), re.compile("封面|上传封面|添加封面"), timeout_error)
+            self._set_file_input(page, Path(cover_file), re.compile("剧目海报|海报|封面|上传封面|添加封面|选择文件"), timeout_error)
+
+        self._click_next_if_available(page, timeout_error)
 
         episode_files = [
             Path(episode.get("file"))
@@ -231,6 +273,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             if episode.get("file")
         ] or media_files
         self._set_file_input(page, episode_files, re.compile("上传视频|上传剧集|添加视频|添加剧集|选择文件"), timeout_error)
+        self._click_next_if_available(page, timeout_error)
 
         try:
             page.get_by_text(re.compile("保存|提交审核|发布|上架")).first.click(timeout=15000)
@@ -284,12 +327,13 @@ class WeChatVideoPublisher(PlatformPublisher):
 
     def _fill_first(self, page, labels: list[str], value: str) -> None:
         for label in labels:
-            locator = page.get_by_placeholder(label).first
-            if locator.count() == 0:
-                locator = page.get_by_label(label).first
-            if locator.count() > 0:
-                locator.fill(value)
-                return
+            for query in (label, re.compile(re.escape(label))):
+                locator = page.get_by_placeholder(query).first
+                if locator.count() == 0:
+                    locator = page.get_by_label(query).first
+                if locator.count() > 0:
+                    locator.fill(value)
+                    return
 
     def _set_monetization_type(self, page, label: str, timeout_error) -> None:
         try:
@@ -316,6 +360,13 @@ class WeChatVideoPublisher(PlatformPublisher):
 
     def _set_file_input(self, page, files: Path | list[Path], button_pattern, timeout_error) -> None:
         paths = [str(item) for item in files] if isinstance(files, list) else str(files)
+        try:
+            with page.expect_file_chooser(timeout=5000) as chooser:
+                page.get_by_text(button_pattern).first.click(timeout=5000)
+            chooser.value.set_files(paths)
+            return
+        except timeout_error:
+            pass
         file_input = page.locator('input[type="file"]').first
         if file_input.count() > 0:
             file_input.set_input_files(paths)
@@ -326,6 +377,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             chooser.value.set_files(paths)
         except timeout_error as exception:
             raise RuntimeError("未找到视频号剧集管理上传入口，请确认已登录并停留在剧集管理页面") from exception
+
+    @staticmethod
+    def _click_next_if_available(page, timeout_error) -> None:
+        try:
+            page.get_by_text(re.compile("下一步|继续")).first.click(timeout=5000)
+            page.wait_for_timeout(1000)
+        except timeout_error:
+            pass
 
 
 def available_remote_debugging_port() -> int:
