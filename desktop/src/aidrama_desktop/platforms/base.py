@@ -5,6 +5,10 @@ from typing import Any
 from pathlib import Path
 
 
+class PlatformPublishPaused(RuntimeError):
+    pass
+
+
 class PlatformPublisher(ABC):
     @abstractmethod
     def open_login(self) -> str:

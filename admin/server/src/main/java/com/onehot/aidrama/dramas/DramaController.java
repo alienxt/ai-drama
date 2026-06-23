@@ -595,6 +595,10 @@ public class DramaController {
     }
 
     private int costAmountWan(Document document, String id) {
+        int totalMinutes = intValue(document, "totalMinutes");
+        if (totalMinutes > 0) {
+            return DramaDurationEstimator.estimateCostAmountWan(totalMinutes);
+        }
         int stored = intValue(document, "costAmountWan");
         if (stored > 0) {
             return stored;
@@ -606,7 +610,7 @@ public class DramaController {
         if (!hasText(seed)) {
             seed = id;
         }
-        return DramaDurationEstimator.estimateCostAmountWan(seed);
+        return DramaDurationEstimator.estimateCostAmountWan(DramaDurationEstimator.estimateTotalMinutes(episodeCount(document), seed));
     }
 
     private int costAmountWan(Drama drama) {

@@ -1,6 +1,10 @@
+import re
 from pathlib import Path
 
+import pytest
+
 from aidrama_desktop.browser.chrome import ChromeController
+from aidrama_desktop.platforms.base import PlatformPublishPaused
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.platforms.wechat_video import WeChatVideoPublisher, remote_debugging_port_for_profile
 
@@ -127,7 +131,7 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
     assert result == "wechat-playlet:神医归来:1"
     profile_dir = tmp_path / "wechat_video" / "media-1"
     port = remote_debugging_port_for_profile(profile_dir)
-    assert opened == [(profile_dir, WeChatVideoPublisher.playlet_url, port)]
+    assert opened == [(profile_dir, "about:blank", port)]
     assert connected == [f"http://127.0.0.1:{port}"]
     assert visited_urls == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
     assert uploaded == [([media_file], "神医归来", "简介", {"coverFile": tmp_path / "cover.jpg"})]
@@ -207,7 +211,7 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
     assert uploaded_pages == [blank_page]
     profile_dir = tmp_path / "wechat_video" / "media-1"
     port = remote_debugging_port_for_profile(profile_dir)
-    assert opened == [(profile_dir, WeChatVideoPublisher.playlet_url, port)]
+    assert opened == [(profile_dir, "about:blank", port)]
     assert connected == [f"http://127.0.0.1:{port}"]
     assert blank_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
     assert unexpected_page.visited == []
@@ -316,7 +320,7 @@ def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path
     assert result == "wechat-playlet:神医归来:1"
     profile_dir = tmp_path / "wechat_video" / "media-1"
     port = remote_debugging_port_for_profile(profile_dir)
-    assert opened == [(profile_dir, WeChatVideoPublisher.playlet_url, port)]
+    assert opened == [(profile_dir, "about:blank", port)]
     assert connected == [f"http://127.0.0.1:{port}"]
     assert uploaded_pages == [fallback_context.pages[0]]
 
@@ -325,10 +329,15 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     fills = []
     monetization = []
     files = []
+    material_uploads = []
     agreement_clicks = []
     entry_clicks = []
     option_clicks = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+    purchase_image = tmp_path / "purchase.png"
+    cost_image = tmp_path / "cost.png"
+    purchase_image.write_bytes(b"purchase")
+    cost_image.write_bytes(b"cost")
 
     class FakeLocator:
         def __init__(self, kind="other", pattern=None):
@@ -372,26 +381,37 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     )
     monkeypatch.setattr(
         publisher,
+        "_set_file_input_near_text",
+        lambda page, target_files, label_patterns, timeout_error, field_label: material_uploads.append(
+            (field_label, target_files, [pattern.pattern for pattern in label_patterns])
+        ),
+    )
+    monkeypatch.setattr(
+        publisher,
         "_set_monetization_type",
         lambda page, value, timeout_error: monetization.append(value),
     )
-
-    publisher._upload_playlet(
-        FakePage(),
-        [tmp_path / "001.mp4"],
-        "神医归来",
-        "简介",
-        {
-            "publishTitle": "神医归来AI",
-            "summary": "简介",
-            "coverFile": tmp_path / "cover.jpg",
-            "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
-            "monetizationLabel": "IAA广告变现",
-            "freeEpisodeCount": 6,
-            "episodeCount": 27,
-        },
-        TimeoutError,
-    )
+    with pytest.raises(PlatformPublishPaused, match="第一步表单已填好"):
+        publisher._upload_playlet(
+            FakePage(),
+            [tmp_path / "001.mp4"],
+            "神医归来",
+            "简介",
+            {
+                "publishTitle": "神医归来AI",
+                "summary": "简介",
+                "coverFile": tmp_path / "cover.jpg",
+                "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
+                "monetizationLabel": "IAA广告变现",
+                "freeEpisodeCount": 6,
+                "episodeCount": 27,
+                "producerName": "乙方公司",
+                "productionCostWan": 3,
+                "buyDramaContractImages": [purchase_image],
+                "costConfigReportImages": [cost_image],
+            },
+            TimeoutError,
+        )
 
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
@@ -400,11 +420,60 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert any(value == "简介" and "剧目简介" in labels for labels, value in fills)
     assert any(value == "27" and "总集数" in labels for labels, value in fills)
     assert any(value == "6" and "免费集数" in labels for labels, value in fills)
+    assert any(value == "乙方公司" and "制作方名称" in labels for labels, value in fills)
+    assert any(value == "3" and "剧目制作成本" in labels for labels, value in fills)
     assert "^漫剧$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
     assert "^其他微短剧$" in option_clicks
-    assert files == [tmp_path / "cover.jpg", [tmp_path / "001.mp4"]]
+    assert material_uploads == [
+        ("剧目制作证明材料", [purchase_image], ["剧目制作证明材料", "制作证明材料", "剧目制作合同"]),
+        ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
+    ]
+    assert files == [tmp_path / "cover.jpg"]
+
+
+def test_wechat_video_publisher_clicks_ai_statement_switch_control(tmp_path: Path):
+    clicked = []
+    checked = {"value": False}
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeLocator:
+        def __init__(self, selector):
+            self.selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_checked(self):
+            return checked["value"]
+
+        def click(self, timeout=None, force=False):
+            clicked.append((self.selector, timeout, force))
+            if "switch" in self.selector:
+                checked["value"] = True
+
+    class FakePage:
+        def locator(self, selector):
+            return FakeLocator(selector)
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+        def evaluate(self, _script, _payload):
+            raise AssertionError("should not use DOM helper after real switch click succeeds")
+
+        def get_by_text(self, pattern):
+            raise AssertionError(f"unexpected text fallback: {pattern.pattern}")
+
+    publisher._set_ai_content_statement(FakePage(), TimeoutError)
+
+    assert checked["value"]
+    assert clicked == [(".speedupaudit_box label.switch_speedupaudit", 2500, True)]
 
 
 def test_wechat_video_publisher_uses_dom_helper_for_ai_statement(tmp_path: Path):
@@ -422,6 +491,46 @@ def test_wechat_video_publisher_uses_dom_helper_for_ai_statement(tmp_path: Path)
     publisher._set_ai_content_statement(FakePage(), TimeoutError)
 
     assert [payload for _script, payload in evaluated] == ["AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成"]
+    assert "speedupaudit_box" in evaluated[0][0]
+    assert "switch_speedupaudit input.weui-desktop-switch__input" in evaluated[0][0]
+
+
+def test_wechat_video_publisher_does_not_complete_without_submit_confirmation(tmp_path: Path):
+    clicks = []
+    waits = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeLocator:
+        def __init__(self, pattern):
+            self.pattern = pattern
+
+        def click(self, timeout=None):
+            clicks.append((self.pattern.pattern, timeout))
+
+        def wait_for(self, timeout=None):
+            waits.append((self.pattern.pattern, timeout))
+            raise TimeoutError("no success")
+
+        def count(self):
+            return 0
+
+    class FakePage:
+        def get_by_text(self, pattern):
+            self.pattern = pattern
+            return self
+
+        @property
+        def first(self):
+            return FakeLocator(self.pattern)
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    with pytest.raises(RuntimeError, match="未确认提交成功"):
+        publisher._submit_playlet_and_wait_for_success(FakePage(), TimeoutError)
+
+    assert any("提交审核" in pattern for pattern, _timeout in clicks)
+    assert any("提交成功" in pattern for pattern, _timeout in waits)
 
 
 def test_wechat_video_publisher_prefers_authorized_submit_identity(tmp_path: Path):
@@ -524,6 +633,116 @@ def test_wechat_video_publisher_finds_marked_file_input_in_flattened_dom(tmp_pat
     publisher._set_file_chooser_files(FakePage(), FakeFileChooser(), str(video))
 
     assert ("DOM.setFileInputFiles", {"nodeId": 9, "files": [str(video.resolve())]}) in calls
+
+
+def test_wechat_video_publisher_sets_material_file_input_near_target_label(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    cost_image = tmp_path / "cost.png"
+    purchase_image.write_bytes(b"purchase")
+    cost_image.write_bytes(b"cost")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeSession:
+        def send(self, method, payload):
+            calls.append((method, payload))
+            if method == "DOM.getDocument":
+                return {"root": {"nodeId": 1}}
+            if method == "DOM.querySelector":
+                return {"nodeId": 12}
+            return {}
+
+    class FakeContext:
+        def new_cdp_session(self, page):
+            calls.append(("new_cdp_session", page))
+            return FakeSession()
+
+    class FakePage:
+        context = FakeContext()
+
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            return True
+
+    page = FakePage()
+
+    publisher._set_file_input_near_text(
+        page,
+        [purchase_image, cost_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
+    marker = evaluate_payloads[0]["inputMarker"]
+    assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
+    assert ("DOM.querySelector", {"nodeId": 1, "selector": f'input[type="file"][data-aidrama-file-input="{marker}"]'}) in calls
+    assert (
+        "DOM.setFileInputFiles",
+        {"nodeId": 12, "files": [str(purchase_image.resolve()), str(cost_image.resolve())]},
+    ) in calls
+
+
+def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeSession:
+        def send(self, method, payload):
+            calls.append((method, payload))
+            if method == "DOM.getDocument":
+                return {"root": {"nodeId": 1}}
+            if method == "DOM.querySelector":
+                return {"nodeId": 12}
+            return {}
+
+    class FakeContext:
+        def new_cdp_session(self, page):
+            calls.append(("new_cdp_session", page))
+            return FakeSession()
+
+    class FakePage:
+        context = FakeContext()
+
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            return True
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait_for_timeout", timeout))
+
+    publisher._set_file_input_near_text(
+        FakePage(),
+        [purchase_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
+    assert len(evaluate_payloads) == 3
+    assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
+    input_marker = evaluate_payloads[0]["inputMarker"]
+    assert (
+        "DOM.setFileInputFiles",
+        {"nodeId": 12, "files": [str(purchase_image.resolve())]},
+    ) in calls
+    assert evaluate_payloads[1] == input_marker
+    assert evaluate_payloads[2]["marker"] == input_marker
+
+
+def test_wechat_video_material_upload_button_script_ignores_download_links(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    script = publisher._reveal_material_upload_script()
+
+    assert '"a"' not in script
+    assert "DOCUMENT_POSITION_FOLLOWING" in script
+    assert "下载模版" not in script
+    assert "MouseEvent('mousedown'" in script
 
 
 def test_open_platform_login_can_enable_remote_debugging(tmp_path: Path, monkeypatch):

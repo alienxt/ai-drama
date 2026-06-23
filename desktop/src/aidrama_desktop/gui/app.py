@@ -53,11 +53,12 @@ from aidrama_desktop.config.settings import Settings, load_settings
 from aidrama_desktop.contracts import (
     ContractConfigStore,
     ContractRenderInput,
-    all_required_contract_templates_configured,
     build_contract_output_path,
     build_contract_template_download_path,
+    contract_party_key,
     contract_template_key,
     copy_contract_template,
+    required_contract_party_fields,
     required_contract_template_types,
     render_contract_docx,
 )
@@ -703,6 +704,23 @@ class DesktopWindow(QMainWindow):
         type_row.addWidget(self.contract_platform_input)
         type_row.addStretch(1)
 
+        self.contract_buyer_input = QLineEdit()
+        self.contract_buyer_input.setPlaceholderText("请输入买方/甲方")
+        self.contract_buyer_input.setMinimumHeight(34)
+        self.contract_buyer_input.textChanged.connect(self.update_contract_generate_button)
+        self.contract_buyer_input.editingFinished.connect(self.save_contract_party_config)
+        self.contract_seller_input = QLineEdit()
+        self.contract_seller_input.setPlaceholderText("请输入卖方/乙方")
+        self.contract_seller_input.setMinimumHeight(34)
+        self.contract_seller_input.textChanged.connect(self.update_contract_generate_button)
+        self.contract_seller_input.editingFinished.connect(self.save_contract_party_config)
+        party_row = QHBoxLayout()
+        party_row.setSpacing(8)
+        party_row.addWidget(QLabel("买方/甲方"))
+        party_row.addWidget(self.contract_buyer_input, 1)
+        party_row.addWidget(QLabel("卖方/乙方"))
+        party_row.addWidget(self.contract_seller_input, 1)
+
         self.contract_template_path_inputs: dict[str, QLineEdit] = {}
         self.contract_template_rows_layout = QVBoxLayout()
         self.contract_template_rows_layout.setSpacing(8)
@@ -736,6 +754,7 @@ class DesktopWindow(QMainWindow):
         template_layout.addLayout(template_header)
         template_layout.addLayout(type_row)
         template_layout.addWidget(template_note)
+        template_layout.addLayout(party_row)
         template_layout.addLayout(self.contract_template_rows_layout)
         template_layout.addStretch(1)
 
@@ -754,8 +773,6 @@ class DesktopWindow(QMainWindow):
         self.contract_episode_minutes_input.setReadOnly(True)
         self.contract_price_input = QLineEdit("0")
         self.contract_price_input.setReadOnly(True)
-        self.contract_buyer_input = QLineEdit("甲方公司")
-        self.contract_seller_input = QLineEdit("乙方公司")
         self.contract_date_input = QDateEdit()
         self.contract_date_input.setCalendarPopup(True)
         self.contract_date_input.setDisplayFormat("yyyy-MM-dd")
@@ -764,14 +781,13 @@ class DesktopWindow(QMainWindow):
         self._add_contract_form_field(form, 0, 2, "剧集", self.contract_episode_input)
         self._add_contract_form_field(form, 0, 3, "总时长（分钟）", self.contract_episode_minutes_input)
         self._add_contract_form_field(form, 0, 4, "价格（万）", self.contract_price_input)
-        self._add_contract_form_field(form, 1, 0, "买方/甲方", self.contract_buyer_input, column_span=2)
-        self._add_contract_form_field(form, 1, 2, "卖方/乙方", self.contract_seller_input, column_span=2)
-        self._add_contract_form_field(form, 1, 4, "签署日期", self.contract_date_input)
+        self._add_contract_form_field(form, 0, 5, "签署日期", self.contract_date_input)
         form.setColumnStretch(0, 1)
         form.setColumnStretch(1, 1)
         form.setColumnStretch(2, 1)
         form.setColumnStretch(3, 1)
         form.setColumnStretch(4, 1)
+        form.setColumnStretch(5, 1)
         actions = QHBoxLayout()
         self.contract_generate_button = QPushButton("生成合同")
         self.contract_generate_button.clicked.connect(self.generate_contract)
@@ -1096,6 +1112,7 @@ class DesktopWindow(QMainWindow):
 
     def runner(self) -> TaskRunner:
         chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
+        contract_platform = self.current_contract_platform()
         return TaskRunner(
             api=self.api(),
             processor=FfmpegProcessor(self.settings.ffmpeg_path),
@@ -1112,9 +1129,9 @@ class DesktopWindow(QMainWindow):
             download_concurrency=self.settings.download_concurrency,
             contract_templates=dict(self.contract_templates),
             contracts_dir=self.settings.contracts_dir,
-            contract_platform=self.current_contract_platform(),
-            contract_buyer=self.contract_buyer_input.text().strip() if hasattr(self, "contract_buyer_input") else "甲方公司",
-            contract_seller=self.contract_seller_input.text().strip() if hasattr(self, "contract_seller_input") else "乙方公司",
+            contract_platform=contract_platform,
+            contract_buyer=self.contract_party_value(contract_platform, "buyer"),
+            contract_seller=self.contract_party_value(contract_platform, "seller"),
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
@@ -2319,10 +2336,17 @@ class DesktopWindow(QMainWindow):
     def current_contract_key(self, contract_type: str) -> str:
         return contract_template_key(self.current_contract_platform(), contract_type)
 
+    def current_contract_party_key(self, party: str) -> str:
+        return contract_party_key(self.current_contract_platform(), party)
+
     def current_contract_platform(self) -> str:
+        if not hasattr(self, "contract_platform_input"):
+            return "WECHAT_VIDEO"
         return str(self.contract_platform_input.currentData() or "WECHAT_VIDEO")
 
     def current_contract_platform_name(self) -> str:
+        if not hasattr(self, "contract_platform_input"):
+            return "视频号"
         return self.contract_platform_input.currentText() or "视频号"
 
     @staticmethod
@@ -2340,21 +2364,45 @@ class DesktopWindow(QMainWindow):
         value = self.contract_templates.get(self.current_contract_key(contract_type))
         return Path(value) if value else None
 
+    def contract_party_value(self, platform: str, party: str) -> str:
+        editor_name = f"contract_{party}_input"
+        if platform == self.current_contract_platform() and hasattr(self, editor_name):
+            editor = getattr(self, editor_name)
+            if isinstance(editor, QLineEdit):
+                return editor.text().strip()
+        return str(self.contract_templates.get(contract_party_key(platform, party)) or "").strip()
+
+    def save_contract_party_config(self) -> None:
+        if not hasattr(self, "contract_buyer_input") or not hasattr(self, "contract_seller_input"):
+            return
+        self.contract_templates[self.current_contract_party_key("buyer")] = self.contract_buyer_input.text().strip()
+        self.contract_templates[self.current_contract_party_key("seller")] = self.contract_seller_input.text().strip()
+        self.contract_store.save(self.contract_templates)
+        self.load_selected_contract_template()
+
     def load_selected_contract_template(self) -> None:
+        if hasattr(self, "contract_buyer_input") and hasattr(self, "contract_seller_input"):
+            self.contract_buyer_input.setText(
+                str(self.contract_templates.get(self.current_contract_party_key("buyer")) or "")
+            )
+            self.contract_seller_input.setText(
+                str(self.contract_templates.get(self.current_contract_party_key("seller")) or "")
+            )
         for contract_type, _label in required_contract_template_types(self.current_contract_platform()):
             template = self.current_contract_template_path(contract_type)
             display = str(template) if template else "未配置，请选择 .docx Word 模板"
             if contract_type in getattr(self, "contract_template_path_inputs", {}):
                 self.contract_template_path_inputs[contract_type].setText(display)
-        if hasattr(self, "contract_generate_button"):
-            self.contract_generate_button.setEnabled(
-                all_required_contract_templates_configured(self.contract_templates, self.current_contract_platform())
-            )
+        self.update_contract_generate_button()
         if hasattr(self, "contract_preview"):
             self.contract_preview.setPlainText(
                 "点击“下载系统模版”获取后台模板并整理盖章签名。"
                 "整理完成后点击“选择”回传本机 .docx 模板。当前媒体号需要的合同都配置后，才可以生成合同。"
             )
+
+    def update_contract_generate_button(self) -> None:
+        if hasattr(self, "contract_generate_button"):
+            self.contract_generate_button.setEnabled(not self.missing_contract_config_labels(self.current_contract_platform()))
 
     def load_contract_dramas(self) -> None:
         if not hasattr(self, "contract_drama_input"):
@@ -2531,14 +2579,16 @@ class DesktopWindow(QMainWindow):
             episode_count=self.contract_episode_input.text().strip() or "0",
             episode_minutes=self.contract_episode_minutes_input.text().strip() or "0",
             price=self.contract_price_input.text().strip() or "0",
-            buyer=self.contract_buyer_input.text().strip() or "甲方",
-            seller=self.contract_seller_input.text().strip() or "乙方",
+            buyer=self.contract_party_value(self.current_contract_platform(), "buyer"),
+            seller=self.contract_party_value(self.current_contract_platform(), "seller"),
             sign_date=self.contract_date_input.date().toString("yyyy-MM-dd"),
         )
 
     def generate_contract(self) -> list[Path] | None:
-        if not all_required_contract_templates_configured(self.contract_templates, self.current_contract_platform()):
-            QMessageBox.warning(self, "合同生成", "请先配置当前媒体号所需的全部 Word 合同模板。")
+        self.save_contract_party_config()
+        missing_labels = self.missing_contract_config_labels(self.current_contract_platform())
+        if missing_labels:
+            QMessageBox.warning(self, "合同生成", f"请先配置：{'、'.join(missing_labels)}。")
             return None
         generated_paths: list[Path] = []
         for contract_type, _label in required_contract_template_types(self.current_contract_platform()):
@@ -2548,7 +2598,9 @@ class DesktopWindow(QMainWindow):
                 return None
             data = self.contract_render_input(contract_type)
             output = build_contract_output_path(self.settings.contracts_dir, data)
-            generated_paths.append(render_contract_docx(template, output, data))
+            generated_paths.append(
+                render_contract_docx(template, output, data, normalize_for_rendering=contract_type == "cost")
+            )
         self.last_contract_path = generated_paths[-1] if generated_paths else None
         self.last_contract_paths = generated_paths
         if hasattr(self, "contract_preview"):
@@ -2650,6 +2702,7 @@ class DesktopWindow(QMainWindow):
 
     def publish_next_if_ready(self, media_accounts: list[dict[str, Any]]) -> None:
         self.media_accounts = media_accounts
+        self.save_contract_party_config()
         block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
         if block_reason:
             self.set_manual_publish_busy(False)
@@ -2712,6 +2765,7 @@ class DesktopWindow(QMainWindow):
         self.task_skip_event.clear()
         self.task_paused = False
         self.media_accounts = media_accounts
+        self.save_contract_party_config()
         block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
         if block_reason:
             QMessageBox.warning(self, "自动执行", block_reason)
@@ -2741,11 +2795,21 @@ class DesktopWindow(QMainWindow):
     def contract_task_block_reason(self, media_accounts: list[dict[str, Any]]) -> str | None:
         if not self.has_active_platform(media_accounts, "WECHAT_VIDEO"):
             return None
-        missing_labels = self.missing_contract_template_labels("WECHAT_VIDEO")
+        missing_labels = self.missing_contract_config_labels("WECHAT_VIDEO")
         if not missing_labels:
             return None
         missing_text = "、".join(missing_labels)
-        return f"请先在“合同配置”中配置视频号所需的{missing_text}模板。"
+        return f"请先在“合同配置”中配置视频号所需的{missing_text}。"
+
+    def missing_contract_config_labels(self, platform: str) -> list[str]:
+        return self.missing_contract_party_labels(platform) + self.missing_contract_template_labels(platform)
+
+    def missing_contract_party_labels(self, platform: str) -> list[str]:
+        missing: list[str] = []
+        for party, label in required_contract_party_fields(platform):
+            if not self.contract_party_value(platform, party):
+                missing.append(label)
+        return missing
 
     def missing_contract_template_labels(self, platform: str) -> list[str]:
         missing: list[str] = []

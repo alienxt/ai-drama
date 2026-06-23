@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Callable
+from xml.etree import ElementTree
 
 from docx import Document
 
@@ -18,20 +22,68 @@ CONTRACT_TEMPLATE_TYPE_LABELS = {
     "cost": "成本合同",
     "purchase": "购买合同",
 }
+CONTRACT_PARTY_FIELD_LABELS = {
+    "buyer": "买方/甲方",
+    "seller": "卖方/乙方",
+}
 CONTRACT_PLATFORM_TEMPLATE_TYPES = {
     "WECHAT_VIDEO": ("cost", "purchase"),
     "TIKTOK": ("purchase",),
     "DOUYIN": ("purchase",),
 }
+CONTRACT_MATERIAL_CACHE_VERSION = 1
+DOUBLE_DATE_FOOTER_SPACER = " " * 20
+DOUBLE_DATE_FOOTER_RE = re.compile(
+    r"(日期\s*[:：]\s*)\{\{\s*date\s*\}\}(\s+)(日期\s*[:：]\s*)\{\{\s*date\s*\}\}"
+)
+PURCHASE_STAMP_VERTICAL_SHIFT_EMU = 650_000
+PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU = 650_000
+DOCX_DOCUMENT_XML = "word/document.xml"
+DOCX_WORD_XML_PREFIX = "word/"
+DOCX_WORD_XML_SUFFIX = ".xml"
+WORDML_NAMESPACES = {
+    "wpc": "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "o": "urn:schemas-microsoft-com:office:office",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "v": "urn:schemas-microsoft-com:vml",
+    "wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+    "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w10": "urn:schemas-microsoft-com:office:word",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+    "wpi": "http://schemas.microsoft.com/office/word/2010/wordprocessingInk",
+    "wne": "http://schemas.microsoft.com/office/word/2006/wordml",
+    "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+    "wpsCustomData": "http://www.wps.cn/officeDocument/2013/wpsCustomData",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+}
+
+for prefix, namespace in WORDML_NAMESPACES.items():
+    ElementTree.register_namespace(prefix, namespace)
 
 
 def contract_template_key(platform: str, contract_type: str) -> str:
     return f"{platform.lower()}:{contract_type}"
 
 
+def contract_party_key(platform: str, party: str) -> str:
+    return f"{platform.lower()}:{party}"
+
+
 def required_contract_template_types(platform: str) -> tuple[tuple[str, str], ...]:
     types = CONTRACT_PLATFORM_TEMPLATE_TYPES.get(platform, ("purchase",))
     return tuple((contract_type, CONTRACT_TEMPLATE_TYPE_LABELS[contract_type]) for contract_type in types)
+
+
+def required_contract_party_fields(platform: str) -> tuple[tuple[str, str], ...]:
+    if platform != "WECHAT_VIDEO":
+        return ()
+    return tuple(CONTRACT_PARTY_FIELD_LABELS.items())
 
 
 def all_required_contract_templates_configured(templates: dict[str, Path | str | None], platform: str) -> bool:
@@ -100,22 +152,39 @@ def default_contract_templates() -> dict[str, Path | None]:
     }
 
 
+def default_contract_config() -> dict[str, Path | str | None]:
+    return {
+        **default_contract_templates(),
+        **{
+            contract_party_key(platform, party): ""
+            for platform in CONTRACT_MEDIA_PLATFORMS
+            for party in CONTRACT_PARTY_FIELD_LABELS
+        },
+    }
+
+
 class ContractConfigStore:
     def __init__(self, path: Path):
         self.path = path
 
-    def load(self) -> dict[str, Path | None]:
+    def load(self) -> dict[str, Path | str | None]:
         if not self.path.exists():
-            return default_contract_templates()
+            return default_contract_config()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return default_contract_templates()
-        templates = default_contract_templates()
-        for key in templates:
+            return default_contract_config()
+        templates = default_contract_config()
+        for key in default_contract_templates():
             value = data.get(key)
             if isinstance(value, str) and value.strip():
                 templates[key] = Path(value)
+        for platform in CONTRACT_MEDIA_PLATFORMS:
+            for party in CONTRACT_PARTY_FIELD_LABELS:
+                key = contract_party_key(platform, party)
+                value = data.get(key)
+                if isinstance(value, str):
+                    templates[key] = value.strip()
         for legacy_key in CONTRACT_TEMPLATE_TYPES:
             value = data.get(legacy_key)
             migrated_key = contract_template_key("WECHAT_VIDEO", legacy_key)
@@ -126,7 +195,7 @@ class ContractConfigStore:
     def save(self, templates: dict[str, Path | str | None]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, str] = {}
-        for key in default_contract_templates():
+        for key in default_contract_config():
             value = templates.get(key)
             data[key] = str(value) if value else ""
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -164,6 +233,18 @@ def replace_contract_text(text: str, values: dict[str, str]) -> str:
     return re.sub(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}", replace, text)
 
 
+def format_contract_date_compact(value: str = "") -> str:
+    return format_contract_date(value).replace(" ", "")
+
+
+def format_contract_date_short(value: str = "") -> str:
+    compact = format_contract_date_compact(value)
+    match = re.fullmatch(r"(\d{4})年(\d{2})月(\d{2})日", compact)
+    if not match:
+        return compact
+    return ".".join(match.groups())
+
+
 def format_contract_date(value: str = "") -> str:
     clean = value.strip()
     if not clean:
@@ -188,9 +269,21 @@ def format_contract_date(value: str = "") -> str:
     return f"{parsed.year:04d} 年 {parsed.month:02d} 月 {parsed.day:02d} 日"
 
 
+def replace_double_date_footer_text(text: str, date_value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return (
+            f"{match.group(1)}{date_value}"
+            f"{DOUBLE_DATE_FOOTER_SPACER}"
+            f"{match.group(3)}{date_value}"
+        )
+
+    return DOUBLE_DATE_FOOTER_RE.sub(replace, text)
+
+
 def replace_paragraph_text(paragraph, values: dict[str, str]) -> None:
     original = paragraph.text
-    replaced = replace_contract_text(original, values)
+    prepared = replace_double_date_footer_text(original, values.get("date", ""))
+    replaced = replace_contract_text(prepared, values)
     if replaced == original:
         return
     for run in paragraph.runs:
@@ -201,7 +294,12 @@ def replace_paragraph_text(paragraph, values: dict[str, str]) -> None:
         paragraph.add_run(replaced)
 
 
-def render_contract_docx(template: Path, output: Path, data: ContractRenderInput) -> Path:
+def render_contract_docx(
+    template: Path,
+    output: Path,
+    data: ContractRenderInput,
+    normalize_for_rendering: bool = True,
+) -> Path:
     if not template.exists():
         raise FileNotFoundError(f"请先配置 Word 模板：{template}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -215,6 +313,8 @@ def render_contract_docx(template: Path, output: Path, data: ContractRenderInput
                 for paragraph in cell.paragraphs:
                     replace_paragraph_text(paragraph, values)
     document.save(output)
+    if normalize_for_rendering:
+        normalize_contract_docx_for_rendering(output)
     return output
 
 
@@ -244,10 +344,318 @@ def render_contract_material_bundle(
     for contract_type, label in required_contract_template_types(platform):
         template = Path(templates[contract_template_key(platform, contract_type)])
         data = data_factory(contract_type, label)
-        docx_path = render_contract_docx(template, build_contract_output_path(output_dir / "docx", data), data)
-        image_paths = converter(docx_path, output_dir / "images", safe_contract_filename(f"{contract_type}-{data.drama_title}"))
-        materials.append(ContractMaterial(contract_type, label, docx_path, image_paths))
+        normalize_for_rendering = contract_type == "cost"
+        docx_path = build_contract_output_path(output_dir / "docx", data)
+        image_stem = safe_contract_filename(f"{contract_type}-{data.drama_title}")
+        cache_key = build_contract_material_cache_key(
+            template,
+            platform,
+            contract_type,
+            label,
+            data,
+            normalize_for_rendering,
+        )
+        manifest_path = build_contract_material_cache_path(output_dir / "cache", image_stem)
+        cached_material = load_cached_contract_material(manifest_path, cache_key, contract_type, label)
+        if cached_material:
+            materials.append(cached_material)
+            continue
+
+        docx_path = render_contract_docx(
+            template,
+            docx_path,
+            data,
+            normalize_for_rendering=normalize_for_rendering,
+        )
+        image_paths = converter(docx_path, output_dir / "images", image_stem)
+        if not image_paths or any(not path.exists() for path in image_paths):
+            raise RuntimeError(f"{label}图片生成失败。")
+        material = ContractMaterial(contract_type, label, docx_path, image_paths)
+        write_contract_material_cache(manifest_path, cache_key, material)
+        materials.append(material)
     return ContractMaterialBundle(materials)
+
+
+def build_contract_material_cache_path(cache_dir: Path, image_stem: str) -> Path:
+    return cache_dir / f"{safe_contract_filename(image_stem)}.json"
+
+
+def build_contract_material_cache_key(
+    template: Path,
+    platform: str,
+    contract_type: str,
+    label: str,
+    data: ContractRenderInput,
+    normalize_for_rendering: bool,
+) -> dict[str, object]:
+    resolved_template = template.resolve()
+    return {
+        "version": CONTRACT_MATERIAL_CACHE_VERSION,
+        "platform": platform,
+        "contractType": contract_type,
+        "label": label,
+        "normalizeForRendering": normalize_for_rendering,
+        "templatePath": str(resolved_template),
+        "templateSha256": file_sha256(resolved_template),
+        "placeholders": data.placeholders(),
+        "signDate": data.sign_date,
+    }
+
+
+def load_cached_contract_material(
+    manifest_path: Path,
+    cache_key: dict[str, object],
+    contract_type: str,
+    label: str,
+) -> ContractMaterial | None:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if manifest.get("cacheKey") != cache_key:
+        return None
+    docx_path = Path(str(manifest.get("docxPath") or ""))
+    image_paths = [Path(str(path)) for path in manifest.get("imagePaths") or []]
+    if not docx_path.exists() or not image_paths or any(not path.exists() for path in image_paths):
+        return None
+    return ContractMaterial(contract_type, label, docx_path, image_paths)
+
+
+def write_contract_material_cache(
+    manifest_path: Path,
+    cache_key: dict[str, object],
+    material: ContractMaterial,
+) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "cacheKey": cache_key,
+                "docxPath": str(material.docx_path),
+                "imagePaths": [str(path) for path in material.image_paths],
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalize_contract_docx_for_rendering(docx_path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(docx_path) as docx:
+            xml_members = [
+                info.filename
+                for info in docx.infolist()
+                if info.filename.startswith(DOCX_WORD_XML_PREFIX)
+                and info.filename.endswith(DOCX_WORD_XML_SUFFIX)
+            ]
+            member_contents = {member: docx.read(member) for member in xml_members}
+    except zipfile.BadZipFile:
+        return False
+
+    changed_members: dict[str, bytes] = {}
+    for member, content in member_contents.items():
+        try:
+            root = ElementTree.fromstring(content)
+        except ElementTree.ParseError:
+            continue
+        changed = False
+        changed |= _normalize_run_spacing(root)
+        changed |= _normalize_cjk_fonts(root)
+        if changed:
+            changed_members[member] = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    if not changed_members:
+        return False
+
+    _replace_docx_members(docx_path, changed_members)
+    return True
+
+
+def _normalize_run_spacing(root: ElementTree.Element) -> bool:
+    changed = False
+    for spacing in root.findall(".//w:rPr/w:spacing", WORDML_NAMESPACES):
+        value = spacing.get(_word_attr("val"))
+        if not value:
+            continue
+        try:
+            numeric = int(value)
+        except ValueError:
+            continue
+        if numeric < 0:
+            spacing.set(_word_attr("val"), "0")
+            changed = True
+    return changed
+
+
+def _normalize_cjk_fonts(root: ElementTree.Element) -> bool:
+    changed = False
+    for fonts in root.findall(".//w:rFonts", WORDML_NAMESPACES):
+        for name in ("eastAsia", "ascii", "hAnsi", "cs"):
+            attr = _word_attr(name)
+            value = fonts.get(attr)
+            if value and _is_unstable_render_font(value):
+                fonts.set(attr, "Songti SC")
+                changed = True
+        for theme_name in ("eastAsiaTheme", "asciiTheme", "hAnsiTheme", "cstheme"):
+            attr = _word_attr(theme_name)
+            if attr in fonts.attrib:
+                del fonts.attrib[attr]
+                changed = True
+    return changed
+
+
+def _is_unstable_render_font(name: str) -> bool:
+    normalized = name.lower().replace(" ", "")
+    return any(
+        marker in normalized
+        for marker in (
+            "仿宋",
+            "宋体",
+            "黑体",
+            "楷体",
+            "等线",
+            "gb2312",
+            "minor",
+        )
+    )
+
+
+def normalize_purchase_contract_layout(docx_path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(docx_path) as docx:
+            document_xml = docx.read(DOCX_DOCUMENT_XML)
+    except (KeyError, zipfile.BadZipFile):
+        return False
+
+    try:
+        root = ElementTree.fromstring(document_xml)
+    except ElementTree.ParseError:
+        return False
+
+    anchors = root.findall(".//wp:anchor", WORDML_NAMESPACES)
+    if not anchors:
+        return False
+
+    stamp_anchors = [
+        (anchor, description)
+        for anchor in anchors
+        if _is_purchase_stamp_description(description := _drawing_description(anchor))
+    ]
+    if not stamp_anchors:
+        return False
+
+    stamp_anchor_ids = {id(anchor) for anchor, _description in stamp_anchors}
+    non_stamp_max_relative_height = max(
+        (_int_attr(anchor, "relativeHeight") for anchor in anchors if id(anchor) not in stamp_anchor_ids),
+        default=0,
+    )
+    next_stamp_height = non_stamp_max_relative_height + 4096
+    changed = False
+
+    for anchor, description in stamp_anchors:
+        changed |= _set_anchor_attr(anchor, "behindDoc", "0")
+        changed |= _set_anchor_attr(anchor, "allowOverlap", "1")
+        changed |= _set_anchor_attr(anchor, "relativeHeight", str(next_stamp_height))
+        next_stamp_height += 4096
+        changed |= _ensure_anchor_shifted_up(anchor, _purchase_stamp_vertical_shift_emu(description))
+
+    if not changed:
+        return False
+
+    updated_xml = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+    _replace_docx_member(docx_path, DOCX_DOCUMENT_XML, updated_xml)
+    return True
+
+
+def _drawing_description(anchor: ElementTree.Element) -> str:
+    descriptions: list[str] = []
+    for tag in ("wp:docPr", ".//pic:cNvPr"):
+        element = anchor.find(tag, WORDML_NAMESPACES)
+        if element is None:
+            continue
+        descriptions.extend(
+            value
+            for value in (element.get("descr"), element.get("name"))
+            if value
+        )
+    return " ".join(descriptions)
+
+
+def _is_purchase_stamp_description(description: str) -> bool:
+    return "盖章" in description or "公章" in description or ("乙方" in description and "签名" not in description)
+
+
+def _purchase_stamp_vertical_shift_emu(description: str) -> int:
+    if "乙方" in description:
+        return PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU
+    return PURCHASE_STAMP_VERTICAL_SHIFT_EMU
+
+
+def _set_anchor_attr(anchor: ElementTree.Element, name: str, value: str) -> bool:
+    if anchor.get(name) == value:
+        return False
+    anchor.set(name, value)
+    return True
+
+
+def _ensure_anchor_shifted_up(anchor: ElementTree.Element, shift_emu: int) -> bool:
+    position = anchor.find("wp:positionV/wp:posOffset", WORDML_NAMESPACES)
+    if position is None or position.text is None:
+        return False
+    try:
+        current = int(position.text)
+    except ValueError:
+        return False
+    if current < 0:
+        return False
+    position.text = str(current - shift_emu)
+    return True
+
+
+def _int_attr(element: ElementTree.Element, name: str) -> int:
+    try:
+        return int(element.get(name) or "0")
+    except ValueError:
+        return 0
+
+
+def _replace_docx_member(docx_path: Path, member_name: str, content: bytes) -> None:
+    _replace_docx_members(docx_path, {member_name: content})
+
+
+def _replace_docx_members(docx_path: Path, members: dict[str, bytes]) -> None:
+    with tempfile.NamedTemporaryFile(dir=docx_path.parent, suffix=".docx", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+    try:
+        with zipfile.ZipFile(docx_path) as source, zipfile.ZipFile(temp_path, "w") as target:
+            for info in source.infolist():
+                data = members.get(info.filename, source.read(info.filename))
+                replacement = zipfile.ZipInfo(info.filename, info.date_time)
+                replacement.comment = info.comment
+                replacement.extra = info.extra
+                replacement.internal_attr = info.internal_attr
+                replacement.external_attr = info.external_attr
+                replacement.compress_type = zipfile.ZIP_DEFLATED
+                target.writestr(replacement, data)
+        temp_path.replace(docx_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _word_attr(name: str) -> str:
+    return f"{{{WORDML_NAMESPACES['w']}}}{name}"
 
 
 def export_contract_docx_images(docx_path: Path, image_dir: Path, image_stem: str | None = None) -> list[Path]:
@@ -274,16 +682,20 @@ def convert_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path:
     soffice = find_command("soffice", ["/Applications/LibreOffice.app/Contents/MacOS/soffice"])
     if not soffice:
         raise RuntimeError("无法将 Word 合同转换为图片，请先安装 LibreOffice。")
-    command = [
-        soffice,
-        "--headless",
-        "--convert-to",
-        "pdf",
-        "--outdir",
-        str(output_dir),
-        str(docx_path),
-    ]
-    run_command(command, "Word 合同转 PDF 失败")
+    with tempfile.TemporaryDirectory(prefix="aidrama-libreoffice-") as profile_dir:
+        command = [
+            soffice,
+            f"-env:UserInstallation={Path(profile_dir).as_uri()}",
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "pdf:writer_pdf_Export",
+            "--outdir",
+            str(output_dir),
+            str(docx_path),
+        ]
+        run_command(command, "Word 合同转 PDF 失败")
     pdf_path = output_dir / f"{docx_path.stem}.pdf"
     if not pdf_path.exists():
         matches = list(output_dir.glob(f"{docx_path.stem}*.pdf"))
@@ -295,12 +707,20 @@ def convert_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path:
 
 
 def convert_pdf_to_pngs(pdf_path: Path, image_dir: Path, image_stem: str) -> list[Path]:
-    pdftoppm = find_command("pdftoppm")
+    pdftoppm = find_command("pdftoppm", ["/opt/homebrew/bin/pdftoppm", "/usr/local/bin/pdftoppm"])
     if pdftoppm:
         prefix = image_dir / safe_contract_filename(image_stem)
-        run_command([pdftoppm, "-png", str(pdf_path), str(prefix)], "PDF 合同转图片失败")
+        for stale_image in image_dir.glob(f"{prefix.name}*.png"):
+            stale_image.unlink()
+        run_command([pdftoppm, "-r", "200", "-png", str(pdf_path), str(prefix)], "PDF 合同转图片失败")
         images = sorted(image_dir.glob(f"{prefix.name}-*.png"))
         if images:
+            if len(images) == 1:
+                target = image_dir / f"{prefix.name}.png"
+                if target.exists():
+                    target.unlink()
+                images[0].rename(target)
+                return [target]
             return images
 
     sips = find_command("sips")

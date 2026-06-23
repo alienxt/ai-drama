@@ -77,6 +77,13 @@ class FailingPublisher:
         raise RuntimeError("upload failed")
 
 
+class DraftPausedPublisher:
+    def publish(self, media_files, title, summary=None, metadata=None):
+        from aidrama_desktop.platforms.base import PlatformPublishPaused
+
+        raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
+
+
 def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeypatch):
     api = FakeApi()
     processor = FakeProcessor()
@@ -179,6 +186,9 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["coverFile"] == cover_file
     assert publisher.metadata["totalMinutes"] == 20
     assert publisher.metadata["costAmountWan"] == 3
+    assert publisher.metadata["productionCostWan"] == 3
+    assert publisher.metadata["producerName"] == "乙方公司"
+    assert publisher.metadata["aiContentDeclaration"] is True
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
     assert publisher.metadata["freeEpisodeCount"] == 7
@@ -341,6 +351,37 @@ def test_publish_once_pauses_task_without_cancelling(tmp_path, monkeypatch):
     assert runner.publish_once() == "paused"
     assert ("POST", "/desktop/tasks/task-1/pause", {"deviceId": "device-1"}) in api.calls
     assert not any(call[1] == "/desktop/tasks/task-1/progress" and call[2]["status"] == "CANCELLED" for call in api.calls)
+
+
+def test_publish_once_fails_upload_when_playlet_first_step_is_ready(tmp_path, monkeypatch):
+    api = FakeApi()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=DraftPausedPublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "failed"
+    assert (
+        "PUT",
+        "/desktop/tasks/task-1/result",
+        {
+            "success": False,
+            "platformPublishId": None,
+            "failureReason": "剧目提审第一步表单已填好，暂未进入下一步或提交。",
+        },
+    ) in api.calls
+    assert ("POST", "/desktop/tasks/task-1/pause", {"deviceId": "device-1"}) not in api.calls
 
 
 def test_publish_once_skips_task_without_cancelling(tmp_path, monkeypatch):

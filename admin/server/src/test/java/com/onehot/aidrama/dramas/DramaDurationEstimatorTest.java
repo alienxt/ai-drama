@@ -35,4 +35,39 @@ class DramaDurationEstimatorTest {
 
         assertThat(DramaDurationEstimator.needsTotalMinutes(drama)).isFalse();
     }
+
+    @Test
+    void estimatesCostByTotalMinutesWithinOneToFiveWan() {
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(1)).isEqualTo(1);
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(30)).isEqualTo(1);
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(31)).isEqualTo(2);
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(100)).isEqualTo(4);
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(180)).isEqualTo(5);
+    }
+
+    @Test
+    void estimatesCostFromDramaTotalMinutes() {
+        Drama drama = new Drama();
+        drama.setTotalMinutes(60);
+
+        assertThat(DramaDurationEstimator.estimateCostAmountWan(drama)).isEqualTo(2);
+    }
+
+    @Test
+    void costNeedsBackfillWhenStoredValueDoesNotMatchMinutesRule() {
+        Drama drama = new Drama();
+        drama.setTotalMinutes(100);
+        drama.setCostAmountWan(2);
+
+        assertThat(DramaDurationEstimator.needsCostAmountWan(drama)).isTrue();
+    }
+
+    @Test
+    void costDoesNotNeedBackfillWhenStoredValueMatchesMinutesRule() {
+        Drama drama = new Drama();
+        drama.setTotalMinutes(100);
+        drama.setCostAmountWan(4);
+
+        assertThat(DramaDurationEstimator.needsCostAmountWan(drama)).isFalse();
+    }
 }

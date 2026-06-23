@@ -28,18 +28,22 @@ public final class DramaDurationEstimator {
         return totalMinutes == null || totalMinutes <= 0 || totalMinutes % 10 != 0;
     }
 
-    public static int estimateCostAmountWan(String seedText) {
-        Random random = new Random(seed("cost:" + (seedText == null ? "" : seedText)));
-        return 1 + random.nextInt(5);
+    public static int estimateCostAmountWan(int totalMinutes) {
+        int cost = (int) Math.ceil(Math.max(totalMinutes, 1) / 30.0);
+        return Math.max(1, Math.min(5, cost));
     }
 
     public static int estimateCostAmountWan(Drama drama) {
-        return estimateCostAmountWan(seedText(drama));
+        int totalMinutes = drama.getTotalMinutes();
+        if (totalMinutes <= 0) {
+            totalMinutes = estimateTotalMinutes(drama);
+        }
+        return estimateCostAmountWan(totalMinutes);
     }
 
     public static boolean needsCostAmountWan(Drama drama) {
         Integer costAmountWan = drama.getCostAmountWan();
-        return costAmountWan == null || costAmountWan <= 0;
+        return costAmountWan == null || costAmountWan <= 0 || costAmountWan != estimateCostAmountWan(drama);
     }
 
     private static String seedText(Drama drama) {

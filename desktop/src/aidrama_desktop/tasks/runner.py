@@ -19,7 +19,7 @@ from aidrama_desktop.contracts import (
     ContractRenderInput,
     render_contract_material_bundle,
 )
-from aidrama_desktop.platforms.base import PlatformPublisher
+from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
 
 
@@ -105,6 +105,14 @@ class TaskRunner:
             self._notify("任务完成", task_id)
             return "succeeded"
         except Exception as exception:  # noqa: BLE001
+            if isinstance(exception, PlatformPublishPaused):
+                failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
+                self.api.put(
+                    f"/desktop/tasks/{task_id}/result",
+                    {"success": False, "platformPublishId": None, "failureReason": failure_reason},
+                )
+                self._notify(f"上传失败：{failure_reason}", task_id, task)
+                return "failed"
             if isinstance(exception, TaskPaused):
                 self.api.post(f"/desktop/tasks/{task_id}/pause", {"deviceId": self.device_id})
                 self._notify("任务已暂停，可恢复执行", task_id, task)
@@ -258,6 +266,9 @@ class TaskRunner:
             "categoryIds": download_plan.get("categoryIds") or [],
             "totalMinutes": download_plan.get("totalMinutes"),
             "costAmountWan": download_plan.get("costAmountWan"),
+            "productionCostWan": download_plan.get("costAmountWan"),
+            "producerName": self.contract_seller or self.contract_buyer,
+            "aiContentDeclaration": True,
             "monetizationType": "IAA_AD",
             "monetizationLabel": "IAA广告变现",
             "freeEpisodeCount": random.randint(3, 10),

@@ -8,7 +8,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget
 
-from aidrama_desktop.contracts import contract_template_key
+from aidrama_desktop.contracts import contract_party_key, contract_template_key
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 from aidrama_desktop.platforms.wechat_video import remote_debugging_port_for_profile
@@ -621,7 +621,7 @@ def test_task_execution_requires_wechat_contract_templates(tmp_path):
 
     assert (
         window.contract_task_block_reason(media_accounts)
-        == "请先在“合同配置”中配置视频号所需的成本合同、购买合同模板。"
+        == "请先在“合同配置”中配置视频号所需的买方/甲方、卖方/乙方、成本合同、购买合同。"
     )
 
     cost = tmp_path / "cost.docx"
@@ -632,6 +632,13 @@ def test_task_execution_requires_wechat_contract_templates(tmp_path):
         contract_template_key("WECHAT_VIDEO", "cost"): cost,
         contract_template_key("WECHAT_VIDEO", "purchase"): purchase,
     }
+
+    assert window.contract_task_block_reason(media_accounts) == "请先在“合同配置”中配置视频号所需的买方/甲方、卖方/乙方。"
+
+    window.contract_templates.update({
+        contract_party_key("WECHAT_VIDEO", "buyer"): "甲方公司",
+        contract_party_key("WECHAT_VIDEO", "seller"): "乙方公司",
+    })
 
     assert window.contract_task_block_reason(media_accounts) is None
 
