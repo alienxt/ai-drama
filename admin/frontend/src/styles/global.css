@@ -527,6 +527,15 @@ body {
   margin-inline-end: 0;
 }
 
+.task-table-cell-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: #172033;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task-execution-chain {
   display: inline-flex;
   align-items: center;

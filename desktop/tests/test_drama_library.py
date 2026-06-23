@@ -8,6 +8,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget
 
+from aidrama_desktop.contracts import contract_template_key
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 
@@ -583,6 +584,40 @@ def test_auto_tasks_require_active_media_account_with_login_state():
     assert (
         DesktopWindow.auto_task_block_reason(
             [{"status": "ACTIVE", "loginStateRef": "profile", "displayName": "主视频号"}]
+        )
+        is None
+    )
+
+
+def test_task_execution_requires_wechat_contract_templates(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.contract_templates = {}
+    media_accounts = [{"status": "ACTIVE", "platform": "WECHAT_VIDEO", "loginStateRef": "profile"}]
+
+    assert (
+        window.contract_task_block_reason(media_accounts)
+        == "请先在“合同配置”中配置视频号所需的成本合同、购买合同模板。"
+    )
+
+    cost = tmp_path / "cost.docx"
+    purchase = tmp_path / "purchase.docx"
+    cost.write_text("cost", encoding="utf-8")
+    purchase.write_text("purchase", encoding="utf-8")
+    window.contract_templates = {
+        contract_template_key("WECHAT_VIDEO", "cost"): cost,
+        contract_template_key("WECHAT_VIDEO", "purchase"): purchase,
+    }
+
+    assert window.contract_task_block_reason(media_accounts) is None
+
+
+def test_task_execution_skips_contract_check_for_inactive_wechat_media(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.contract_templates = {}
+
+    assert (
+        window.contract_task_block_reason(
+            [{"status": "ACTIVE", "platform": "WECHAT_VIDEO", "distributionPolicy": {"enabled": False}}]
         )
         is None
     )

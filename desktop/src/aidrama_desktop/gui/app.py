@@ -827,6 +827,8 @@ class DesktopWindow(QMainWindow):
         self.skip_task_button.setEnabled(False)
         actions.addWidget(self.publish_next_button)
         actions.addWidget(self.auto_task_button)
+        actions.addWidget(self.pause_task_button)
+        actions.addWidget(self.skip_task_button)
         actions.addStretch(1)
         self.auto_task_state = QLabel("自动执行：未启动")
         self.auto_task_state.setObjectName("mutedText")
@@ -836,8 +838,6 @@ class DesktopWindow(QMainWindow):
         self.current_drama_label.setObjectName("mutedText")
         drama_row = QHBoxLayout()
         drama_row.addWidget(self.current_drama_label)
-        drama_row.addWidget(self.pause_task_button)
-        drama_row.addWidget(self.skip_task_button)
         drama_row.addStretch(1)
         self.current_media_account_label = QLabel("当前媒体号：-")
         self.current_media_account_label.setObjectName("mutedText")
@@ -856,14 +856,22 @@ class DesktopWindow(QMainWindow):
         note.setObjectName("mutedText")
         panel, panel_layout = self._panel("任务操作")
         panel_layout.addLayout(actions)
-        panel_layout.addWidget(self.auto_task_state)
-        panel_layout.addWidget(self.current_task_label)
-        panel_layout.addLayout(drama_row)
-        panel_layout.addLayout(media_account_row)
-        panel_layout.addWidget(self.task_stage_label)
-        panel_layout.addWidget(self.task_error_label)
-        panel_layout.addWidget(note)
-        layout.addWidget(panel)
+        task_summary = QGridLayout()
+        task_summary.setContentsMargins(0, 0, 0, 0)
+        task_summary.setHorizontalSpacing(18)
+        task_summary.setVerticalSpacing(6)
+        task_summary.addWidget(self.auto_task_state, 0, 0)
+        task_summary.addWidget(self.current_task_label, 0, 1)
+        task_summary.addLayout(drama_row, 0, 2)
+        task_summary.addLayout(media_account_row, 1, 0)
+        task_summary.addWidget(self.task_stage_label, 1, 1)
+        task_summary.addWidget(self.task_error_label, 1, 2)
+        task_summary.addWidget(note, 2, 0, 1, 3)
+        task_summary.setColumnStretch(0, 1)
+        task_summary.setColumnStretch(1, 1)
+        task_summary.setColumnStretch(2, 2)
+        panel_layout.addLayout(task_summary)
+        layout.addWidget(panel, 1)
 
         history_panel, history_layout = self._panel("历史任务")
         filters = QHBoxLayout()
@@ -922,7 +930,7 @@ class DesktopWindow(QMainWindow):
         pager.addWidget(previous_page)
         pager.addWidget(next_page)
         history_layout.addLayout(pager)
-        layout.addWidget(history_panel, 1)
+        layout.addWidget(history_panel, 4)
         return page
 
     def _settings_page(self) -> QWidget:
@@ -1399,7 +1407,7 @@ class DesktopWindow(QMainWindow):
 
     def retry_task_if_ready(self, task_id: str, media_accounts: list[dict[str, Any]]) -> None:
         self.media_accounts = media_accounts
-        block_reason = self.auto_task_block_reason(media_accounts)
+        block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
         if block_reason:
             self.set_manual_publish_busy(False)
             QMessageBox.warning(self, "重试任务", block_reason)
@@ -2574,7 +2582,7 @@ class DesktopWindow(QMainWindow):
 
     def publish_next_if_ready(self, media_accounts: list[dict[str, Any]]) -> None:
         self.media_accounts = media_accounts
-        block_reason = self.auto_task_block_reason(media_accounts)
+        block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
         if block_reason:
             self.set_manual_publish_busy(False)
             QMessageBox.warning(self, "发布下一条", block_reason)
@@ -2636,7 +2644,7 @@ class DesktopWindow(QMainWindow):
         self.task_skip_event.clear()
         self.task_paused = False
         self.media_accounts = media_accounts
-        block_reason = self.auto_task_block_reason(media_accounts)
+        block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
         if block_reason:
             QMessageBox.warning(self, "自动执行", block_reason)
             self.update_task_progress("自动执行未启动", None)
@@ -2661,6 +2669,32 @@ class DesktopWindow(QMainWindow):
         if not any(item.get("loginStateRef") for item in active_accounts):
             return "媒体号未保存登录信息，请先完成媒体号登录。"
         return None
+
+    def contract_task_block_reason(self, media_accounts: list[dict[str, Any]]) -> str | None:
+        if not self.has_active_platform(media_accounts, "WECHAT_VIDEO"):
+            return None
+        missing_labels = self.missing_contract_template_labels("WECHAT_VIDEO")
+        if not missing_labels:
+            return None
+        missing_text = "、".join(missing_labels)
+        return f"请先在“合同配置”中配置视频号所需的{missing_text}模板。"
+
+    def missing_contract_template_labels(self, platform: str) -> list[str]:
+        missing: list[str] = []
+        for contract_type, label in required_contract_template_types(platform):
+            value = self.contract_templates.get(contract_template_key(platform, contract_type))
+            if not value or not Path(value).exists():
+                missing.append(label)
+        return missing
+
+    @staticmethod
+    def has_active_platform(media_accounts: list[dict[str, Any]], platform: str) -> bool:
+        return any(
+            item.get("status") == "ACTIVE"
+            and (item.get("distributionPolicy") or {}).get("enabled", True)
+            and str(item.get("platform") or "WECHAT_VIDEO") == platform
+            for item in media_accounts
+        )
 
     def run_auto_task_cycle(self) -> None:
         if not self.auto_task_enabled or self.auto_task_busy or self.manual_publish_busy:

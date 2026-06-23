@@ -73,26 +73,29 @@ export function TasksPage() {
     >
       <AdminTable<DistributionTask>
         rowKey="id"
+        scroll={{ x: 1680 }}
         reloadKey={`${version}-${JSON.stringify(filters)}`}
         loadPage={(page, size) => apiGetPage<DistributionTask>('/admin/distribution-tasks', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
         columns={[
           { title: '任务', dataIndex: 'id', width: 190, render: (id: string) => <span className="mono-id">{id}</span> },
           { title: '所属账户', dataIndex: 'ownerUsername', width: 130, render: (_: string | undefined, record) => record.ownerUsername || record.ownerAccountId || '-' },
-          { title: '媒体号', dataIndex: 'mediaAccountName' },
-          { title: '短剧', dataIndex: 'dramaTitle' },
+          { title: '媒体号', dataIndex: 'mediaAccountName', width: 180, render: renderTaskCellText },
+          { title: '短剧', dataIndex: 'dramaTitle', width: 260, render: renderTaskCellText },
           {
             title: '状态',
             dataIndex: 'status',
+            width: 110,
             render: (status: DistributionTask['status']) => (
               <Tag color={distributionTaskStatusColors[status]}>{distributionTaskStatusLabel(status)}</Tag>
             ),
           },
           { title: '执行链路', dataIndex: 'progress', width: 340, render: (_: number, record) => <TaskExecutionChain task={record} /> },
-          { title: '失败原因', dataIndex: 'failureReason' },
+          { title: '失败原因', dataIndex: 'failureReason', width: 260, render: renderTaskCellText },
           { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
           { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
           {
             title: '操作',
+            width: 90,
             render: (_, record) => (
               <Space size={4}>
                 <Tooltip title="重试">
@@ -107,6 +110,15 @@ export function TasksPage() {
         ]}
       />
     </DataPage>
+  );
+}
+
+function renderTaskCellText(value?: string) {
+  const text = value || '-';
+  return (
+    <Tooltip title={text}>
+      <span className="task-table-cell-text">{text}</span>
+    </Tooltip>
   );
 }
 
