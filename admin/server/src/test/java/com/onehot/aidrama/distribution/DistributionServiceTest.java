@@ -474,6 +474,111 @@ class DistributionServiceTest {
     }
 
     @Test
+    void desktopRetryClaimsStuckDownloadingTaskForCurrentOwner() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask downloading = new DistributionTask();
+        downloading.setId("task-1");
+        downloading.setMediaAccountId("media-1");
+        downloading.setDramaId("drama-1");
+        downloading.setStatus(DistributionTaskStatus.DOWNLOADING);
+        downloading.setProgress(10);
+        downloading.setLockedByDeviceId("old-device");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(downloading));
+        when(taskRepository.save(downloading)).thenReturn(downloading);
+
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
+
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
+        assertThat(task.getProgress()).isZero();
+    }
+
+    @Test
+    void desktopRetryRejectsRecentlyUpdatedActiveTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask downloading = new DistributionTask();
+        downloading.setId("task-1");
+        downloading.setMediaAccountId("media-1");
+        downloading.setDramaId("drama-1");
+        downloading.setStatus(DistributionTaskStatus.DOWNLOADING);
+        downloading.setProgress(30);
+        downloading.setLockedByDeviceId("device-1");
+        downloading.setUpdatedAt(Instant.now());
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(downloading));
+
+        assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
+                .hasMessageContaining("任务仍在执行中");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void desktopRetryClaimsTimedOutActiveTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask downloading = new DistributionTask();
+        downloading.setId("task-1");
+        downloading.setMediaAccountId("media-1");
+        downloading.setDramaId("drama-1");
+        downloading.setStatus(DistributionTaskStatus.DOWNLOADING);
+        downloading.setProgress(30);
+        downloading.setLockedByDeviceId("old-device");
+        downloading.setUpdatedAt(Instant.now().minusSeconds(16 * 60));
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(downloading));
+        when(taskRepository.save(downloading)).thenReturn(downloading);
+
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
+
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
+        assertThat(task.getProgress()).isZero();
+    }
+
+    @Test
+    void adminRetryRejectsRecentlyUpdatedActiveTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask uploading = new DistributionTask();
+        uploading.setId("task-1");
+        uploading.setMediaAccountId("media-1");
+        uploading.setDramaId("drama-1");
+        uploading.setStatus(DistributionTaskStatus.UPLOADING);
+        uploading.setProgress(75);
+        uploading.setLockedByDeviceId("device-1");
+        uploading.setUpdatedAt(Instant.now());
+
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(uploading));
+
+        assertThatThrownBy(() -> service.retryTaskFromAdmin("task-1"))
+                .hasMessageContaining("任务仍在执行中");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
     void desktopReleaseTaskReturnsItToPendingPoolForCurrentOwner() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);

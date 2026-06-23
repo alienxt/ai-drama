@@ -151,12 +151,7 @@ public class DistributionTaskController {
 
     @PostMapping("/api/admin/distribution-tasks/{id}/retry")
     ApiResponse<DistributionTask> retry(@PathVariable String id) {
-        DistributionTask task = get(id);
-        task.setStatus(DistributionTaskStatus.PENDING);
-        task.setLockedByDeviceId(null);
-        task.setFailureReason(null);
-        task.setFinishedAt(null);
-        return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
+        return ApiResponse.ok(service.retryTaskFromAdmin(id), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
     @PostMapping("/api/admin/distribution-tasks/{id}/cancel")

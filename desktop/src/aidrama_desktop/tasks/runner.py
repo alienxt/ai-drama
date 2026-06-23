@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +22,7 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 EPISODE_DOWNLOAD_RETRIES = 3
 EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
+DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 
 
 @dataclass
@@ -124,15 +126,51 @@ class TaskRunner:
 
     def _download(self, download_plan: dict, task_id: str, drama_title: str) -> list[Path]:
         target_dir = self.input_dir() / download_plan["dramaId"]
+        progress_lock = threading.Lock()
+        downloaded_by_episode: dict[int, int] = {}
+        total_by_episode = {
+            index: episode_size(episode) or 0
+            for index, episode in enumerate(download_plan.get("episodes") or [], start=1)
+        }
+        last_reported_at = 0.0
+        last_reported_progress = 10
+
+        def report_progress(index: int, total: int, episode: dict, downloaded: int, total_bytes: int | None) -> None:
+            nonlocal last_reported_at, last_reported_progress
+            self._notify(self._download_stage(drama_title, index, total, downloaded, total_bytes), task_id)
+            now = time.monotonic()
+            should_report = False
+            progress = 10
+            with progress_lock:
+                downloaded_by_episode[index] = max(downloaded_by_episode.get(index, 0), downloaded)
+                if total_bytes and total_bytes > 0:
+                    total_by_episode[index] = max(total_by_episode.get(index, 0), total_bytes)
+                known_total = sum(total_by_episode.values())
+                if known_total > 0:
+                    known_downloaded = sum(
+                        min(downloaded_bytes, total_by_episode.get(episode_index, downloaded_bytes) or downloaded_bytes)
+                        for episode_index, downloaded_bytes in downloaded_by_episode.items()
+                    )
+                    progress = min(70, max(10, 10 + int(known_downloaded * 60 / known_total)))
+                if progress > last_reported_progress or now - last_reported_at >= DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS:
+                    last_reported_progress = max(last_reported_progress, progress)
+                    last_reported_at = now
+                    should_report = True
+            if should_report:
+                try:
+                    self.api.put(
+                        f"/desktop/tasks/{task_id}/progress",
+                        {"status": "DOWNLOADING", "progress": last_reported_progress},
+                    )
+                except Exception:
+                    pass
+
         return download_episodes(
             download_plan,
             target_dir,
             self.api.base_url,
             headers=self.api.download_headers(),
-            progress_callback=lambda index, total, episode, downloaded, total_bytes: self._notify(
-                self._download_stage(drama_title, index, total, downloaded, total_bytes),
-                task_id,
-            ),
+            progress_callback=report_progress,
             should_stop=self.cancel_checker,
             should_pause=self.pause_checker,
             should_skip=self.skip_checker,

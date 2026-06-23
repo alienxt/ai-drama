@@ -290,6 +290,7 @@ class DesktopWindow(QMainWindow):
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
         self.current_media_account_id: str | None = None
+        self.current_media_account_snapshot: dict[str, Any] | None = None
         self.current_drama_title: str | None = None
         self.task_paused = False
         self.resume_auto_after_pause = False
@@ -912,6 +913,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.setColumnWidth(6, 150)
         self.task_history_table.setColumnWidth(7, 86)
         self.align_table_header_left(self.task_history_table)
+        self.task_history_table.itemSelectionChanged.connect(self.on_task_history_selection_changed)
         history_layout.addWidget(self.task_history_table, 1)
 
         pager = QHBoxLayout()
@@ -1002,6 +1004,7 @@ class DesktopWindow(QMainWindow):
         if item.key == "dramas" and hasattr(self, "drama_table"):
             self.load_dramas(page=self.drama_page)
         if item.key == "tasks" and hasattr(self, "task_history_table"):
+            self.load_media_accounts()
             self.load_task_history(page=self.task_history_page)
         if item.key == "contracts" and hasattr(self, "contract_drama_input"):
             self.load_contract_dramas()
@@ -1238,6 +1241,16 @@ class DesktopWindow(QMainWindow):
             self.task_history_table.setCellWidget(row_index, 7, self.task_history_actions_widget(task))
             self.task_history_table.setRowHeight(row_index, 46)
 
+    def on_task_history_selection_changed(self) -> None:
+        if not hasattr(self, "task_history_table"):
+            return
+        row = self.task_history_table.currentRow()
+        if row < 0 or row >= len(self.task_history_rows):
+            return
+        task = self.task_history_rows[row]
+        task_id = str(task.get("id") or "").strip() or None
+        self.update_task_progress("已选择历史任务", task_id, task)
+
     def task_history_row_values(self, task: dict[str, Any]) -> list[str]:
         return [
             str(task.get("dramaTitle") or task.get("dramaId") or "-"),
@@ -1371,7 +1384,7 @@ class DesktopWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         retry = QPushButton("重试")
-        retry.setEnabled(str(task.get("status") or "") == "FAILED")
+        retry.setEnabled(self.is_task_retryable(task) and not self.is_current_task_running(str(task.get("id") or "")))
         retry.clicked.connect(lambda _=False, item=task: self.retry_distribution_task(item))
         layout.addWidget(retry)
         layout.addStretch(1)
@@ -1382,8 +1395,11 @@ class DesktopWindow(QMainWindow):
         if not task_id:
             QMessageBox.warning(self, "重试任务", "任务 ID 为空，无法重试。")
             return
-        if str(task.get("status") or "") != "FAILED":
-            QMessageBox.information(self, "重试任务", "只有失败任务可以重试。")
+        if not self.is_task_retryable(task):
+            QMessageBox.information(self, "重试任务", "只有失败、已取消或执行中的任务可以重试。")
+            return
+        if self.is_current_task_running(task_id):
+            QMessageBox.information(self, "重试任务", "这个任务正在本机执行中，请先暂停或跳过后再重试。")
             return
         if self.manual_publish_busy or self.auto_task_busy:
             QMessageBox.information(
@@ -1418,6 +1434,24 @@ class DesktopWindow(QMainWindow):
             "重试任务",
             lambda: self.retry_task_once(task_id),
             self.handle_retry_task_done,
+        )
+
+    @staticmethod
+    def is_task_retryable(task: dict[str, Any]) -> bool:
+        return str(task.get("status") or "") in {
+            "FAILED",
+            "CANCELLED",
+            "CLAIMED",
+            "DOWNLOADING",
+            "PROCESSING",
+            "UPLOADING",
+        }
+
+    def is_current_task_running(self, task_id: str) -> bool:
+        return bool(
+            task_id
+            and task_id == self.current_task_id
+            and (self.manual_publish_busy or self.auto_task_busy)
         )
 
     def retry_task_once(self, task_id: str) -> str:
@@ -2014,6 +2048,10 @@ class DesktopWindow(QMainWindow):
                     self.media_table.setItem(row, column, table_item)
                 self.media_table.setCellWidget(row, 10, self.media_actions_widget(item))
                 self.media_table.setRowHeight(row, 38)
+            if hasattr(self, "current_media_account_label"):
+                self.current_media_account_label.setText(f"当前媒体号：{self.current_media_account_display()}")
+            if hasattr(self, "current_media_backend_button"):
+                self.current_media_backend_button.setEnabled(self.current_media_account() is not None)
 
         self.run_async("刷新媒体号", lambda: self.api().get("/desktop/media-accounts"), render)
 
@@ -2578,7 +2616,6 @@ class DesktopWindow(QMainWindow):
             self.publish_next_if_ready,
             log_result=False,
         )
-        QMessageBox.information(self, "发布下一条", "发布请求已收到，正在检查媒体号和任务队列。可在当前页面查看执行进度。")
 
     def publish_next_if_ready(self, media_accounts: list[dict[str, Any]]) -> None:
         self.media_accounts = media_accounts
@@ -2801,8 +2838,10 @@ class DesktopWindow(QMainWindow):
         media_account_id = str((task or {}).get("mediaAccountId") or "").strip()
         if media_account_id:
             self.current_media_account_id = media_account_id
+            self.current_media_account_snapshot = self.media_account_from_task(task or {})
         elif task_id is None:
             self.current_media_account_id = None
+            self.current_media_account_snapshot = None
         drama_title = self.task_drama_title(stage, task)
         if drama_title:
             self.current_drama_title = drama_title
@@ -2845,7 +2884,7 @@ class DesktopWindow(QMainWindow):
         media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()
         if not media_account_id:
             return None
-        return next(
+        account = next(
             (
                 item
                 for item in getattr(self, "media_accounts", [])
@@ -2853,6 +2892,23 @@ class DesktopWindow(QMainWindow):
             ),
             None,
         )
+        if account:
+            return account
+        snapshot = getattr(self, "current_media_account_snapshot", None)
+        if snapshot and str(snapshot.get("id") or "") == media_account_id:
+            return snapshot
+        return None
+
+    @staticmethod
+    def media_account_from_task(task: dict[str, Any]) -> dict[str, Any] | None:
+        media_account_id = str(task.get("mediaAccountId") or "").strip()
+        if not media_account_id:
+            return None
+        return {
+            "id": media_account_id,
+            "displayName": str(task.get("mediaAccountName") or media_account_id),
+            "platform": str(task.get("platform") or "WECHAT_VIDEO"),
+        }
 
     def current_media_account_display(self) -> str:
         media_account_id = str(getattr(self, "current_media_account_id", None) or "").strip()

@@ -20,6 +20,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -34,6 +35,13 @@ import java.util.stream.Collectors;
 
 @Service
 public class DistributionService {
+    private static final Duration ACTIVE_TASK_RETRY_GRACE = Duration.ofMinutes(15);
+    private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
+            DistributionTaskStatus.CLAIMED,
+            DistributionTaskStatus.DOWNLOADING,
+            DistributionTaskStatus.PROCESSING,
+            DistributionTaskStatus.UPLOADING
+    );
     private final DramaRepository dramaRepository;
     private final MediaAccountRepository mediaAccountRepository;
     private final DistributionTaskRepository taskRepository;
@@ -413,19 +421,60 @@ public class DistributionService {
         if (!mediaAccountIds.contains(task.getMediaAccountId())) {
             throw new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND);
         }
-        if (task.getStatus() != DistributionTaskStatus.FAILED && task.getStatus() != DistributionTaskStatus.CANCELLED) {
+        if (!isRetryableFromDesktop(task.getStatus())) {
             throw new BusinessException(
                     "TASK_NOT_RETRYABLE",
-                    "只有失败或已取消任务可以重试",
+                    "只有失败、已取消或执行中的任务可以重试",
                     HttpStatus.BAD_REQUEST
             );
         }
+        if (isActiveTaskRecentlyUpdated(task)) {
+            throw activeTaskStillRunningException();
+        }
+        clearTaskForRetry(task);
+        return claim(task, deviceId);
+    }
+
+    private boolean isRetryableFromDesktop(DistributionTaskStatus status) {
+        return switch (status) {
+            case FAILED, CANCELLED, CLAIMED, DOWNLOADING, PROCESSING, UPLOADING -> true;
+            case PENDING, SUCCEEDED -> false;
+        };
+    }
+
+    private boolean isActiveTaskRecentlyUpdated(DistributionTask task) {
+        if (!ACTIVE_TASK_STATUSES.contains(task.getStatus())) {
+            return false;
+        }
+        Instant updatedAt = task.getUpdatedAt();
+        return updatedAt != null && updatedAt.isAfter(Instant.now().minus(ACTIVE_TASK_RETRY_GRACE));
+    }
+
+    public DistributionTask retryTaskFromAdmin(String taskId) {
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        if (isActiveTaskRecentlyUpdated(task)) {
+            throw activeTaskStillRunningException();
+        }
+        clearTaskForRetry(task);
+        task.setStatus(DistributionTaskStatus.PENDING);
+        return taskRepository.save(task);
+    }
+
+    private void clearTaskForRetry(DistributionTask task) {
         task.setProgress(0);
         task.setLockedByDeviceId(null);
         task.setFailureReason(null);
         task.setPlatformPublishId(null);
         task.setFinishedAt(null);
-        return claim(task, deviceId);
+    }
+
+    private BusinessException activeTaskStillRunningException() {
+        return new BusinessException(
+                "TASK_STILL_RUNNING",
+                "任务仍在执行中，请先暂停/跳过，或等待长时间无进度后再重试",
+                HttpStatus.CONFLICT
+        );
     }
 
     public DistributionTask releaseTaskForOwner(String ownerAccountId, String taskId) {

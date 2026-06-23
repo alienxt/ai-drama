@@ -52,6 +52,23 @@ def test_desktop_distribution_task_status_label():
     assert DesktopWindow.distribution_task_status_label("UPLOADING") == "上传中"
 
 
+def test_downloading_task_can_be_retried():
+    assert DesktopWindow.is_task_retryable({"status": "DOWNLOADING"}) is True
+    assert DesktopWindow.is_task_retryable({"status": "FAILED"}) is True
+    assert DesktopWindow.is_task_retryable({"status": "SUCCEEDED"}) is False
+    assert DesktopWindow.is_task_retryable({"status": "PENDING"}) is False
+
+
+def test_current_running_task_is_not_safe_to_retry():
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.current_task_id = "task-1"
+    window.manual_publish_busy = True
+    window.auto_task_busy = False
+
+    assert window.is_current_task_running("task-1") is True
+    assert window.is_current_task_running("task-2") is False
+
+
 def test_desktop_task_history_chain_summary_pinpoints_failed_step():
     window = DesktopWindow.__new__(DesktopWindow)
 
@@ -650,6 +667,37 @@ def test_task_progress_displays_current_media_account_name():
     assert window.current_media_backend_button.isEnabled() is True
 
 
+def test_task_history_selection_updates_current_media_account():
+    app = QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.auto_task_enabled = False
+    window.media_accounts = []
+    window.task_history_rows = [
+        {
+            "id": "task-1",
+            "mediaAccountId": "media-1",
+            "mediaAccountName": "染柒剧作",
+            "dramaTitle": "江城裁梦予君心",
+        }
+    ]
+    window.task_history_table = QTableWidget(1, 8)
+    window.task_history_table.setCurrentCell(0, 0)
+    window.auto_task_state = QLabel()
+    window.current_task_label = QLabel()
+    window.current_drama_label = QLabel()
+    window.current_media_account_label = QLabel()
+    window.current_media_backend_button = QPushButton()
+    window.task_stage_label = QLabel()
+    window.task_error_label = QLabel()
+
+    DesktopWindow.on_task_history_selection_changed(window)
+
+    assert app is not None
+    assert window.current_task_label.text() == "当前任务：task-1"
+    assert window.current_media_account_label.text() == "当前媒体号：染柒剧作"
+    assert window.current_media_backend_button.isEnabled() is True
+
+
 def test_open_current_media_account_backend_uses_current_account():
     QApplication.instance() or QApplication([])
     window = DesktopWindow.__new__(DesktopWindow)
@@ -662,6 +710,20 @@ def test_open_current_media_account_backend_uses_current_account():
     DesktopWindow.open_current_media_account_backend(window)
 
     assert opened == [account]
+
+
+def test_open_current_media_account_backend_uses_task_snapshot_when_media_accounts_are_not_loaded():
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    opened = []
+    window.current_media_account_id = "media-1"
+    window.current_media_account_snapshot = {"id": "media-1", "displayName": "染柒剧作", "platform": "WECHAT_VIDEO"}
+    window.media_accounts = []
+    window.open_media_account = lambda item: opened.append(item)
+
+    DesktopWindow.open_current_media_account_backend(window)
+
+    assert opened == [{"id": "media-1", "displayName": "染柒剧作", "platform": "WECHAT_VIDEO"}]
 
 
 def test_publisher_for_media_account_uses_saved_login_state_ref(tmp_path, monkeypatch):
