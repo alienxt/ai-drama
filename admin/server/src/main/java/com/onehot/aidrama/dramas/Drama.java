@@ -22,6 +22,7 @@ public class Drama {
     private Instant aiPreparationFailedAt;
     private Integer rating = 5;
     private Integer totalMinutes;
+    private Integer costAmountWan;
     private List<String> categoryIds = new ArrayList<>();
     private String source = "BAIDU_PAN";
     private String sourcePath;
@@ -61,6 +62,8 @@ public class Drama {
     }
     public Integer getTotalMinutes() { return totalMinutes == null ? 0 : totalMinutes; }
     public void setTotalMinutes(Integer totalMinutes) { this.totalMinutes = totalMinutes == null ? 0 : Math.max(totalMinutes, 0); }
+    public Integer getCostAmountWan() { return costAmountWan == null ? 0 : costAmountWan; }
+    public void setCostAmountWan(Integer costAmountWan) { this.costAmountWan = costAmountWan == null ? 0 : Math.max(costAmountWan, 0); }
     public List<String> getCategoryIds() { return categoryIds; }
     public void setCategoryIds(List<String> categoryIds) { this.categoryIds = categoryIds; }
     public String getSource() { return source; }

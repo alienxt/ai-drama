@@ -73,6 +73,7 @@ export function DramasPage() {
       coverUrl: values.coverUrl,
       aiCoverUrl: values.aiCoverUrl,
       rating: values.rating ?? 5,
+      costAmountWan: values.costAmountWan,
       categoryIds: values.categoryIds,
       status: values.status,
     };
@@ -317,7 +318,7 @@ export function DramasPage() {
     >
       <AdminTable<Drama>
         rowKey="id"
-        scroll={{ x: 1650 }}
+        scroll={{ x: 1760 }}
         tableLayout="fixed"
         reloadKey={`${version}-${JSON.stringify(filters)}`}
         loadPage={(page, size) => apiGetPage<Drama>('/admin/dramas', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
@@ -359,6 +360,7 @@ export function DramasPage() {
           { title: '评分', dataIndex: 'rating', width: 80, render: (rating?: number) => `${rating ?? 5}分` },
           { title: '集数', dataIndex: 'episodes', width: 80, render: (episodes: Drama['episodes']) => episodes?.length ?? 0 },
           { title: '总时长', dataIndex: 'totalMinutes', width: 90, render: (value?: number) => value ? `${value} 分钟` : '-' },
+          { title: '成本金额', dataIndex: 'costAmountWan', width: 100, render: (value?: number) => value ? `${value} 万` : '-' },
           { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
           {
             title: '状态',
@@ -445,6 +447,7 @@ export function DramasPage() {
               <div className="drama-detail-grid">
                 {detailItem('集数', viewing.episodes?.length ?? 0)}
                 {detailItem('总时长', viewing.totalMinutes ? `${viewing.totalMinutes} 分钟` : '-')}
+                {detailItem('成本金额', viewing.costAmountWan ? `${viewing.costAmountWan} 万` : '-')}
                 {detailItem('评分', `${viewing.rating ?? 5}分`)}
                 {detailItem('创建时间', formatDateTime(viewing.createdAt))}
                 {detailItem('更新时间', formatDateTime(viewing.updatedAt))}
@@ -583,6 +586,9 @@ export function DramasPage() {
           </Form.Item>
           <Form.Item name="rating" label="评分" rules={[{ required: true }]}>
             <InputNumber min={1} max={5} precision={0} />
+          </Form.Item>
+          <Form.Item name="costAmountWan" label="成本金额（万）">
+            <InputNumber min={1} max={99} precision={0} placeholder="不填则自动生成" />
           </Form.Item>
           <Form.Item name="categoryIds" label="分类">
             <Select

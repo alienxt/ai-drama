@@ -466,6 +466,7 @@ class DramaControllerTest {
                 "/uploads/covers/source.jpg",
                 "",
                 5,
+                3,
                 List.of("urban"),
                 DramaStatus.READY
         );

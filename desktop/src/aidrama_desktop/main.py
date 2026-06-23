@@ -9,7 +9,7 @@ from aidrama_desktop.auth.token_store import TokenStore
 from aidrama_desktop.browser.chrome import ChromeController, find_chrome
 from aidrama_desktop.config.settings import load_settings
 from aidrama_desktop.local_agent import serve_local_agent
-from aidrama_desktop.platforms.registry import get_publisher, platform_login_url
+from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.tasks.runner import TaskRunner, download_episodes
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
 
@@ -50,8 +50,7 @@ def bind_wechat_video(display_name: str = "视频号", external_account_id: str 
             "deviceId": settings.device_id,
         },
     )
-    chrome.open_platform_login("WECHAT_VIDEO", platform_login_url("WECHAT_VIDEO"), media["id"])
-    login_state_ref = chrome.login_state_ref("WECHAT_VIDEO", media["id"])
+    login_state_ref = get_publisher("WECHAT_VIDEO", chrome, media["id"]).open_login()
     typer.echo("Chrome 已打开。请扫码登录视频号，登录完成后回到这里按 Enter。")
     input()
     api.put(
@@ -78,7 +77,7 @@ def agent(port: int | None = None) -> None:
     def open_platform(platform: str, account_id: str | None = None) -> None:
         chrome = build_chrome()
         if account_id:
-            chrome.open_platform_login(platform, platform_login_url(platform), account_id)
+            get_publisher(platform, chrome, account_id).open_login()
         else:
             get_publisher(platform, chrome).open_login()
 

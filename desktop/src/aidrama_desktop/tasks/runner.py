@@ -9,11 +9,16 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from aidrama_desktop import __version__
 from aidrama_desktop.api.client import ApiClient
+from aidrama_desktop.contracts import (
+    ContractRenderInput,
+    render_contract_material_bundle,
+)
 from aidrama_desktop.platforms.base import PlatformPublisher
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
 
@@ -44,6 +49,12 @@ class TaskRunner:
     pause_checker: Callable[[], bool] | None = None
     skip_checker: Callable[[], bool] | None = None
     download_concurrency: int = 6
+    contract_templates: dict[str, Path | str | None] | None = None
+    contracts_dir: Path | None = None
+    contract_platform: str = "WECHAT_VIDEO"
+    contract_buyer: str = "甲方公司"
+    contract_seller: str = "乙方公司"
+    contract_image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -74,15 +85,18 @@ class TaskRunner:
             drama_title = self._drama_title(download_plan, task)
             task_with_title = {**task, "dramaTitle": drama_title}
             self._notify(f"当前短剧：{drama_title}", task_id, task_with_title)
+            contract_metadata = self._prepare_contract_materials(download_plan, task_id, drama_title)
             source_files = self._download(download_plan, task_id, drama_title)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
+            metadata = self._publish_metadata(download_plan, source_files)
+            metadata.update(contract_metadata)
             publish_id = self._publisher_for(task).publish(
                 source_files,
                 title=drama_title,
                 summary=download_plan.get("summary"),
-                metadata=self._publish_metadata(download_plan, source_files),
+                metadata=metadata,
             )
             self.api.put(
                 f"/desktop/tasks/{task_id}/result",
@@ -119,6 +133,54 @@ class TaskRunner:
         if self.publisher_factory and media_account_id:
             return self.publisher_factory(str(media_account_id))
         return self.publisher
+
+    def _prepare_contract_materials(self, download_plan: dict, task_id: str, drama_title: str) -> dict[str, object]:
+        if self.contract_templates is None:
+            return {}
+        self._notify(f"生成合同材料：{drama_title}", task_id)
+        output_dir = (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
+
+        def data_factory(contract_type: str, label: str) -> ContractRenderInput:
+            return self._contract_render_input(download_plan, drama_title, contract_type, label)
+
+        bundle = render_contract_material_bundle(
+            self.contract_templates,
+            self.contract_platform,
+            output_dir,
+            data_factory,
+            image_converter=self.contract_image_converter,
+        )
+        self._notify(f"合同材料已生成：{drama_title}", task_id)
+        return bundle.metadata()
+
+    def _contract_render_input(
+        self,
+        download_plan: dict,
+        drama_title: str,
+        contract_type: str,
+        label: str,
+    ) -> ContractRenderInput:
+        episodes = download_plan.get("episodes") or []
+        episode_count = self._int_value(download_plan.get("episodeCount"), len(episodes))
+        episode_minutes = self._int_value(download_plan.get("totalMinutes"), episode_count)
+        cost_amount_wan = self._int_value(download_plan.get("costAmountWan"), 0)
+        return ContractRenderInput(
+            contract_type=label,
+            drama_title=drama_title,
+            episode_count=str(episode_count),
+            episode_minutes=str(episode_minutes),
+            price=str(cost_amount_wan),
+            buyer=self.contract_buyer or "甲方公司",
+            seller=self.contract_seller or "乙方公司",
+            sign_date=date.today().isoformat(),
+        )
+
+    @staticmethod
+    def _int_value(value: object, default: int = 0) -> int:
+        try:
+            return max(int(float(str(value))), 0)
+        except (TypeError, ValueError):
+            return default
 
     def _notify(self, stage: str, task_id: str | None, task: dict | None = None) -> None:
         if self.progress_callback:
@@ -194,6 +256,8 @@ class TaskRunner:
             "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
             "rating": download_plan.get("rating"),
             "categoryIds": download_plan.get("categoryIds") or [],
+            "totalMinutes": download_plan.get("totalMinutes"),
+            "costAmountWan": download_plan.get("costAmountWan"),
             "monetizationType": "IAA_AD",
             "monetizationLabel": "IAA广告变现",
             "freeEpisodeCount": random.randint(3, 10),
@@ -476,6 +540,8 @@ def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path
         "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
         "rating": download_plan.get("rating"),
         "categoryIds": download_plan.get("categoryIds") or [],
+        "totalMinutes": download_plan.get("totalMinutes"),
+        "costAmountWan": download_plan.get("costAmountWan"),
         "episodeCount": len(episodes),
         "episodes": [
             {

@@ -34,6 +34,7 @@ export type Drama = {
   aiCoverGenerating?: boolean;
   rating?: number;
   totalMinutes?: number;
+  costAmountWan?: number;
   categoryIds: string[];
   sourcePath?: string;
   status: 'DRAFT' | 'READY' | 'DISABLED';

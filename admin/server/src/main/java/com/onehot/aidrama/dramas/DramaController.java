@@ -152,7 +152,7 @@ public class DramaController {
                 : pageable;
         Query pageQuery = query.toQuery().with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "episodes.episodeNo");
+                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -178,6 +178,7 @@ public class DramaController {
                                 .toList(),
                             episodeCount(document),
                             intValue(document, "totalMinutes"),
+                            costAmountWan(document, id),
                             instantValue(document, "createdAt"),
                             prioritizedDramaIds.contains(id)
                     );
@@ -352,6 +353,11 @@ public class DramaController {
         drama.setCoverUrl(request.coverUrl());
         drama.setAiCoverUrl(request.aiCoverUrl());
         drama.setRating(request.rating());
+        if (request.costAmountWan() != null) {
+            drama.setCostAmountWan(request.costAmountWan());
+        } else if (DramaDurationEstimator.needsCostAmountWan(drama)) {
+            drama.setCostAmountWan(DramaDurationEstimator.estimateCostAmountWan(drama));
+        }
         drama.setCategoryIds(request.categoryIds());
         drama.setStatus(request.status());
         ensureReadyAllowed(drama);
@@ -408,6 +414,8 @@ public class DramaController {
                         drama.getAiCoverUrl(),
                         effectiveCoverUrl(drama),
                         drama.getRating(),
+                        drama.getTotalMinutes(),
+                        costAmountWan(drama),
                         drama.getCategoryIds(),
                         episodes
                 ),
@@ -569,6 +577,28 @@ public class DramaController {
             }
         }
         return 0;
+    }
+
+    private int costAmountWan(Document document, String id) {
+        int stored = intValue(document, "costAmountWan");
+        if (stored > 0) {
+            return stored;
+        }
+        String seed = document.getString("sourcePath");
+        if (!hasText(seed)) {
+            seed = document.getString("title");
+        }
+        if (!hasText(seed)) {
+            seed = id;
+        }
+        return DramaDurationEstimator.estimateCostAmountWan(seed);
+    }
+
+    private int costAmountWan(Drama drama) {
+        if (!DramaDurationEstimator.needsCostAmountWan(drama)) {
+            return drama.getCostAmountWan();
+        }
+        return DramaDurationEstimator.estimateCostAmountWan(drama);
     }
 
     private int episodeCount(Document document) {

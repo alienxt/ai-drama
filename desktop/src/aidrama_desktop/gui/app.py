@@ -63,7 +63,7 @@ from aidrama_desktop.contracts import (
 )
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
 from aidrama_desktop.local_agent import create_local_agent_server
-from aidrama_desktop.platforms.registry import get_publisher, platform_login_url
+from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.tasks.runner import TaskRunner
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
@@ -111,7 +111,7 @@ class AgentController(QObject):
         def open_media(platform: str, account_id: str | None = None) -> None:
             chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
             if account_id:
-                chrome.open_platform_login(platform, platform_login_url(platform), account_id)
+                get_publisher(platform, chrome, account_id).open_login()
             else:
                 get_publisher(platform, chrome).open_login()
 
@@ -502,8 +502,8 @@ class DesktopWindow(QMainWindow):
         filters.addStretch(1)
         list_layout.addLayout(filters)
 
-        self.drama_table = QTableWidget(0, 10)
-        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "简介", "评分", "分类", "集数", "下载状态", "已下载集数", "上架时间", "操作"])
+        self.drama_table = QTableWidget(0, 11)
+        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "简介", "评分", "分类", "集数", "成本金额", "下载状态", "已下载集数", "上架时间", "操作"])
         self.align_table_header_left(self.drama_table)
         self.drama_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -515,14 +515,16 @@ class DesktopWindow(QMainWindow):
         self.drama_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Fixed)
+        self.drama_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Fixed)
         self.drama_table.setColumnWidth(0, 82)
         self.drama_table.setColumnWidth(3, 64)
         self.drama_table.setColumnWidth(4, 120)
         self.drama_table.setColumnWidth(5, 70)
-        self.drama_table.setColumnWidth(6, 100)
+        self.drama_table.setColumnWidth(6, 90)
         self.drama_table.setColumnWidth(7, 110)
-        self.drama_table.setColumnWidth(8, 165)
-        self.drama_table.setColumnWidth(9, 170)
+        self.drama_table.setColumnWidth(8, 110)
+        self.drama_table.setColumnWidth(9, 165)
+        self.drama_table.setColumnWidth(10, 170)
         self.drama_table.verticalHeader().setVisible(False)
         self.drama_table.setAlternatingRowColors(True)
         self.drama_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -750,7 +752,8 @@ class DesktopWindow(QMainWindow):
         self.contract_episode_input.setReadOnly(True)
         self.contract_episode_minutes_input = QLineEdit("0")
         self.contract_episode_minutes_input.setReadOnly(True)
-        self.contract_price_input = QLineEdit("0.5")
+        self.contract_price_input = QLineEdit("0")
+        self.contract_price_input.setReadOnly(True)
         self.contract_buyer_input = QLineEdit("甲方公司")
         self.contract_seller_input = QLineEdit("乙方公司")
         self.contract_date_input = QDateEdit()
@@ -1107,6 +1110,11 @@ class DesktopWindow(QMainWindow):
             pause_checker=self.task_pause_event.is_set,
             skip_checker=self.task_skip_event.is_set,
             download_concurrency=self.settings.download_concurrency,
+            contract_templates=dict(self.contract_templates),
+            contracts_dir=self.settings.contracts_dir,
+            contract_platform=self.current_contract_platform(),
+            contract_buyer=self.contract_buyer_input.text().strip() if hasattr(self, "contract_buyer_input") else "甲方公司",
+            contract_seller=self.contract_seller_input.text().strip() if hasattr(self, "contract_seller_input") else "乙方公司",
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
@@ -1546,13 +1554,13 @@ class DesktopWindow(QMainWindow):
             self.drama_table.setCellWidget(row_index, 0, self.drama_cover_widget(cover_url))
             values = self.drama_row_values(drama)
             download_status, downloaded_count, _ = self.drama_download_info(drama)
-            values[5] = download_status
-            values[6] = str(downloaded_count)
+            values[6] = download_status
+            values[7] = str(downloaded_count)
             for column, value in enumerate(values, start=1):
                 item = self.left_aligned_table_item(value)
                 item.setToolTip(value)
                 self.drama_table.setItem(row_index, column, item)
-            self.drama_table.setCellWidget(row_index, 9, self.drama_actions_widget(drama))
+            self.drama_table.setCellWidget(row_index, 10, self.drama_actions_widget(drama))
             self.drama_table.setRowHeight(row_index, 86)
 
     def show_drama_detail(self, row: int, _: int = 0) -> None:
@@ -1594,6 +1602,7 @@ class DesktopWindow(QMainWindow):
         info.addWidget(QLabel(f"分类：{categories or '-'}"))
         info.addWidget(QLabel(f"评分：{self.format_rating(drama.get('rating'))}"))
         info.addWidget(QLabel(f"集数：{total_count}"))
+        info.addWidget(QLabel(f"成本金额：{self.format_cost_amount_wan(drama)}"))
         info.addWidget(QLabel(f"下载状态：{status}"))
         info.addWidget(QLabel(f"已下载集数：{downloaded_count}/{total_count}"))
         info.addWidget(QLabel(f"上架时间：{self.format_datetime(str(drama.get('createdAt') or ''))}"))
@@ -1648,10 +1657,27 @@ class DesktopWindow(QMainWindow):
             cls.format_rating(drama.get("rating")),
             categories or "-",
             str(cls.drama_episode_count(drama)),
+            cls.format_cost_amount_wan(drama),
             "-",
             "-",
             cls.format_datetime(str(drama.get("createdAt") or "")),
         ]
+
+    @classmethod
+    def format_cost_amount_wan(cls, drama: dict[str, Any]) -> str:
+        value = cls.drama_cost_amount_wan(drama)
+        return f"{value}万" if value > 0 else "-"
+
+    @staticmethod
+    def drama_cost_amount_wan(drama: dict[str, Any]) -> int:
+        for key in ("costAmountWan", "priceWan", "price", "cost"):
+            value = drama.get(key)
+            if value is not None:
+                try:
+                    return max(int(float(str(value))), 0)
+                except (TypeError, ValueError):
+                    pass
+        return 0
 
     @staticmethod
     def drama_episode_count(drama: dict[str, Any]) -> int:
@@ -2189,9 +2215,9 @@ class DesktopWindow(QMainWindow):
             account_id = media.get("id")
             chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
             profile_key = self.media_profile_key({**media, "externalAccountId": external_id}, account_id)
-            chrome.open_platform_login(platform, platform_login_url(platform), profile_key)
+            login_state_ref = get_publisher(platform, chrome, profile_key).open_login()
             login_payload = {
-                "loginStateRef": chrome.login_state_ref(platform, profile_key),
+                "loginStateRef": login_state_ref,
                 "deviceId": self.settings.device_id,
                 "verified": True,
             }
@@ -2252,9 +2278,9 @@ class DesktopWindow(QMainWindow):
             chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
             profile_key = self.media_profile_key(account, account_id)
             profile_dir = self.media_profile_dir(chrome, account, profile_key)
-            chrome.open_profile(profile_dir, platform_login_url(platform))
+            login_state_ref = get_publisher(platform, chrome, profile_key, profile_dir=profile_dir).open_login()
             payload = {
-                "loginStateRef": str(profile_dir),
+                "loginStateRef": login_state_ref,
                 "deviceId": self.settings.device_id,
                 "verified": True,
             }
@@ -2340,6 +2366,7 @@ class DesktopWindow(QMainWindow):
         self.contract_drama_input.blockSignals(False)
         self.contract_episode_input.setText("0")
         self.contract_episode_minutes_input.setText("0")
+        self.contract_price_input.setText("0")
 
         def render(result: dict[str, Any]) -> None:
             rows = result.get("content") or []
@@ -2370,11 +2397,14 @@ class DesktopWindow(QMainWindow):
         if not isinstance(drama, dict):
             self.contract_episode_input.setText("0")
             self.contract_episode_minutes_input.setText("0")
+            self.contract_price_input.setText("0")
             return
         episode_count = self.drama_episode_count(drama)
         total_minutes = self.drama_total_minutes(drama)
+        cost_amount_wan = self.drama_cost_amount_wan(drama)
         self.contract_episode_input.setText(str(episode_count))
         self.contract_episode_minutes_input.setText(str(total_minutes))
+        self.contract_price_input.setText(str(cost_amount_wan))
 
     def show_contract_placeholder_help(self) -> None:
         QMessageBox.information(

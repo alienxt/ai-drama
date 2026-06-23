@@ -311,6 +311,7 @@ public class BaiduDramaScanner {
         drama.setCategoryIds(List.copyOf(categoryCodes));
         drama.setEpisodes(planned.episodes().stream().map(this::episodeFrom).toList());
         ensureTotalMinutes(drama);
+        ensureCostAmountWan(drama);
         return dramaRepository.save(drama);
     }
 
@@ -333,6 +334,12 @@ public class BaiduDramaScanner {
     private void ensureTotalMinutes(Drama drama) {
         if (DramaDurationEstimator.needsTotalMinutes(drama)) {
             drama.setTotalMinutes(DramaDurationEstimator.estimateTotalMinutes(drama));
+        }
+    }
+
+    private void ensureCostAmountWan(Drama drama) {
+        if (DramaDurationEstimator.needsCostAmountWan(drama)) {
+            drama.setCostAmountWan(DramaDurationEstimator.estimateCostAmountWan(drama));
         }
     }
 

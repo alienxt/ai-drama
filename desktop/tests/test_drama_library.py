@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QPus
 from aidrama_desktop.contracts import contract_template_key
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
+from aidrama_desktop.platforms.wechat_video import remote_debugging_port_for_profile
 
 
 def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
@@ -84,6 +85,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
             "aiTitle": "新剧名",
             "summary": "一段简介",
             "rating": 4,
+            "costAmountWan": 3,
             "categoryIds": ["sci-fi"],
             "categoryNames": ["科幻"],
             "episodes": [{}, {}],
@@ -93,7 +95,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
         }
     )
 
-    assert values == ["新剧名", "一段简介", "4分", "科幻", "2", "-", "-", "2026-06-14 16:42:03"]
+    assert values == ["新剧名", "一段简介", "4分", "科幻", "2", "3万", "-", "-", "2026-06-14 16:42:03"]
 
 
 def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
@@ -109,6 +111,7 @@ def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
     )
 
     assert values[4] == "12"
+    assert values[5] == "-"
 
 
 def test_desktop_drama_row_values_defaults_missing_rating_to_five():
@@ -337,11 +340,11 @@ def test_create_media_account_opens_browser_for_created_account(tmp_path, monkey
             self.chrome_path = chrome_path
             self.profile_root = profile_root
 
-        def open_platform_login(self, platform, url, account_id, remote_debugging_port=None):
-            opened.append((self.chrome_path, self.profile_root, platform, url, account_id, remote_debugging_port))
+        def platform_profile_dir(self, platform, account_id):
+            return self.profile_root / platform.lower() / account_id
 
-        def login_state_ref(self, platform, account_id):
-            return str(self.profile_root / platform.lower() / account_id)
+        def open_profile(self, profile_dir, url, remote_debugging_port=None):
+            opened.append((self.chrome_path, self.profile_root, profile_dir, url, remote_debugging_port))
 
     monkeypatch.setattr("aidrama_desktop.gui.app.find_chrome", lambda chrome_path: "/Applications/Chrome")
     monkeypatch.setattr("aidrama_desktop.gui.app.ChromeController", FakeChromeController)
@@ -365,10 +368,9 @@ def test_create_media_account_opens_browser_for_created_account(tmp_path, monkey
         (
             "/Applications/Chrome",
             tmp_path / "profiles",
-            "WECHAT_VIDEO",
+            tmp_path / "profiles" / "wechat_video" / "sph-id",
             "https://channels.weixin.qq.com/platform",
-            "sph-id",
-            None,
+            remote_debugging_port_for_profile(tmp_path / "profiles" / "wechat_video" / "sph-id"),
         )
     ]
     assert puts == [
@@ -524,7 +526,13 @@ def test_open_media_account_opens_browser_and_saves_profile_ref(tmp_path, monkey
 
     DesktopWindow.open_media_account(window, account)
 
-    assert opened == [(saved_profile, "https://channels.weixin.qq.com/platform", None)]
+    assert opened == [
+        (
+            saved_profile,
+            "https://channels.weixin.qq.com/platform",
+            remote_debugging_port_for_profile(saved_profile),
+        )
+    ]
     assert puts == [
         (
             "/desktop/media-accounts/media-1/login-state",

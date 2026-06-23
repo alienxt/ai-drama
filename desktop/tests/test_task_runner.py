@@ -30,6 +30,8 @@ class FakeApi:
             "dramaId": "drama-1",
             "title": "神医归来",
             "summary": "简介",
+            "totalMinutes": 20,
+            "costAmountWan": 3,
             "episodes": [
                 {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
                 {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
@@ -175,6 +177,8 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["dramaId"] == "drama-1"
     assert publisher.metadata["publishTitle"] == "神医归来"
     assert publisher.metadata["coverFile"] == cover_file
+    assert publisher.metadata["totalMinutes"] == 20
+    assert publisher.metadata["costAmountWan"] == 3
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
     assert publisher.metadata["freeEpisodeCount"] == 7
@@ -183,6 +187,55 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
         {"episodeNo": 1, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"},
         {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
     ]
+
+
+def test_publish_once_generates_contract_materials_before_upload(tmp_path, monkeypatch):
+    from docx import Document
+
+    api = FakeApi()
+    publisher = FakePublisher()
+    templates = {}
+    for contract_type in ("cost", "purchase"):
+        template = tmp_path / f"{contract_type}.docx"
+        document = Document()
+        document.add_paragraph("{{contractType}} {{dramaTitle}} {{episodeCount}} {{episodeMinutes}} {{price}}")
+        document.save(template)
+        templates[f"wechat_video:{contract_type}"] = template
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    def fake_image_converter(docx_path: Path, image_dir: Path, image_stem: str | None = None):
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image = image_dir / f"{image_stem or docx_path.stem}.png"
+        image.write_bytes(b"png")
+        return [image]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        contract_templates=templates,
+        contracts_dir=tmp_path / "contracts",
+        contract_buyer="甲方",
+        contract_seller="乙方",
+        contract_image_converter=fake_image_converter,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.metadata["purchaseContractDocx"].exists()
+    assert publisher.metadata["costContractDocx"].exists()
+    assert len(publisher.metadata["buyDramaContractImages"]) == 1
+    assert len(publisher.metadata["costConfigReportImages"]) == 1
+    assert publisher.metadata["buyDramaContractImages"][0].exists()
+    assert publisher.metadata["costConfigReportImages"][0].exists()
 
 
 def test_publish_once_uses_media_account_specific_publisher(tmp_path, monkeypatch):

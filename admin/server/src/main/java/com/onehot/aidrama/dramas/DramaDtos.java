@@ -11,6 +11,7 @@ public class DramaDtos {
             String coverUrl,
             String aiCoverUrl,
             Integer rating,
+            Integer costAmountWan,
             List<String> categoryIds,
             DramaStatus status
     ) {
@@ -34,6 +35,8 @@ public class DramaDtos {
             String aiCoverUrl,
             String effectiveCoverUrl,
             Integer rating,
+            Integer totalMinutes,
+            Integer costAmountWan,
             List<String> categoryIds,
             List<EpisodeDownload> episodes
     ) {
@@ -68,6 +71,7 @@ public class DramaDtos {
             List<String> categoryNames,
             int episodeCount,
             int totalMinutes,
+            int costAmountWan,
             Instant createdAt,
             boolean prioritized
     ) {
@@ -83,6 +87,7 @@ public class DramaDtos {
                 List<String> categoryNames,
                 int episodeCount,
                 int totalMinutes,
+                int costAmountWan,
                 Instant createdAt,
                 boolean prioritized
         ) {
@@ -98,6 +103,7 @@ public class DramaDtos {
                     categoryNames,
                     episodeCount,
                     totalMinutes,
+                    costAmountWan,
                     createdAt,
                     prioritized
             );
