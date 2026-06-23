@@ -452,6 +452,50 @@ def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatc
     assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
 
 
+def test_download_episode_uses_baidu_download_headers(tmp_path, monkeypatch):
+    opened_headers = []
+
+    class FakeResponse:
+        headers = {"Content-Length": "5"}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"video"
+
+    def fake_urlopen(request):
+        opened_headers.append(dict(request.header_items()))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "百度下载头",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "size": 5, "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    download_episodes(
+        download_plan,
+        tmp_path / "drama-1",
+        "http://server/api",
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert opened_headers[0]["User-agent"] == "pan.baidu.com"
+    assert opened_headers[0]["Referer"] == "https://pan.baidu.com/"
+    assert opened_headers[0]["Authorization"] == "Bearer token"
+
+
 def test_download_episodes_downloads_episodes_concurrently_with_limit(tmp_path, monkeypatch):
     active = 0
     max_active = 0

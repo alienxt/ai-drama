@@ -23,6 +23,10 @@ EPISODE_DOWNLOAD_RETRIES = 3
 EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
+BAIDU_DOWNLOAD_HEADERS = {
+    "User-Agent": "pan.baidu.com",
+    "Referer": "https://pan.baidu.com/",
+}
 
 
 @dataclass
@@ -360,7 +364,7 @@ def download_episode_attempt(
     should_skip: Callable[[], bool] | None,
 ) -> None:
     url = resolve_download_url(str(episode["downloadUrl"]), base_url)
-    request = urllib.request.Request(url, headers=headers or {})
+    request = urllib.request.Request(url, headers=episode_download_headers(headers))
     with urllib.request.urlopen(request) as response, target.open("wb") as output:
         total_bytes = _content_length(response) or episode_size(episode)
         downloaded = 0
@@ -373,6 +377,12 @@ def download_episode_attempt(
             downloaded += len(chunk)
             if progress_callback:
                 progress_callback(index, total, episode, downloaded, total_bytes)
+
+
+def episode_download_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    merged = dict(headers or {})
+    merged.update(BAIDU_DOWNLOAD_HEADERS)
+    return merged
 
 
 def episode_size(episode: dict) -> int | None:
