@@ -31,13 +31,13 @@ CONTRACT_PLATFORM_TEMPLATE_TYPES = {
     "TIKTOK": ("purchase",),
     "DOUYIN": ("purchase",),
 }
-CONTRACT_MATERIAL_CACHE_VERSION = 1
+CONTRACT_MATERIAL_CACHE_VERSION = 2
 DOUBLE_DATE_FOOTER_SPACER = " " * 20
 DOUBLE_DATE_FOOTER_RE = re.compile(
     r"(日期\s*[:：]\s*)\{\{\s*date\s*\}\}(\s+)(日期\s*[:：]\s*)\{\{\s*date\s*\}\}"
 )
-PURCHASE_STAMP_VERTICAL_SHIFT_EMU = 650_000
-PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU = 650_000
+PURCHASE_STAMP_VERTICAL_SHIFT_EMU = 0
+PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU = 0
 DOCX_DOCUMENT_XML = "word/document.xml"
 DOCX_WORD_XML_PREFIX = "word/"
 DOCX_WORD_XML_SUFFIX = ".xml"
@@ -114,7 +114,7 @@ class ContractRenderInput:
             "price": self.price,
             "buyer": self.buyer,
             "seller": self.seller,
-            "date": format_contract_date(self.sign_date),
+            "date": format_contract_date_no_wrap(self.sign_date),
         }
 
 
@@ -243,6 +243,10 @@ def format_contract_date_short(value: str = "") -> str:
     if not match:
         return compact
     return ".".join(match.groups())
+
+
+def format_contract_date_no_wrap(value: str = "") -> str:
+    return format_contract_date(value).replace(" ", "\u00a0")
 
 
 def format_contract_date(value: str = "") -> str:
@@ -471,7 +475,6 @@ def normalize_contract_docx_for_rendering(docx_path: Path) -> bool:
             continue
         changed = False
         changed |= _normalize_run_spacing(root)
-        changed |= _normalize_cjk_fonts(root)
         if changed:
             changed_members[member] = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -610,6 +613,8 @@ def _set_anchor_attr(anchor: ElementTree.Element, name: str, value: str) -> bool
 
 
 def _ensure_anchor_shifted_up(anchor: ElementTree.Element, shift_emu: int) -> bool:
+    if shift_emu <= 0:
+        return False
     position = anchor.find("wp:positionV/wp:posOffset", WORDML_NAMESPACES)
     if position is None or position.text is None:
         return False
@@ -619,7 +624,10 @@ def _ensure_anchor_shifted_up(anchor: ElementTree.Element, shift_emu: int) -> bo
         return False
     if current < 0:
         return False
-    position.text = str(current - shift_emu)
+    target = current - shift_emu
+    if target == current:
+        return False
+    position.text = str(target)
     return True
 
 

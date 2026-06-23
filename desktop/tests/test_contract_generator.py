@@ -6,8 +6,6 @@ from docx import Document
 from aidrama_desktop.contracts.generator import (
     ContractConfigStore,
     ContractRenderInput,
-    PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU,
-    PURCHASE_STAMP_VERTICAL_SHIFT_EMU,
     all_required_contract_templates_configured,
     build_contract_template_download_path,
     contract_party_key,
@@ -15,6 +13,7 @@ from aidrama_desktop.contracts.generator import (
     contract_template_key,
     format_contract_date,
     format_contract_date_compact,
+    format_contract_date_no_wrap,
     format_contract_date_short,
     replace_double_date_footer_text,
     normalize_contract_docx_for_rendering,
@@ -53,7 +52,7 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
 
     rendered = Document(result)
     assert rendered.paragraphs[0].text == "合同剧名：神医归来"
-    assert rendered.paragraphs[1].text == "签署日期：2026 年 06 月 15 日"
+    assert rendered.paragraphs[1].text == "签署日期：2026\u00a0年\u00a006\u00a0月\u00a015\u00a0日"
     assert rendered.tables[0].cell(0, 1).text == "80 集，共 80 分钟"
 
 
@@ -67,6 +66,10 @@ def test_format_contract_date_compact_removes_render_spacing():
 
 def test_format_contract_date_short_fits_repeated_footer_date():
     assert format_contract_date_short("2026-06-05") == "2026.06.05"
+
+
+def test_format_contract_date_no_wrap_keeps_visual_spacing_without_line_breaks():
+    assert format_contract_date_no_wrap("2026-06-05") == "2026\u00a0年\u00a006\u00a0月\u00a005\u00a0日"
 
 
 def test_replace_double_date_footer_text_keeps_chinese_date_format():
@@ -100,7 +103,9 @@ def test_double_date_paragraph_keeps_chinese_date_format_with_compact_spacing(tm
     )
 
     assert Document(result).paragraphs[0].text == (
-        "日期：2026 年 06 月 23 日                    日期：2026 年 06 月 23 日"
+        "日期：2026\u00a0年\u00a006\u00a0月\u00a023\u00a0日"
+        "                    "
+        "日期：2026\u00a0年\u00a006\u00a0月\u00a023\u00a0日"
     )
 
 
@@ -264,7 +269,7 @@ def test_build_contract_template_download_path_uses_selected_directory_and_safe_
     assert target == tmp_path / "wechat_video_purchase-购买合同_标准版.docx"
 
 
-def test_normalize_contract_docx_for_rendering_removes_negative_spacing_and_unstable_fonts(tmp_path):
+def test_normalize_contract_docx_for_rendering_keeps_template_fonts(tmp_path):
     docx_path = tmp_path / "render.docx"
     document_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -289,12 +294,12 @@ def test_normalize_contract_docx_for_rendering_removes_negative_spacing_and_unst
     with ZipFile(docx_path) as archive:
         updated = archive.read("word/document.xml").decode("utf-8")
 
-    assert 'w:eastAsia="Songti SC"' in updated
+    assert 'w:eastAsia="仿宋_GB2312"' in updated
     assert 'w:spacing w:val="0"' in updated
-    assert "minorEastAsia" not in updated
+    assert "minorEastAsia" in updated
 
 
-def test_normalize_purchase_contract_layout_raises_and_moves_stamp_images(tmp_path):
+def test_normalize_purchase_contract_layout_raises_stamp_without_moving_images(tmp_path):
     docx_path = tmp_path / "purchase.docx"
     original_stamp_offset = 247015
     original_seller_stamp_offset = 97155
@@ -349,11 +354,8 @@ def test_normalize_purchase_contract_layout_raises_and_moves_stamp_images(tmp_pa
     assert 'allowOverlap="1"' in updated
     assert 'relativeHeight="4126"' in updated
     assert 'relativeHeight="8222"' in updated
-    assert f"<wp:posOffset>{original_stamp_offset - PURCHASE_STAMP_VERTICAL_SHIFT_EMU}</wp:posOffset>" in updated
-    assert (
-        f"<wp:posOffset>{original_seller_stamp_offset - PURCHASE_SELLER_STAMP_VERTICAL_SHIFT_EMU}</wp:posOffset>"
-        in updated
-    )
+    assert f"<wp:posOffset>{original_stamp_offset}</wp:posOffset>" in updated
+    assert f"<wp:posOffset>{original_seller_stamp_offset}</wp:posOffset>" in updated
     assert not normalize_purchase_contract_layout(docx_path)
     with ZipFile(docx_path) as archive:
         assert archive.read("word/document.xml").decode("utf-8") == updated
