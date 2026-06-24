@@ -90,12 +90,14 @@ class TaskRunner:
             contract_metadata = self._prepare_contract_materials(download_plan, task_id, drama_title)
             source_files = self._download(download_plan, task_id, drama_title)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            upload_files = self._prepare_media_files_for_upload(source_files, task_id, drama_title)
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
-            metadata = self._publish_metadata(download_plan, source_files)
+            metadata = self._publish_metadata(download_plan, upload_files)
             metadata.update(contract_metadata)
             publish_id = self._publisher_for(task).publish(
-                source_files,
+                upload_files,
                 title=drama_title,
                 summary=download_plan.get("summary"),
                 metadata=metadata,
@@ -109,6 +111,17 @@ class TaskRunner:
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
+                if is_playlet_ready_for_review_message(failure_reason):
+                    self.api.put(
+                        f"/desktop/tasks/{task_id}/result",
+                        {
+                            "success": True,
+                            "platformPublishId": f"wechat-video-playlet-draft:{task_id}",
+                            "failureReason": None,
+                        },
+                    )
+                    self._notify("视频已全部上传，等待确认提审", task_id, task)
+                    return "ready-for-review"
                 self.api.put(
                     f"/desktop/tasks/{task_id}/result",
                     {"success": False, "platformPublishId": None, "failureReason": failure_reason},
@@ -252,6 +265,35 @@ class TaskRunner:
             should_skip=self.skip_checker,
             max_concurrent_downloads=self.download_concurrency,
         )
+
+    def _prepare_media_files_for_upload(self, source_files: list[Path], task_id: str, drama_title: str) -> list[Path]:
+        needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
+        if not callable(needs_transcode):
+            return source_files
+        upload_files: list[Path] = []
+        transcode_count = 0
+        for index, source_file in enumerate(source_files, start=1):
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            if not needs_transcode(source_file):
+                upload_files.append(source_file)
+                continue
+            transcode_count += 1
+            target = self.output_dir() / source_file.parent.name / source_file.name
+            if self._is_ready_upload_file(target) and not needs_transcode(target):
+                upload_files.append(target)
+                continue
+            self._notify(f"转码：{drama_title} 第 {index}/{len(source_files)} 集（提升码率）", task_id)
+            try:
+                upload_files.append(self.processor.transcode_for_wechat_video(source_file, target))
+            except Exception as exception:  # noqa: BLE001
+                raise RuntimeError(f"第 {index} 集视频转码失败，请确认 FFmpeg 可用：{exception}") from exception
+        if transcode_count:
+            self._notify(f"视频码率处理完成：{drama_title}（{transcode_count} 集）", task_id)
+        return upload_files
+
+    @staticmethod
+    def _is_ready_upload_file(target: Path) -> bool:
+        return target.exists() and target.is_file() and target.stat().st_size > 0
 
     def _publish_metadata(self, download_plan: dict, processed_files: list[Path]) -> dict[str, Any]:
         episodes = download_plan.get("episodes") or []
@@ -559,6 +601,10 @@ def sleep_before_retry(
         raise_if_task_interrupted(should_stop, should_pause, should_skip)
         remaining = max(deadline - time.monotonic(), 0)
         time.sleep(min(0.2, remaining))
+
+
+def is_playlet_ready_for_review_message(message: str) -> bool:
+    return "第二步视频已上传完成" in message or "剧集文件选取" in message and "停留" in message
 
 
 def download_cover(

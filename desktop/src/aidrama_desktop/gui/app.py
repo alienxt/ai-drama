@@ -1501,6 +1501,9 @@ class DesktopWindow(QMainWindow):
             self.task_skip_event.clear()
             self.update_task_progress("任务已跳过，已放回池里", None)
             QMessageBox.information(self, "重试任务", "任务已跳过，并已放回待执行池。")
+        elif result == "ready-for-review":
+            self.update_task_progress("视频已全部上传，等待确认提审", self.current_task_id)
+            QMessageBox.information(self, "重试任务", "视频已全部上传完成，已停留在第二步。请在视频号页面确认提审。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
@@ -2737,6 +2740,9 @@ class DesktopWindow(QMainWindow):
             self.task_skip_event.clear()
             self.update_task_progress("任务已跳过，已放回池里", None)
             QMessageBox.information(self, "发布下一条", "任务已跳过，并已放回待执行池。")
+        elif result == "ready-for-review":
+            self.update_task_progress("视频已全部上传，等待确认提审", self.current_task_id)
+            QMessageBox.information(self, "发布下一条", "视频已全部上传完成，已停留在第二步。请在视频号页面确认提审。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已执行完成。")

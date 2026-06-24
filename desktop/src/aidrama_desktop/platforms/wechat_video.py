@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
+from aidrama_desktop.platforms.base import PlatformPublisher
 
 
 PLAYLET_SUMMARY_MAX_CHARS = 100
@@ -331,8 +331,8 @@ class WeChatVideoPublisher(PlatformPublisher):
         )
 
         self._advance_playlet_to_file_step(page, metadata, timeout_error)
-
-        raise PlatformPublishPaused("剧目提审第一步已完成，已停留在第二步剧集文件选取。")
+        self._upload_playlet_episode_files(page, media_files, episode_count, timeout_error)
+        self._submit_playlet_and_wait_for_success(page, timeout_error)
 
     def _enter_playlet_plan(self, page, timeout_error) -> None:
         self._accept_playlet_agreement(page, timeout_error)
@@ -1005,6 +1005,314 @@ class WeChatVideoPublisher(PlatformPublisher):
             self._wait_for_page(page, 500)
         return False
 
+    def _upload_playlet_episode_files(
+        self,
+        page,
+        media_files: list[Path],
+        episode_count: object,
+        timeout_error,
+    ) -> None:
+        files = [Path(path) for path in media_files]
+        self._validate_playlet_episode_files(files)
+        expected_count = self._expected_episode_upload_count(episode_count, files)
+        if not files:
+            raise RuntimeError("视频号第二步没有可上传的剧集视频文件")
+
+        paths = [str(path) for path in files]
+        if self._set_playlet_video_input_files(page, paths, timeout_error):
+            self._wait_for_playlet_episode_uploads(page, expected_count, files, timeout_error)
+            return
+
+        if self._set_playlet_video_files_by_button(page, paths, timeout_error):
+            self._wait_for_playlet_episode_uploads(page, expected_count, files, timeout_error)
+            return
+
+        raise RuntimeError("未找到视频号第二步“选取视频”上传控件，请确认已停留在剧集文件选取页面")
+
+    @staticmethod
+    def _validate_playlet_episode_files(files: list[Path]) -> None:
+        max_size = 500 * 1024 * 1024
+        for path in files:
+            if not path.exists():
+                raise RuntimeError(f"视频号剧集视频文件不存在：{path}")
+            if path.stat().st_size > max_size:
+                raise RuntimeError(f"视频号单个剧集视频超过 500MB，无法上传：{path.name}")
+
+    @staticmethod
+    def _expected_episode_upload_count(episode_count: object, files: list[Path]) -> int:
+        try:
+            count = int(str(episode_count))
+        except (TypeError, ValueError):
+            count = len(files)
+        return max(1, min(count, len(files)))
+
+    def _set_playlet_video_input_files(self, page, paths: list[str], timeout_error) -> bool:
+        locator_getter = getattr(page, "locator", None)
+        if callable(locator_getter):
+            selectors = [
+                ".upload-section input[type='file'][multiple]",
+                ".upload-section input[type='file'][accept*='video']",
+                "input[type='file'][multiple][accept*='video']",
+                "input[type='file'][accept*='video']",
+            ]
+            for selector in selectors:
+                try:
+                    input_locator = page.locator(selector).first
+                    if input_locator.count() > 0:
+                        self._set_locator_files(page, input_locator, paths)
+                        self._wait_for_page(page, 1000)
+                        return True
+                except timeout_error:
+                    continue
+                except Exception as exception:  # noqa: BLE001
+                    if self._is_page_closed_error(exception):
+                        raise RuntimeError("浏览器页面已关闭，无法上传视频号剧集视频") from exception
+                    continue
+
+        marker = f"aidramaPlayletVideoInput{time.time_ns()}"
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return False
+        try:
+            marked = bool(evaluate(self._mark_playlet_video_input_script(), marker))
+        except timeout_error:
+            return False
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError("浏览器页面已关闭，无法定位视频号剧集视频上传控件") from exception
+            return False
+        if not marked:
+            return False
+        self._set_marked_file_input_files_with_cdp(page, marker, paths)
+        self._dispatch_marked_file_input_events(page, marker)
+        self._wait_for_page(page, 1000)
+        return True
+
+    @staticmethod
+    def _mark_playlet_video_input_script() -> str:
+        return """
+            (marker) => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const textOf = (el) => normalized(el.innerText || el.textContent || '');
+                const byUploadSection = Array.from(document.querySelectorAll('.upload-section input[type="file"]'))
+                    .filter((input) => {
+                        const accept = String(input.getAttribute('accept') || '').toLowerCase();
+                        return /video|mp4|quicktime|mpeg|matroska/.test(accept);
+                    })[0];
+                const byLabel = Array.from(document.querySelectorAll('.weui-desktop-form__control-group, .upload-section'))
+                    .filter((group) => /选取视频|选择要上传的视频文件/.test(textOf(group)))
+                    .flatMap((group) => Array.from(group.querySelectorAll('input[type="file"]')))
+                    .filter((input) => {
+                        const accept = String(input.getAttribute('accept') || '').toLowerCase();
+                        return /video|mp4|quicktime|mpeg|matroska/.test(accept);
+                    })[0];
+                const fallback = Array.from(document.querySelectorAll('input[type="file"]'))
+                    .filter((input) => {
+                        const accept = String(input.getAttribute('accept') || '').toLowerCase();
+                        return input.multiple && /video|mp4|quicktime|mpeg|matroska/.test(accept);
+                    })[0];
+                const input = byUploadSection || byLabel || fallback;
+                if (!input) return false;
+                input.setAttribute('data-aidrama-file-input', marker);
+                return true;
+            }
+        """
+
+    def _set_playlet_video_files_by_button(self, page, paths: list[str], timeout_error) -> bool:
+        locator_getter = getattr(page, "locator", None)
+        expect_file_chooser = getattr(page, "expect_file_chooser", None)
+        if not callable(locator_getter) or not callable(expect_file_chooser):
+            return False
+        try:
+            button = page.locator(".upload-section button").filter(has_text=re.compile("选择文件")).first
+            if button.count() == 0:
+                button = page.get_by_text(re.compile("^选择文件$")).first
+            with page.expect_file_chooser(timeout=5000) as chooser:
+                button.click(timeout=5000, force=True)
+            self._set_file_chooser_files(page, chooser.value, paths)
+            self._wait_for_page(page, 1000)
+            return True
+        except timeout_error:
+            return False
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError("浏览器页面已关闭，无法选择视频号剧集视频文件") from exception
+            return False
+
+    def _wait_for_playlet_episode_uploads(
+        self,
+        page,
+        expected_count: int,
+        files: list[Path],
+        timeout_error,
+        *,
+        max_wait_seconds: int = 20 * 60,
+        check_interval_ms: int = 10_000,
+    ) -> None:
+        last_state: dict[str, Any] = {}
+        payload = {
+            "expectedCount": expected_count,
+            "files": [{"name": path.name, "stem": path.stem} for path in files],
+        }
+        attempts = max(1, int(max_wait_seconds * 1000 / max(check_interval_ms, 1)))
+        for _attempt in range(attempts):
+            try:
+                result = self._playlet_episode_upload_state(page, payload, timeout_error)
+            except timeout_error:
+                result = {}
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法等待视频号剧集视频上传完成") from exception
+                return
+            if isinstance(result, dict):
+                last_state = result
+                if result.get("complete"):
+                    return
+                error_text = str(result.get("errorText") or "").strip()
+                if error_text:
+                    raise RuntimeError(f"视频号剧集视频上传失败：{error_text}")
+                failed_count = int(result.get("failedCount") or 0)
+                if failed_count > 0:
+                    self._retry_failed_playlet_episode_uploads(page, timeout_error)
+            self._wait_for_page(page, check_interval_ms)
+        uploaded = last_state.get("uploaded")
+        total = last_state.get("total") or expected_count
+        names = "、".join(str(name) for name in last_state.get("failedNames") or [] if name)
+        detail = f"，失败文件：{names}" if names else ""
+        raise RuntimeError(f"视频号剧集视频上传超过 20 分钟仍未完成：{uploaded or 0}/{total}{detail}")
+
+    def _playlet_episode_upload_state(self, page, payload: dict[str, Any], timeout_error) -> dict[str, Any]:
+        best_state: dict[str, Any] = {}
+        best_score = -1
+        for target in self._playlet_page_targets(page):
+            try:
+                result = target.evaluate(self._playlet_episode_upload_state_script(), payload)
+            except timeout_error:
+                continue
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise
+                continue
+            if not isinstance(result, dict):
+                continue
+            score = self._playlet_upload_state_score(result)
+            if score > best_score:
+                best_state = result
+                best_score = score
+        return best_state
+
+    @staticmethod
+    def _playlet_upload_state_score(state: dict[str, Any]) -> int:
+        def number(key: str) -> int:
+            try:
+                return int(state.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return (
+            (1000 if state.get("hasProgress") else 0)
+            + number("rowCount") * 10
+            + number("successCount") * 20
+            + number("failedCount") * 30
+            + number("retryableCount") * 30
+            + number("visibleNames")
+        )
+
+    def _retry_failed_playlet_episode_uploads(self, page, timeout_error) -> int:
+        clicked = 0
+        for target in self._playlet_page_targets(page):
+            evaluate = getattr(target, "evaluate", None)
+            if not callable(evaluate):
+                continue
+            try:
+                result = evaluate(self._retry_failed_playlet_episode_uploads_script())
+            except timeout_error:
+                continue
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法重试视频号剧集视频上传") from exception
+                continue
+            if isinstance(result, dict):
+                try:
+                    clicked += max(int(result.get("clicked") or 0), 0)
+                except (TypeError, ValueError):
+                    continue
+        return clicked
+
+    @staticmethod
+    def _playlet_page_targets(page) -> list[Any]:
+        frames = getattr(page, "frames", None)
+        if isinstance(frames, list) and frames:
+            return frames
+        return [page]
+
+    @staticmethod
+    def _retry_failed_playlet_episode_uploads_script() -> str:
+        return """
+            () => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const rows = Array.from(document.querySelectorAll('tr'));
+                const names = [];
+                let clicked = 0;
+                for (const row of rows) {
+                    const rowText = normalized(row.innerText || row.textContent || '');
+                    if (!rowText.includes('未能上传')) continue;
+                    const retry = Array.from(row.querySelectorAll('a, button'))
+                        .find((element) => normalized(element.innerText || element.textContent || element.value).includes('重试'));
+                    if (!retry) continue;
+                    const nameCell = row.querySelector('.table-name') || row.querySelector('td');
+                    const name = String(nameCell ? nameCell.innerText || nameCell.textContent || '' : '').trim();
+                    if (name) names.push(name);
+                    retry.click();
+                    clicked += 1;
+                }
+                return { clicked, names };
+            }
+        """
+
+    @staticmethod
+    def _playlet_episode_upload_state_script() -> str:
+        return """
+            ({ expectedCount, files }) => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const bodyText = normalized(document.body ? document.body.innerText || document.body.textContent : '');
+                const progressMatch = bodyText.match(/已上传成功(\\d+)\\/(\\d+)集/);
+                const uploaded = progressMatch ? Number(progressMatch[1]) : 0;
+                const total = progressMatch ? Number(progressMatch[2]) : expectedCount;
+                const expectedNames = files.flatMap((file) => [normalized(file.name), normalized(file.stem)].filter(Boolean));
+                const visibleNames = expectedNames.filter((name) => bodyText.includes(name)).length;
+                const rows = Array.from(document.querySelectorAll('tr'));
+                const failedRows = Array.from(document.querySelectorAll('tr'))
+                    .filter((row) => normalized(row.innerText || row.textContent || '').includes('未能上传'));
+                const successRows = rows
+                    .filter((row) => normalized(row.innerText || row.textContent || '').includes('上传成功'));
+                const failedNames = failedRows
+                    .map((row) => {
+                        const cell = row.querySelector('.table-name') || row.querySelector('td');
+                        return String(cell ? cell.innerText || cell.textContent || '' : '').trim();
+                    })
+                    .filter(Boolean);
+                const retryableCount = failedRows.filter((row) => {
+                    return Array.from(row.querySelectorAll('a, button'))
+                        .some((element) => normalized(element.innerText || element.textContent || element.value).includes('重试'));
+                }).length;
+                const errorMatch = bodyText.match(/(校验失败|格式不支持|大小超过|分辨率低于|码率低于|文件码率低于)[^\\n]{0,80}/);
+                return {
+                    uploaded,
+                    total,
+                    hasProgress: Boolean(progressMatch),
+                    rowCount: rows.length,
+                    visibleNames,
+                    successCount: successRows.length,
+                    complete: uploaded >= expectedCount || successRows.length >= expectedCount,
+                    failedCount: failedRows.length,
+                    failedNames,
+                    retryableCount,
+                    errorText: errorMatch ? errorMatch[0] : '',
+                };
+            }
+        """
+
     @staticmethod
     def _metadata_paths(metadata: dict[str, Any], *keys: str) -> list[Path]:
         paths: list[Path] = []
@@ -1025,36 +1333,111 @@ class WeChatVideoPublisher(PlatformPublisher):
                 seen.add(resolved)
         return paths
 
-    def _submit_playlet_and_wait_for_success(self, page, timeout_error) -> None:
-        try:
-            page.get_by_text(re.compile("提交审核|提交|发布|上架")).first.click(timeout=15000)
-            page.wait_for_timeout(1000)
-        except timeout_error as exception:
-            raise RuntimeError("短剧表单已唤起，但未找到提交审核/发布按钮，任务不会标记完成。") from exception
-        self._click_confirm_if_available(page, timeout_error)
-        success_pattern = re.compile("提交成功|发布成功|上架成功|已提交|待审核|审核中")
-        try:
-            page.get_by_text(success_pattern).first.wait_for(timeout=15000)
-            return
-        except timeout_error:
-            pass
-        if self._page_has_text(page, success_pattern):
-            return
+    def _submit_playlet_and_wait_for_success(self, page, timeout_error, *, success_timeout_seconds: int = 30) -> None:
+        success_pattern = re.compile("提审成功|提交成功|发布成功|上架成功|已提交|待审核|审核中")
+        deadline = time.time() + max(success_timeout_seconds, 0)
+        submit_clicks = 0
+        first_check = True
+        while first_check or time.time() < deadline:
+            first_check = False
+            if self._page_has_text(page, success_pattern):
+                return
+            if submit_clicks < 3 and self._click_playlet_submit_button(page, timeout_error):
+                submit_clicks += 1
+                self._click_confirm_if_available(page, timeout_error)
+                continue
+            self._wait_for_page(page, 1000)
+        if submit_clicks == 0:
+            raise RuntimeError("短剧表单已唤起，但未找到确认提审/提交审核按钮，任务不会标记完成。")
         raise RuntimeError("短剧表单已唤起，但未确认提交成功，任务不会标记完成。")
 
+    def _click_playlet_submit_button(self, page, timeout_error) -> bool:
+        patterns = [
+            re.compile("^确认提审$"),
+            re.compile("确认提审|提交审核|提交|发布|上架"),
+        ]
+        for target in self._playlet_page_targets(page):
+            get_by_text = getattr(target, "get_by_text", None)
+            if not callable(get_by_text):
+                continue
+            for pattern in patterns:
+                try:
+                    get_by_text(pattern).first.click(timeout=15000)
+                    self._wait_for_page(page, 1000)
+                    return True
+                except timeout_error:
+                    continue
+                except Exception as exception:  # noqa: BLE001
+                    if self._is_page_closed_error(exception):
+                        raise RuntimeError("浏览器页面已关闭，无法点击视频号确认提审按钮") from exception
+                    continue
+        for target in self._playlet_page_targets(page):
+            evaluate = getattr(target, "evaluate", None)
+            if not callable(evaluate):
+                continue
+            try:
+                result = evaluate(self._click_playlet_submit_button_script())
+            except timeout_error:
+                continue
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法点击视频号确认提审按钮") from exception
+                continue
+            if isinstance(result, dict) and result.get("clicked"):
+                self._wait_for_page(page, 1000)
+                return True
+        return False
+
+    @staticmethod
+    def _click_playlet_submit_button_script() -> str:
+        return """
+            () => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+                const exact = candidates.find((element) => normalized(element.innerText || element.textContent || element.value) === '确认提审');
+                const fallback = candidates.find((element) => /确认提审|提交审核|提交|发布|上架/.test(normalized(element.innerText || element.textContent || element.value)));
+                const target = exact || fallback;
+                if (!target) return { clicked: false };
+                target.click();
+                return { clicked: true, text: target.innerText || target.textContent || target.value || '' };
+            }
+        """
+
     def _click_confirm_if_available(self, page, timeout_error) -> None:
-        try:
-            page.get_by_text(re.compile("确认提交|确定提交|确认|确定")).first.click(timeout=3000)
-            page.wait_for_timeout(500)
-        except timeout_error:
-            pass
+        for target in self._playlet_page_targets(page):
+            get_by_text = getattr(target, "get_by_text", None)
+            if not callable(get_by_text):
+                continue
+            try:
+                get_by_text(re.compile("确认提交|确定提交|^确认$|^确定$")).first.click(timeout=3000)
+                self._wait_for_page(page, 500)
+                return
+            except timeout_error:
+                continue
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法确认视频号提审") from exception
 
     @staticmethod
     def _page_has_text(page, pattern: re.Pattern[str]) -> bool:
-        try:
-            return page.get_by_text(pattern).first.count() > 0
-        except Exception:  # noqa: BLE001
-            return False
+        for target in WeChatVideoPublisher._playlet_page_targets(page):
+            try:
+                if target.get_by_text(pattern).first.count() > 0:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            evaluate = getattr(target, "evaluate", None)
+            if not callable(evaluate):
+                continue
+            try:
+                if evaluate(
+                    "(source) => new RegExp(source).test(document.body ? document.body.innerText || document.body.textContent || '' : '')",
+                    pattern.pattern,
+                ):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        return False
 
     def _set_default_playlet_options(self, page, timeout_error) -> None:
         self._click_text_option(page, [re.compile("^漫剧$")], timeout_error)
@@ -2734,6 +3117,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         marker = f"aidramaFileInput{time.time_ns()}"
         file_input.evaluate("(element, marker) => element.setAttribute('data-aidrama-file-input', marker)", marker)
         WeChatVideoPublisher._set_marked_file_input_files_with_cdp(page, marker, paths)
+        WeChatVideoPublisher._dispatch_marked_file_input_events(page, marker)
 
     @staticmethod
     def _set_marked_file_input_files_with_cdp(page, marker: str, paths: str | list[str]) -> None:

@@ -57,6 +57,11 @@ class FakeProcessor:
         return target
 
 
+class LowBitrateProcessor(FakeProcessor):
+    def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
+        return source.name == "001.mp4"
+
+
 class FakePublisher:
     def __init__(self):
         self.title = None
@@ -82,6 +87,13 @@ class DraftPausedPublisher:
         from aidrama_desktop.platforms.base import PlatformPublishPaused
 
         raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
+
+
+class PlayletReadyPublisher:
+    def publish(self, media_files, title, summary=None, metadata=None):
+        from aidrama_desktop.platforms.base import PlatformPublishPaused
+
+        raise PlatformPublishPaused("剧目提审第二步视频已上传完成，已停留在第二步剧集文件选取。")
 
 
 def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeypatch):
@@ -196,6 +208,38 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
         {"episodeNo": 1, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"},
         {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
     ]
+
+
+def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+    processor = LowBitrateProcessor()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    assert publisher.files == [processed_file, tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
+    assert processor.calls == [(tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_file)]
+    assert publisher.metadata["episodes"][0]["file"] == processed_file
+    assert publisher.metadata["episodes"][1]["file"] == tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
 
 
 def test_publish_metadata_uses_stable_free_episode_count():
@@ -389,6 +433,39 @@ def test_publish_once_fails_upload_when_playlet_first_step_is_ready(tmp_path, mo
         },
     ) in api.calls
     assert ("POST", "/desktop/tasks/task-1/pause", {"deviceId": "device-1"}) not in api.calls
+
+
+def test_publish_once_marks_playlet_ready_for_review_when_second_step_upload_is_done(tmp_path, monkeypatch):
+    api = FakeApi()
+    progress_events = []
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=PlayletReadyPublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner.publish_once() == "ready-for-review"
+    assert (
+        "PUT",
+        "/desktop/tasks/task-1/result",
+        {
+            "success": True,
+            "platformPublishId": "wechat-video-playlet-draft:task-1",
+            "failureReason": None,
+        },
+    ) in api.calls
+    assert ("视频已全部上传，等待确认提审", "task-1") in progress_events
 
 
 def test_publish_once_skips_task_without_cancelling(tmp_path, monkeypatch):

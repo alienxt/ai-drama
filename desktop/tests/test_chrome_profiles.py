@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublishPaused
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.platforms.wechat_video import WeChatVideoPublisher, remote_debugging_port_for_profile
 
@@ -488,6 +487,72 @@ def test_wechat_video_publisher_file_name_wait_is_soft(tmp_path: Path):
     assert len([call for call in calls if isinstance(call[1], list)]) == 2
 
 
+def test_wechat_video_publisher_uploads_playlet_episode_files_with_video_input(tmp_path: Path):
+    calls = []
+    videos = []
+    for index in range(1, 4):
+        path = tmp_path / f"短剧-第{index}集.mp4"
+        path.write_bytes(b"video")
+        videos.append(path)
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def set_input_files(self, paths):
+            calls.append(("set_input_files", paths))
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            return FakeLocator()
+
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "expectedCount" in payload:
+                return {"complete": True, "uploaded": 3, "total": 3}
+            return {}
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    publisher._upload_playlet_episode_files(FakePage(), videos, 3, TimeoutError)
+
+    assert ("set_input_files", [str(path) for path in videos]) in calls
+    assert any(call[0] == "evaluate" and call[1]["expectedCount"] == 3 for call in calls)
+
+
+def test_wechat_video_publisher_waits_for_episode_upload_progress(tmp_path: Path):
+    video = tmp_path / "短剧-第1集.mp4"
+    video.write_bytes(b"video")
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"complete": len(calls) >= 2, "uploaded": len(calls), "total": 1}
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    publisher._wait_for_playlet_episode_uploads(
+        FakePage(),
+        1,
+        [video],
+        TimeoutError,
+        max_wait_seconds=30,
+        check_interval_ms=10_000,
+    )
+
+    assert len([call for call in calls if isinstance(call[1], dict)]) == 2
+
+
 def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path: Path, monkeypatch):
     uploaded_pages = []
     opened = []
@@ -566,6 +631,8 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     field_fills = []
     final_ensures = []
     advances = []
+    video_uploads = []
+    submissions = []
     events = []
     agreement_clicks = []
     entry_clicks = []
@@ -667,27 +734,36 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
         "_advance_playlet_to_file_step",
         lambda page, metadata, timeout_error: advances.append(metadata),
     )
-    with pytest.raises(PlatformPublishPaused, match="第一步已完成"):
-        publisher._upload_playlet(
-            FakePage(),
-            [tmp_path / "001.mp4"],
-            "神医归来",
-            "简介",
-            {
-                "publishTitle": "神医归来AI",
-                "summary": "简介",
-                "coverFile": tmp_path / "cover.jpg",
-                "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
-                "monetizationLabel": "IAA广告变现",
-                "freeEpisodeCount": 6,
-                "episodeCount": 27,
-                "producerName": "乙方公司",
-                "productionCostWan": 3,
-                "buyDramaContractImages": [purchase_image],
-                "costConfigReportImages": [cost_image],
-            },
-            TimeoutError,
-        )
+    monkeypatch.setattr(
+        publisher,
+        "_upload_playlet_episode_files",
+        lambda page, media_files, episode_count, timeout_error: video_uploads.append((media_files, episode_count)),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_submit_playlet_and_wait_for_success",
+        lambda page, timeout_error: submissions.append(page),
+    )
+    publisher._upload_playlet(
+        FakePage(),
+        [tmp_path / "001.mp4"],
+        "神医归来",
+        "简介",
+        {
+            "publishTitle": "神医归来AI",
+            "summary": "简介",
+            "coverFile": tmp_path / "cover.jpg",
+            "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
+            "monetizationLabel": "IAA广告变现",
+            "freeEpisodeCount": 6,
+            "episodeCount": 27,
+            "producerName": "乙方公司",
+            "productionCostWan": 3,
+            "buyDramaContractImages": [purchase_image],
+            "costConfigReportImages": [cost_image],
+        },
+        TimeoutError,
+    )
 
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
@@ -702,6 +778,8 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert any(field == "剧目制作成本" and value == "3" for field, labels, value, required in field_fills)
     assert final_ensures == [("神医归来AI", "简介", 27, 6, "乙方公司", "3")]
     assert len(advances) == 1
+    assert video_uploads == [([tmp_path / "001.mp4"], 27)]
+    assert len(submissions) == 1
     assert "^漫剧$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
@@ -780,6 +858,180 @@ def test_wechat_video_publisher_uses_dom_helper_for_ai_statement(tmp_path: Path)
     assert "switch_speedupaudit input.weui-desktop-switch__input" in evaluated[0][0]
 
 
+def test_wechat_video_publisher_retries_failed_playlet_episode_uploads(tmp_path: Path):
+    video = tmp_path / "穆家有女镇山河-第16集.mp4"
+    video.write_text("fake-video")
+    states = [
+        {"uploaded": 46, "total": 49, "failedCount": 3, "failedNames": [video.name], "errorText": ""},
+        {"uploaded": 49, "total": 49, "failedCount": 0, "complete": True, "errorText": ""},
+    ]
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload=None):
+            calls.append(("evaluate", payload, script))
+            if "retry.click" in script:
+                return {"clicked": 3, "names": [video.name]}
+            state = states.pop(0)
+            state.setdefault("visibleNames", 49)
+            state.setdefault("complete", False)
+            return state
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout, ""))
+
+    publisher._wait_for_playlet_episode_uploads(
+        FakePage(),
+        49,
+        [video],
+        TimeoutError,
+        max_wait_seconds=50,
+        check_interval_ms=10_000,
+    )
+
+    assert any(call[0] == "evaluate" and call[1] is None and "retry.click" in call[2] for call in calls)
+    assert ("wait", 10000, "") in calls
+    assert states == []
+
+
+def test_wechat_video_publisher_retries_failed_playlet_episode_uploads_inside_frame(tmp_path: Path):
+    video = tmp_path / "穆家有女镇山河-第17集.mp4"
+    video.write_text("fake-video")
+    frame_states = [
+        {
+            "uploaded": 36,
+            "total": 49,
+            "hasProgress": True,
+            "rowCount": 50,
+            "failedCount": 13,
+            "retryableCount": 13,
+            "failedNames": [video.name],
+            "errorText": "",
+        },
+        {
+            "uploaded": 49,
+            "total": 49,
+            "hasProgress": True,
+            "rowCount": 50,
+            "failedCount": 0,
+            "successCount": 49,
+            "complete": True,
+            "errorText": "",
+        },
+    ]
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeFrame:
+        def __init__(self, name):
+            self.name = name
+
+        def evaluate(self, script, payload=None):
+            calls.append((self.name, "evaluate", payload, script))
+            if "retry.click" in script:
+                return {"clicked": 13 if self.name == "upload-frame" else 0, "names": [video.name]}
+            if self.name == "top-frame":
+                return {"uploaded": 0, "total": 49, "hasProgress": False, "rowCount": 0, "failedCount": 0}
+            return frame_states.pop(0)
+
+    class FakePage:
+        frames = [FakeFrame("top-frame"), FakeFrame("upload-frame")]
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("page", "wait", timeout, ""))
+
+    publisher._wait_for_playlet_episode_uploads(
+        FakePage(),
+        49,
+        [video],
+        TimeoutError,
+        max_wait_seconds=50,
+        check_interval_ms=10_000,
+    )
+
+    assert any(call[0] == "upload-frame" and "retry.click" in call[3] for call in calls)
+    assert ("page", "wait", 10000, "") in calls
+    assert frame_states == []
+
+
+def test_wechat_video_publisher_does_not_complete_playlet_video_upload_by_visible_names():
+    script = WeChatVideoPublisher._playlet_episode_upload_state_script()
+
+    assert "visibleNames >= expectedCount" not in script
+    assert "successRows.length >= expectedCount" in script
+
+
+def test_wechat_video_publisher_fails_fast_for_playlet_video_quality_error(tmp_path: Path):
+    video = tmp_path / "穆家有女镇山河-第16集.mp4"
+    video.write_text("fake-video")
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload=None):
+            calls.append(("evaluate", script))
+            return {"uploaded": 46, "total": 49, "failedCount": 3, "errorText": "文件码率低于4Mbps"}
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    with pytest.raises(RuntimeError, match="文件码率低于4Mbps"):
+        publisher._wait_for_playlet_episode_uploads(
+            FakePage(),
+            49,
+            [video],
+            TimeoutError,
+            max_wait_seconds=50,
+            check_interval_ms=10_000,
+        )
+
+    assert not any(call[0] == "evaluate" and "retry.click" in call[1] for call in calls)
+
+
+def test_wechat_video_publisher_times_out_after_waiting_for_playlet_episode_uploads(tmp_path: Path):
+    video = tmp_path / "穆家有女镇山河-第17集.mp4"
+    video.write_text("fake-video")
+    waits = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload=None):
+            return {
+                "uploaded": 36,
+                "total": 49,
+                "hasProgress": True,
+                "rowCount": 50,
+                "failedCount": 0,
+                "successCount": 36,
+                "complete": False,
+                "errorText": "",
+            }
+
+        def wait_for_timeout(self, timeout):
+            waits.append(timeout)
+
+    with pytest.raises(RuntimeError, match="超过 20 分钟仍未完成：36/49"):
+        publisher._wait_for_playlet_episode_uploads(
+            FakePage(),
+            49,
+            [video],
+            TimeoutError,
+            max_wait_seconds=20,
+            check_interval_ms=10_000,
+        )
+
+    assert waits == [10_000, 10_000]
+
+
+def test_wechat_video_publisher_does_not_treat_video_requirement_text_as_upload_error():
+    script = WeChatVideoPublisher._playlet_episode_upload_state_script()
+
+    assert "分辨率不低于" not in script
+    assert "码率不低于" not in script
+    assert "文件码率低于" in script
+
+
 def test_wechat_video_publisher_does_not_complete_without_submit_confirmation(tmp_path: Path):
     clicks = []
     waits = []
@@ -812,10 +1064,57 @@ def test_wechat_video_publisher_does_not_complete_without_submit_confirmation(tm
             return None
 
     with pytest.raises(RuntimeError, match="未确认提交成功"):
-        publisher._submit_playlet_and_wait_for_success(FakePage(), TimeoutError)
+        publisher._submit_playlet_and_wait_for_success(FakePage(), TimeoutError, success_timeout_seconds=0)
 
-    assert any("提交审核" in pattern for pattern, _timeout in clicks)
-    assert any("提交成功" in pattern for pattern, _timeout in waits)
+    assert any("确认提审" in pattern for pattern, _timeout in clicks)
+
+
+def test_wechat_video_publisher_clicks_second_review_submit_button(tmp_path: Path, monkeypatch):
+    clicks = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    monkeypatch.setattr(
+        publisher,
+        "_page_has_text",
+        lambda page, pattern: len(clicks) >= 2,
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_click_playlet_submit_button",
+        lambda page, timeout_error: clicks.append("确认提审") or True,
+    )
+    monkeypatch.setattr(publisher, "_click_confirm_if_available", lambda page, timeout_error: None)
+
+    publisher._submit_playlet_and_wait_for_success(object(), TimeoutError, success_timeout_seconds=1)
+
+    assert clicks == ["确认提审", "确认提审"]
+
+
+def test_wechat_video_publisher_success_text_can_be_inside_frame(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeLocator:
+        def __init__(self, count):
+            self._count = count
+
+        def count(self):
+            return self._count
+
+    class FakeTarget:
+        def __init__(self, count):
+            self.count = count
+
+        def get_by_text(self, _pattern):
+            return self
+
+        @property
+        def first(self):
+            return FakeLocator(self.count)
+
+    class FakePage:
+        frames = [FakeTarget(0), FakeTarget(1)]
+
+    assert publisher._page_has_text(FakePage(), re.compile("提审成功"))
 
 
 def test_wechat_video_publisher_prefers_authorized_submit_identity(tmp_path: Path):
