@@ -1,3 +1,4 @@
+import inspect
 import re
 from pathlib import Path
 
@@ -264,7 +265,29 @@ def test_wechat_video_publisher_limits_playlet_summary_to_100_chars(tmp_path: Pa
     summary = publisher._playlet_summary("穆家有女镇山河", long_summary, {})
 
     assert len(summary) == 100
-    assert summary == long_summary[:100]
+    assert summary == long_summary[:94] + "......"
+
+
+def test_wechat_video_publisher_extracts_structured_playlet_summary_body(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+    raw_summary = (
+        "标题：穆家有女初封将\n\n"
+        "简介：\n"
+        "镇国大将军之女穆倾凰倾心辅佐夫君沈南辰仕途登顶，安稳相守十载。"
+        "偶然间她发现府中少年身具穆家独有的火焰血脉印记，知晓这才是自己失散多年的亲生儿子穆野。"
+        "穆倾凰静心筹谋，悉心教导培养亲子。秋猎盛会之上，她当众厘清血脉渊源，以实情证身份，"
+        "平定朝堂风波，肃清朝堂与府中纷乱。\n\n"
+        "集数：49集"
+    )
+
+    summary = publisher._playlet_summary("穆家有女镇山河", None, {"summary": raw_summary})
+
+    assert len(summary) == 100
+    assert summary.startswith("镇国大将军之女穆倾凰")
+    assert summary.endswith("......")
+    assert "标题：" not in summary
+    assert "简介：" not in summary
+    assert "集数：" not in summary
 
 
 def test_wechat_video_publisher_uses_fallback_playlet_summary(tmp_path: Path):
@@ -274,6 +297,79 @@ def test_wechat_video_publisher_uses_fallback_playlet_summary(tmp_path: Path):
 
     assert summary == "《穆家有女镇山河》讲述人物在命运转折中的情感与成长故事。"
     assert len(summary) <= 100
+
+
+def test_wechat_video_publisher_fills_text_field_near_summary_label(tmp_path: Path):
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"filled": True, "tagName": "TEXTAREA", "value": "一段简介"}
+
+    assert publisher._fill_text_field_near_text(
+        FakePage(),
+        [re.compile("剧目简介")],
+        "一段简介",
+        TimeoutError,
+        "剧目简介",
+    )
+    assert calls[0][1] == {"patterns": ["剧目简介"], "value": "一段简介"}
+    assert "HTMLTextAreaElement.prototype" in calls[0][0]
+
+
+def test_wechat_video_publisher_fills_weui_textarea_by_exact_label(tmp_path: Path):
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"filled": True, "label": "剧目简介", "value": "一段简介"}
+
+    assert publisher._fill_weui_textarea_by_label(FakePage(), "剧目简介", "一段简介", TimeoutError)
+    script, payload = calls[0]
+    assert payload == {"label": "剧目简介", "value": "一段简介"}
+    assert ".weui-desktop-form__control-group" in script
+    assert "label.weui-desktop-form__label" in script
+    assert "textarea.weui-desktop-form__textarea" in script
+    assert "async ({ label, value })" in script
+    assert "textarea.value === value" in script
+
+
+def test_wechat_video_publisher_fills_weui_input_by_label_and_verifies_value(tmp_path: Path):
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"filled": True, "value": "27"}
+
+    assert publisher._fill_weui_input_by_label(FakePage(), ["总集数"], "27", TimeoutError, "总集数")
+    script, payload = calls[0]
+    assert payload == {"labels": ["总集数"], "value": "27"}
+    assert ".weui-desktop-form__control-group" in script
+    assert ".cost_title" in script
+    assert "input[type=\"text\"]" in script
+
+
+def test_wechat_video_publisher_finally_ensures_playlet_form_fields(tmp_path: Path):
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"missing": []}
+
+    publisher._ensure_playlet_form_fields(FakePage(), "剧名", "简介", 27, 6, "乙方公司", "3", TimeoutError)
+    script, payload = calls[0]
+    names = [field["name"] for field in payload["fields"]]
+    assert names == ["剧目名称", "剧目简介", "总集数", "试看集数", "制作方名称", "剧目制作成本"]
+    assert "document.execCommand('insertText'" in script
+    assert "missing" in script
 
 
 def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path: Path, monkeypatch):
@@ -349,6 +445,11 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     monetization = []
     files = []
     material_uploads = []
+    weui_summary_fields = []
+    summary_fields = []
+    field_fills = []
+    final_ensures = []
+    events = []
     agreement_clicks = []
     entry_clicks = []
     option_clicks = []
@@ -370,6 +471,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
                 entry_clicks.append(timeout)
             if self.kind == "option":
                 option_clicks.append(self.pattern.pattern)
+                events.append(f"option:{self.pattern.pattern}")
             return None
 
     class FakePage:
@@ -395,6 +497,32 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     )
     monkeypatch.setattr(
         publisher,
+        "_fill_playlet_field",
+        lambda page, labels, value, timeout_error, field_label, required=False: (
+            events.append(f"field:{field_label}"),
+            field_fills.append((field_label, labels, value, required)),
+            True,
+        )[-1],
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_fill_weui_textarea_by_label",
+        lambda page, label, value, timeout_error: (
+            events.append("summary"),
+            weui_summary_fields.append((label, value)),
+            True,
+        )[-1],
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_fill_text_field_near_text",
+        lambda page, label_patterns, value, timeout_error, field_label: summary_fields.append(
+            (field_label, value, [pattern.pattern for pattern in label_patterns])
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        publisher,
         "_set_file_input",
         lambda page, target_files, button_pattern, timeout_error: files.append(target_files),
     )
@@ -408,7 +536,14 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     monkeypatch.setattr(
         publisher,
         "_set_monetization_type",
-        lambda page, value, timeout_error: monetization.append(value),
+        lambda page, value, timeout_error: events.append("monetization") or monetization.append(value),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_ensure_playlet_form_fields",
+        lambda page, title, summary, episode_count, free_episode_count, producer_name, production_cost, timeout_error: final_ensures.append(
+            (title, summary, episode_count, free_episode_count, producer_name, production_cost)
+        ),
     )
     with pytest.raises(PlatformPublishPaused, match="第一步表单已填好"):
         publisher._upload_playlet(
@@ -435,16 +570,23 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
     assert entry_clicks == [5000]
-    assert any(value == "神医归来AI" and "剧目名称" in labels for labels, value in fills)
-    assert any(value == "简介" and "剧目简介" in labels for labels, value in fills)
-    assert any(value == "27" and "总集数" in labels for labels, value in fills)
-    assert any(value == "6" and "免费集数" in labels for labels, value in fills)
-    assert any(value == "乙方公司" and "制作方名称" in labels for labels, value in fills)
-    assert any(value == "3" and "剧目制作成本" in labels for labels, value in fills)
+    assert any(value == "神医归来AI" and "剧目名称" in labels for field, labels, value, required in field_fills)
+    assert weui_summary_fields == [("剧目简介", "简介")]
+    assert summary_fields == []
+    assert not any(value == "简介" and "剧目简介" in labels for labels, value in fills)
+    assert any(field == "总集数" and value == "27" for field, labels, value, required in field_fills)
+    assert any(field == "试看集数" and value == "6" for field, labels, value, required in field_fills)
+    assert any(field == "制作方名称" and value == "乙方公司" for field, labels, value, required in field_fills)
+    assert any(field == "剧目制作成本" and value == "3" for field, labels, value, required in field_fills)
+    assert final_ensures == [("神医归来AI", "简介", 27, 6, "乙方公司", "3")]
     assert "^漫剧$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
     assert "^其他微短剧$" in option_clicks
+    assert events.index("monetization") > events.index("option:^其他微短剧$")
+    assert events.index("field:剧目名称") > events.index("monetization")
+    assert events.index("field:剧目名称") > events.index("option:^其他微短剧$")
+    assert events.index("summary") > events.index("option:^其他微短剧$")
     assert material_uploads == [
         ("剧目制作证明材料", [purchase_image], ["剧目制作证明材料", "制作证明材料", "剧目制作合同"]),
         ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
@@ -703,15 +845,67 @@ def test_wechat_video_publisher_sets_material_file_input_near_target_label(tmp_p
         "剧目制作证明材料",
     )
 
-    evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
-    marker = evaluate_payloads[1]["inputMarker"]
-    assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
-    assert evaluate_payloads[1]["patterns"] == ["剧目制作证明材料"]
+    marker_payload = next(payload for method, payload in calls if method == "evaluate" and isinstance(payload, dict) and "inputMarker" in payload)
+    marker = marker_payload["inputMarker"]
+    assert marker_payload["patterns"] == ["剧目制作证明材料"]
     assert ("DOM.querySelector", {"nodeId": 1, "selector": f'input[type="file"][data-aidrama-file-input="{marker}"]'}) in calls
     assert (
         "DOM.setFileInputFiles",
         {"nodeId": 12, "files": [str(purchase_image.resolve()), str(cost_image.resolve())]},
     ) in calls
+
+
+def test_wechat_video_publisher_sets_hidden_input_before_clicking_upload_button(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeSession:
+        def send(self, method, payload):
+            calls.append((method, payload))
+            if method == "DOM.getDocument":
+                return {"root": {"nodeId": 1}}
+            if method == "DOM.querySelector":
+                return {"nodeId": 12}
+            return {}
+
+    class FakeContext:
+        def new_cdp_session(self, page):
+            return FakeSession()
+
+    class FakePage:
+        context = FakeContext()
+
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "inputMarker" in payload:
+                return {
+                    "inputMarked": True,
+                    "inputMarker": payload["inputMarker"],
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True, "explicitFileName": True}
+            return True
+
+    publisher._set_file_input_near_text(
+        FakePage(),
+        [purchase_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    set_file_index = next(index for index, call in enumerate(calls) if call[0] == "DOM.setFileInputFiles")
+    acceptance_index = next(
+        index
+        for index, call in enumerate(calls)
+        if call[0] == "evaluate" and isinstance(call[1], dict) and "files" in call[1]
+    )
+    assert set_file_index < acceptance_index
+    assert not any(call[0] == "wait_for_timeout" for call in calls)
 
 
 def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(tmp_path: Path):
@@ -762,16 +956,19 @@ def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(t
     )
 
     evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
-    assert len(evaluate_payloads) == 4
-    assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
-    assert evaluate_payloads[1]["patterns"] == ["剧目制作证明材料"]
-    input_marker = evaluate_payloads[1]["inputMarker"]
+    assert len(evaluate_payloads) == 3
+    marker_payload = next(payload for payload in evaluate_payloads if isinstance(payload, dict) and "inputMarker" in payload)
+    assert marker_payload["patterns"] == ["剧目制作证明材料"]
+    input_marker = marker_payload["inputMarker"]
     assert (
         "DOM.setFileInputFiles",
         {"nodeId": 12, "files": [str(purchase_image.resolve())]},
     ) in calls
-    assert evaluate_payloads[2] == input_marker
-    assert evaluate_payloads[3]["marker"] == evaluate_payloads[1]["fieldMarker"]
+    assert input_marker in evaluate_payloads
+    assert any(
+        isinstance(payload, dict) and payload.get("marker") == marker_payload["fieldMarker"]
+        for payload in evaluate_payloads
+    )
 
 
 def test_wechat_video_publisher_rejects_material_upload_without_visible_acceptance(tmp_path: Path):
@@ -824,6 +1021,41 @@ def test_wechat_video_publisher_rejects_material_upload_without_visible_acceptan
         assert "文件未被页面接收" in str(exception)
     else:
         raise AssertionError("expected material upload rejection")
+
+
+def test_wechat_video_publisher_rejects_too_many_cost_report_files(tmp_path: Path):
+    cost_first = tmp_path / "cost-1.png"
+    cost_second = tmp_path / "cost-2.png"
+    cost_first.write_bytes(b"cost")
+    cost_second.write_bytes(b"cost")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    try:
+        publisher._set_file_input_near_text(
+            object(),
+            [cost_first, cost_second],
+            [re.compile("成本配置比例情况报告")],
+            TimeoutError,
+            "成本配置比例情况报告",
+        )
+    except RuntimeError as exception:
+        assert "最多支持上传 1 个文件" in str(exception)
+    else:
+        raise AssertionError("expected cost report upload count rejection")
+
+
+def test_wechat_video_material_upload_script_matches_wechat_hidden_upload_dom(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    script = publisher._mark_material_upload_controls_script()
+    state_source = inspect.getsource(WeChatVideoPublisher._material_upload_field_state)
+
+    assert ".audit-form-upload" in script
+    assert ".custom-file-upload" in script
+    assert ".custom-image-upload" in script
+    assert "file-input-hidden" in script or "input[type=\"file\"]" in script
+    assert "重新选择" in script
+    assert ".img_text" in state_source
 
 
 def test_wechat_video_material_upload_button_script_ignores_download_links(tmp_path: Path):
