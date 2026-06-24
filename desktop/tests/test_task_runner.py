@@ -169,7 +169,6 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
         return targets
 
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
-    monkeypatch.setattr("aidrama_desktop.tasks.runner.random.randint", lambda start, end: 7)
     runner = TaskRunner(
         api=api,
         processor=FakeProcessor(),
@@ -191,12 +190,20 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["aiContentDeclaration"] is True
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
-    assert publisher.metadata["freeEpisodeCount"] == 7
+    assert publisher.metadata["freeEpisodeCount"] == 2
     assert publisher.metadata["episodeCount"] == 2
     assert publisher.metadata["episodes"] == [
         {"episodeNo": 1, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"},
         {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
     ]
+
+
+def test_publish_metadata_uses_stable_free_episode_count():
+    assert TaskRunner._free_episode_count({"freeEpisodeCount": 6}, 49) == 6
+    assert TaskRunner._free_episode_count({}, 49) == 10
+    assert TaskRunner._free_episode_count({}, 80) == 16
+    assert TaskRunner._free_episode_count({}, 120) == 20
+    assert TaskRunner._free_episode_count({}, 2) == 2
 
 
 def test_publish_once_generates_contract_materials_before_upload(tmp_path, monkeypatch):

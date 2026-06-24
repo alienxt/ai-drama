@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import json
 import re
 import threading
@@ -274,7 +273,7 @@ class TaskRunner:
             "aiContentDeclaration": True,
             "monetizationType": "IAA_AD",
             "monetizationLabel": "IAA广告变现",
-            "freeEpisodeCount": random.randint(3, 10),
+            "freeEpisodeCount": self._free_episode_count(download_plan, len(episodes)),
             "episodeCount": len(episodes),
             "episodes": [
                 {
@@ -286,6 +285,17 @@ class TaskRunner:
                 if index < len(processed_files)
             ],
         }
+
+    @classmethod
+    def _free_episode_count(cls, download_plan: dict[str, Any], episode_count: int) -> int:
+        for key in ("freeEpisodeCount", "trialEpisodeCount", "previewEpisodeCount", "sampleEpisodeCount"):
+            value = cls._int_value(download_plan.get(key), 0)
+            if value > 0:
+                return min(value, episode_count) if episode_count > 0 else value
+        if episode_count <= 0:
+            return 3
+        calculated = max(3, min(20, round(episode_count * 0.2)))
+        return min(calculated, episode_count)
 
     def input_dir(self) -> Path:
         return self.downloads_dir or self.work_dir / "dramas" / "downloads"

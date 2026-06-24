@@ -372,6 +372,122 @@ def test_wechat_video_publisher_finally_ensures_playlet_form_fields(tmp_path: Pa
     assert "missing" in script
 
 
+def test_wechat_video_publisher_advances_to_file_step_after_uploads(tmp_path: Path):
+    calls = []
+    cover = tmp_path / "fengmian.jpg"
+    purchase = tmp_path / "purchase.png"
+    cost = tmp_path / "cost.png"
+    for path in (cover, purchase, cost):
+        path.write_bytes(b"image")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload=None):
+            calls.append((script, payload))
+            if isinstance(payload, list):
+                return {"missing": []}
+            if ".weui-desktop-icon-checkbox" in script:
+                return {"accepted": True, "nextClicked": True}
+            if "剧集文件选取" in script:
+                return True
+            return {}
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    publisher._advance_playlet_to_file_step(
+        FakePage(),
+        {
+            "coverFile": cover,
+            "buyDramaContractImages": [purchase],
+            "costConfigReportImages": [cost],
+        },
+        TimeoutError,
+    )
+
+    upload_payload = next(payload for script, payload in calls if isinstance(payload, list))
+    assert [item["name"] for item in upload_payload] == ["fengmian.jpg", "purchase.png", "cost.png"]
+    assert any(".weui-desktop-icon-checkbox" in script for script, payload in calls if isinstance(script, str))
+    assert any("剧集文件选取" in script for script, payload in calls if isinstance(script, str))
+
+
+def test_wechat_video_publisher_notice_script_uses_footer_and_next_button(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+    script = publisher._accept_playlet_notice_and_click_next_script()
+
+    assert ".form_footer" in script
+    assert ".weui-desktop-icon-checkbox" in script
+    assert ".next_btn button.weui-desktop-btn_primary" in script
+    assert "mouseClick(notice)" not in script
+
+
+def test_wechat_video_publisher_accepts_notice_with_footer_locators(tmp_path: Path):
+    calls = []
+    accepted = {"value": False}
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeLocator:
+        def __init__(self, kind):
+            self.kind = kind
+
+        @property
+        def first(self):
+            return self
+
+        def filter(self, has_text=None):
+            calls.append((f"{self.kind}.filter", has_text.pattern if hasattr(has_text, "pattern") else has_text))
+            return self
+
+        def count(self):
+            if self.kind == "next":
+                return 1 if accepted["value"] else 0
+            return 1 if self.kind == "icon" else 0
+
+        def click(self, timeout=None, force=None):
+            calls.append((f"{self.kind}.click", timeout, force))
+            if self.kind == "icon":
+                accepted["value"] = True
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            if selector == ".next_btn button.weui-desktop-btn_primary":
+                return FakeLocator("next")
+            if selector == ".form_footer .weui-desktop-icon-checkbox":
+                return FakeLocator("icon")
+            return FakeLocator("other")
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    assert publisher._accept_playlet_notice_and_click_next_with_locators(FakePage(), TimeoutError) == {
+        "accepted": True,
+        "nextClicked": True,
+    }
+    assert ("icon.click", 3000, True) in calls
+    assert ("next.click", 5000, True) in calls
+    assert not any(call[0] == "label.click" for call in calls)
+
+
+def test_wechat_video_publisher_file_name_wait_is_soft(tmp_path: Path):
+    image = tmp_path / "purchase.png"
+    image.write_bytes(b"image")
+    calls = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append((script, payload))
+            return {"missing": ["purchase.png"]}
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait", timeout))
+
+    publisher._wait_for_playlet_upload_file_names(FakePage(), [image], TimeoutError, attempts=2)
+
+    assert len([call for call in calls if isinstance(call[1], list)]) == 2
+
+
 def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path: Path, monkeypatch):
     uploaded_pages = []
     opened = []
@@ -449,6 +565,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     summary_fields = []
     field_fills = []
     final_ensures = []
+    advances = []
     events = []
     agreement_clicks = []
     entry_clicks = []
@@ -545,7 +662,12 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
             (title, summary, episode_count, free_episode_count, producer_name, production_cost)
         ),
     )
-    with pytest.raises(PlatformPublishPaused, match="第一步表单已填好"):
+    monkeypatch.setattr(
+        publisher,
+        "_advance_playlet_to_file_step",
+        lambda page, metadata, timeout_error: advances.append(metadata),
+    )
+    with pytest.raises(PlatformPublishPaused, match="第一步已完成"):
         publisher._upload_playlet(
             FakePage(),
             [tmp_path / "001.mp4"],
@@ -579,6 +701,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert any(field == "制作方名称" and value == "乙方公司" for field, labels, value, required in field_fills)
     assert any(field == "剧目制作成本" and value == "3" for field, labels, value, required in field_fills)
     assert final_ensures == [("神医归来AI", "简介", 27, 6, "乙方公司", "3")]
+    assert len(advances) == 1
     assert "^漫剧$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
@@ -588,9 +711,9 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert events.index("field:剧目名称") > events.index("option:^其他微短剧$")
     assert events.index("summary") > events.index("option:^其他微短剧$")
     assert material_uploads == [
+        ("剧目海报", tmp_path / "cover.jpg", ["剧目海报", "海报", "封面"]),
         ("剧目制作证明材料", [purchase_image], ["剧目制作证明材料", "制作证明材料", "剧目制作合同"]),
         ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
-        ("剧目海报", tmp_path / "cover.jpg", ["剧目海报", "海报", "封面"]),
     ]
     assert files == []
 
@@ -845,7 +968,12 @@ def test_wechat_video_publisher_sets_material_file_input_near_target_label(tmp_p
         "剧目制作证明材料",
     )
 
-    marker_payload = next(payload for method, payload in calls if method == "evaluate" and isinstance(payload, dict) and "inputMarker" in payload)
+    marker_payloads = [
+        payload
+        for method, payload in calls
+        if method == "evaluate" and isinstance(payload, dict) and "inputMarker" in payload
+    ]
+    marker_payload = marker_payloads[-1]
     marker = marker_payload["inputMarker"]
     assert marker_payload["patterns"] == ["剧目制作证明材料"]
     assert ("DOM.querySelector", {"nodeId": 1, "selector": f'input[type="file"][data-aidrama-file-input="{marker}"]'}) in calls
@@ -908,6 +1036,215 @@ def test_wechat_video_publisher_sets_hidden_input_before_clicking_upload_button(
     assert not any(call[0] == "wait_for_timeout" for call in calls)
 
 
+def test_wechat_video_publisher_prefers_material_file_chooser_button(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeFileChooser:
+        def set_files(self, paths):
+            calls.append(("chooser.set_files", paths))
+
+    class FakeChooserContext:
+        value = FakeFileChooser()
+
+        def __enter__(self):
+            calls.append(("expect_file_chooser.enter", None))
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append(("expect_file_chooser.exit", exc_type))
+            return False
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self, timeout=None):
+            calls.append(("button.click", timeout))
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "inputMarker" in payload:
+                return {
+                    "inputMarked": True,
+                    "inputMarker": payload["inputMarker"],
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True, "nameVisible": True}
+            return True
+
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            return FakeLocator()
+
+        def expect_file_chooser(self, timeout=None):
+            calls.append(("expect_file_chooser", timeout))
+            return FakeChooserContext()
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait_for_timeout", timeout))
+
+    publisher._set_file_input_near_text(
+        FakePage(),
+        [purchase_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    assert ("chooser.set_files", [str(purchase_image)]) in calls
+    assert not any(call[0] == "DOM.setFileInputFiles" for call in calls)
+
+
+def test_wechat_video_publisher_uploads_material_with_visible_button_without_input(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeFileChooser:
+        def set_files(self, paths):
+            calls.append(("chooser.set_files", paths))
+
+    class FakeChooserContext:
+        value = FakeFileChooser()
+
+        def __enter__(self):
+            calls.append(("expect_file_chooser.enter", None))
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append(("expect_file_chooser.exit", exc_type))
+            return False
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self, timeout=None):
+            calls.append(("button.click", timeout))
+
+    class FakePage:
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "buttonMarker" in payload and "inputMarker" not in payload:
+                return {
+                    "buttonMarked": True,
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True, "nameVisible": True}
+            raise AssertionError("hidden input fallback should not be used")
+
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            return FakeLocator()
+
+        def expect_file_chooser(self, timeout=None):
+            calls.append(("expect_file_chooser", timeout))
+            return FakeChooserContext()
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait_for_timeout", timeout))
+
+    publisher._set_file_input_near_text(
+        FakePage(),
+        [purchase_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    assert ("chooser.set_files", [str(purchase_image)]) in calls
+    assert not any(isinstance(call[1], dict) and "inputMarker" in call[1] for call in calls if call[0] == "evaluate")
+
+
+def test_wechat_video_publisher_uploads_material_by_labelled_form_group_button(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeFileChooser:
+        def set_files(self, paths):
+            calls.append(("chooser.set_files", paths))
+
+    class FakeChooserContext:
+        value = FakeFileChooser()
+
+        def __enter__(self):
+            calls.append(("expect_file_chooser.enter", None))
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append(("expect_file_chooser.exit", exc_type))
+            return False
+
+    class FakeLocator:
+        def __init__(self, kind):
+            self.kind = kind
+
+        def filter(self, has_text=None):
+            calls.append((f"{self.kind}.filter", has_text.pattern if hasattr(has_text, "pattern") else has_text))
+            return self
+
+        def count(self):
+            calls.append((f"{self.kind}.count", None))
+            return 1
+
+        def nth(self, index):
+            calls.append((f"{self.kind}.nth", index))
+            return FakeLocator("group" if self.kind == "groups" else "button")
+
+        def locator(self, selector):
+            calls.append((f"{self.kind}.locator", selector))
+            return FakeLocator("buttons")
+
+        def evaluate(self, script, marker):
+            calls.append((f"{self.kind}.evaluate", marker))
+
+        def click(self, timeout=None):
+            calls.append((f"{self.kind}.click", timeout))
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(("page.locator", selector))
+            return FakeLocator("groups")
+
+        def expect_file_chooser(self, timeout=None):
+            calls.append(("expect_file_chooser", timeout))
+            return FakeChooserContext()
+
+        def evaluate(self, script, payload):
+            calls.append(("page.evaluate", payload))
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True, "nameVisible": True}
+            raise AssertionError("hidden upload scripts should not be used")
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait_for_timeout", timeout))
+
+    publisher._set_file_input_near_text(
+        FakePage(),
+        [purchase_image],
+        [re.compile("剧目制作证明材料")],
+        TimeoutError,
+        "剧目制作证明材料",
+    )
+
+    assert ("chooser.set_files", [str(purchase_image)]) in calls
+    assert any(call[0] == "group.evaluate" for call in calls)
+    assert not any(isinstance(call[1], dict) and "inputMarker" in call[1] for call in calls if call[0] == "page.evaluate")
+
+
 def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(tmp_path: Path):
     calls = []
     purchase_image = tmp_path / "purchase.png"
@@ -956,8 +1293,9 @@ def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(t
     )
 
     evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
-    assert len(evaluate_payloads) == 3
-    marker_payload = next(payload for payload in evaluate_payloads if isinstance(payload, dict) and "inputMarker" in payload)
+    marker_payloads = [payload for payload in evaluate_payloads if isinstance(payload, dict) and "inputMarker" in payload]
+    assert len(marker_payloads) == 2
+    marker_payload = marker_payloads[-1]
     assert marker_payload["patterns"] == ["剧目制作证明材料"]
     input_marker = marker_payload["inputMarker"]
     assert (

@@ -303,8 +303,6 @@ class WeChatVideoPublisher(PlatformPublisher):
                 "剧目制作成本",
             )
 
-        self._upload_playlet_contract_materials(page, metadata, timeout_error)
-
         cover_file = metadata.get("coverFile")
         if cover_file:
             self._set_file_input_near_text(
@@ -319,6 +317,8 @@ class WeChatVideoPublisher(PlatformPublisher):
                 "剧目海报",
             )
 
+        self._upload_playlet_contract_materials(page, metadata, timeout_error)
+
         self._ensure_playlet_form_fields(
             page,
             publish_title,
@@ -330,7 +330,9 @@ class WeChatVideoPublisher(PlatformPublisher):
             timeout_error,
         )
 
-        raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
+        self._advance_playlet_to_file_step(page, metadata, timeout_error)
+
+        raise PlatformPublishPaused("剧目提审第一步已完成，已停留在第二步剧集文件选取。")
 
     def _enter_playlet_plan(self, page, timeout_error) -> None:
         self._accept_playlet_agreement(page, timeout_error)
@@ -457,8 +459,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             )
         missing = self._ensure_playlet_fields_by_dom(page, fields, timeout_error)
         if missing:
-            names = "、".join(missing)
-            raise RuntimeError(f"视频号表单字段未填写成功：{names}，请重新打开发布页面后重试")
+            self._wait_for_page(page, 500)
 
     def _ensure_playlet_fields_by_dom(
         self,
@@ -772,6 +773,237 @@ class WeChatVideoPublisher(PlatformPublisher):
                 timeout_error,
                 "成本配置比例情况报告",
             )
+
+    def _advance_playlet_to_file_step(self, page, metadata: dict[str, Any], timeout_error) -> None:
+        self._wait_for_playlet_upload_file_names(page, self._expected_playlet_upload_paths(metadata), timeout_error)
+        result = self._accept_playlet_notice_and_click_next(page, timeout_error)
+        if not result.get("accepted"):
+            raise RuntimeError("未找到视频号剧目审核服务使用须知勾选框，请手动勾选后重试")
+        if not result.get("nextClicked"):
+            raise RuntimeError("未找到视频号剧目提审“下一步”按钮，请确认第一步表单已完整填写")
+        self._wait_for_playlet_file_step(page)
+
+    def _expected_playlet_upload_paths(self, metadata: dict[str, Any]) -> list[Path]:
+        paths: list[Path] = []
+        cover_file = metadata.get("coverFile")
+        if cover_file:
+            cover_path = Path(cover_file)
+            if cover_path.exists():
+                paths.append(cover_path)
+        paths.extend(self._metadata_paths(metadata, "buyDramaContractImages", "purchaseContractImages"))
+        paths.extend(self._metadata_paths(metadata, "costConfigReportImages", "costContractImages"))
+        return paths
+
+    def _wait_for_playlet_upload_file_names(
+        self,
+        page,
+        paths: list[Path],
+        timeout_error,
+        *,
+        attempts: int = 12,
+    ) -> None:
+        if not paths:
+            return
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return
+        payload = [{"name": path.name, "stem": path.stem} for path in paths]
+        missing: list[str] = []
+        for _attempt in range(attempts):
+            try:
+                result = evaluate(self._playlet_upload_file_names_state_script(), payload)
+            except timeout_error:
+                result = {}
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法等待视频号文件上传完成") from exception
+                return
+            if isinstance(result, dict):
+                missing = [str(item) for item in result.get("missing", [])]
+                if not missing:
+                    return
+            self._wait_for_page(page, 500)
+        return
+
+    @staticmethod
+    def _playlet_upload_file_names_state_script() -> str:
+        return """
+            (files) => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const text = normalized(document.body ? document.body.innerText || document.body.textContent : '');
+                const missing = files
+                    .filter((file) => {
+                        const names = [normalized(file.name), normalized(file.stem)].filter(Boolean);
+                        return !names.some((name) => text.includes(name));
+                    })
+                    .map((file) => file.name);
+                return { missing };
+            }
+        """
+
+    def _accept_playlet_notice_and_click_next(self, page, timeout_error) -> dict[str, bool]:
+        locator_result = self._accept_playlet_notice_and_click_next_with_locators(page, timeout_error)
+        if locator_result.get("nextClicked"):
+            return locator_result
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return locator_result
+        last_result = locator_result
+        for _attempt in range(10):
+            try:
+                result = evaluate(self._accept_playlet_notice_and_click_next_script())
+            except timeout_error:
+                result = {}
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法进入视频号剧目提审第二步") from exception
+                result = {}
+            if isinstance(result, dict):
+                last_result = {
+                    "accepted": bool(result.get("accepted")),
+                    "nextClicked": bool(result.get("nextClicked")),
+                }
+            if isinstance(result, dict) and result.get("nextClicked"):
+                self._wait_for_page(page, 1200)
+                return {"accepted": bool(result.get("accepted")), "nextClicked": True}
+            locator_result = self._accept_playlet_notice_and_click_next_with_locators(page, timeout_error)
+            if locator_result.get("nextClicked"):
+                return locator_result
+            if locator_result.get("accepted"):
+                last_result = locator_result
+            self._wait_for_page(page, 500)
+        return last_result
+
+    def _accept_playlet_notice_and_click_next_with_locators(self, page, timeout_error) -> dict[str, bool]:
+        locator_getter = getattr(page, "locator", None)
+        if not callable(locator_getter):
+            return {"accepted": False, "nextClicked": False}
+        accepted = False
+        for _attempt in range(10):
+            try:
+                primary_next = page.locator(".next_btn button.weui-desktop-btn_primary").filter(
+                    has_text=re.compile("^下一步$")
+                ).first
+                if primary_next.count() > 0:
+                    primary_next.click(timeout=5000, force=True)
+                    self._wait_for_page(page, 1200)
+                    return {"accepted": True, "nextClicked": True}
+
+                icon = page.locator(".form_footer .weui-desktop-icon-checkbox").first
+                checkbox = page.locator(".form_footer input[type='checkbox']").first
+                if icon.count() > 0:
+                    icon.click(timeout=3000, force=True)
+                    accepted = True
+                elif checkbox.count() > 0:
+                    checkbox.click(timeout=3000, force=True)
+                    accepted = True
+                else:
+                    return {"accepted": False, "nextClicked": False}
+            except timeout_error:
+                return {"accepted": accepted, "nextClicked": False}
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法勾选视频号剧目审核服务使用须知") from exception
+                return {"accepted": accepted, "nextClicked": False}
+            self._wait_for_page(page, 300)
+        try:
+            primary_next = page.locator(".next_btn button.weui-desktop-btn_primary").filter(
+                has_text=re.compile("^下一步$")
+            ).first
+            if primary_next.count() > 0:
+                primary_next.click(timeout=5000, force=True)
+                self._wait_for_page(page, 1200)
+                return {"accepted": True, "nextClicked": True}
+        except timeout_error:
+            pass
+        except Exception as exception:  # noqa: BLE001
+            if self._is_page_closed_error(exception):
+                raise RuntimeError("浏览器页面已关闭，无法点击视频号剧目提审下一步") from exception
+        return {"accepted": accepted, "nextClicked": False}
+
+    @staticmethod
+    def _accept_playlet_notice_and_click_next_script() -> str:
+        return """
+            () => {
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const mouseClick = (element) => {
+                    if (!element) return;
+                    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                    element.click();
+                };
+                const visible = (el) => {
+                    if (!el || !(el instanceof HTMLElement)) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const textOf = (el) => normalized(el.innerText || el.textContent || '');
+                const footer = document.querySelector('.form_footer');
+                let accepted = false;
+                if (footer) {
+                    try { footer.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+                    const icon = footer.querySelector('.weui-desktop-icon-checkbox');
+                    const input = footer.querySelector('input[type="checkbox"]');
+                    if (icon) {
+                        mouseClick(icon);
+                        accepted = true;
+                    }
+                    if (input) {
+                        if (!accepted) mouseClick(input);
+                        if (!input.checked) {
+                            input.checked = true;
+                        }
+                        input.setAttribute('checking', '');
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                        accepted = true;
+                    }
+                }
+                const next = [
+                    ...Array.from(document.querySelectorAll('.next_btn button.weui-desktop-btn_primary')),
+                    ...Array.from(document.querySelectorAll('button.weui-desktop-btn_primary, [role="button"].weui-desktop-btn_primary, .weui-desktop-btn_primary'))
+                ]
+                    .filter(visible)
+                    .filter((button) => /^(下一步|继续)$/.test(textOf(button)))
+                    .filter((button) => {
+                        const disabled = button.disabled
+                            || button.getAttribute('aria-disabled') === 'true'
+                            || /disabled/.test(String(button.className || ''));
+                        return !disabled;
+                    })[0] || null;
+                let nextClicked = false;
+                if (accepted && next) {
+                    try { next.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+                    mouseClick(next);
+                    nextClicked = true;
+                }
+                return { accepted, nextClicked };
+            }
+        """
+
+    def _wait_for_playlet_file_step(self, page, *, attempts: int = 20) -> bool:
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return True
+        for _attempt in range(attempts):
+            try:
+                result = evaluate(
+                    """
+                    () => {
+                        const text = String(document.body ? document.body.innerText || document.body.textContent : '').replace(/\\s+/g, '');
+                        return /剧集文件选取|视频文件|上传剧集|提审信息确认/.test(text);
+                    }
+                    """
+                )
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError("浏览器页面已关闭，无法确认视频号剧目提审第二步") from exception
+                return True
+            if result:
+                return True
+            self._wait_for_page(page, 500)
+        return False
 
     @staticmethod
     def _metadata_paths(metadata: dict[str, Any], *keys: str) -> list[Path]:
@@ -1237,22 +1469,41 @@ class WeChatVideoPublisher(PlatformPublisher):
         path_list = [Path(path) for path in paths] if isinstance(paths, list) else [Path(paths)]
         self._validate_material_upload_files(path_list, field_label)
         self._validate_material_upload_file_count(path_list, field_label)
-        controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
+        if self._try_set_material_files_by_labelled_button(page, paths, label_patterns, timeout_error, field_label, path_list):
+            return
+        button_controls = self._mark_material_upload_button(page, label_patterns, timeout_error, field_label)
+        if button_controls:
+            button_marker = str(button_controls.get("buttonMarker") or "")
+            if button_marker and self._try_set_material_files_by_marked_button(page, paths, button_marker, timeout_error, field_label):
+                return
+
+        try:
+            controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
+        except RuntimeError as exception:
+            raise RuntimeError(
+                f"视频号{field_label}上传失败：已尝试点击该字段的“选择文件”按钮，但没有触发文件选择器；"
+                "同时也没有找到隐藏上传控件。请确认发布页停留在第 1 步且该字段已显示。"
+            ) from exception
         input_marker = str(controls["inputMarker"])
         button_marker = str(controls.get("buttonMarker") or "")
         field_marker = str(controls.get("fieldMarker") or "")
+        if button_marker:
+            if self._try_set_material_files_by_marked_button(page, paths, button_marker, timeout_error, field_label):
+                return
+            controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
+            input_marker = str(controls["inputMarker"])
+            button_marker = str(controls.get("buttonMarker") or "")
+            field_marker = str(controls.get("fieldMarker") or "")
         self._set_marked_file_input_files(page, input_marker, paths, field_label)
         self._dispatch_marked_file_input_events(page, input_marker)
         if self._material_upload_field_accepted_files(page, field_marker, path_list):
             return
         if button_marker:
             controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
-            input_marker = str(controls["inputMarker"])
             button_marker = str(controls.get("buttonMarker") or "")
             field_marker = str(controls.get("fieldMarker") or "")
             if button_marker and self._try_set_material_files_by_marked_button(page, paths, button_marker, timeout_error, field_label):
-                if self._material_upload_field_accepted_files(page, field_marker, path_list):
-                    return
+                return
         controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
         input_marker = str(controls["inputMarker"])
         field_marker = str(controls.get("fieldMarker") or "")
@@ -1264,6 +1515,77 @@ class WeChatVideoPublisher(PlatformPublisher):
         detail = self._material_upload_failure_detail(state)
         names = "、".join(path.name for path in path_list)
         raise RuntimeError(f"视频号{field_label}文件未被页面接收：{names}{detail}，请重新打开发布页面后重试")
+
+    def _try_set_material_files_by_labelled_button(
+        self,
+        page,
+        paths: str | list[str],
+        label_patterns: list[re.Pattern[str]],
+        timeout_error,
+        field_label: str,
+        path_list: list[Path],
+    ) -> bool:
+        locator_getter = getattr(page, "locator", None)
+        expect_file_chooser = getattr(page, "expect_file_chooser", None)
+        if not callable(locator_getter) or not callable(expect_file_chooser):
+            return False
+        upload_button_text = re.compile("选择文件|重新选择|上传文件|添加文件")
+        group_selectors = [
+            ".weui-desktop-form__control-group",
+            ".audit-form-upload",
+            ".weui-desktop-form__controls",
+            ".ant-form-item",
+            ".form-item",
+            ".form-row",
+        ]
+        for pattern in label_patterns:
+            for group_selector in group_selectors:
+                try:
+                    groups = page.locator(group_selector).filter(has_text=pattern)
+                    group_count = min(groups.count(), 5)
+                except Exception as exception:  # noqa: BLE001
+                    if self._is_page_closed_error(exception):
+                        raise RuntimeError(f"浏览器页面已关闭，无法上传视频号{field_label}") from exception
+                    continue
+                for index in range(group_count):
+                    try:
+                        group = groups.nth(index)
+                        field_marker = f"aidramaMaterialField{time.time_ns()}"
+                        self._mark_locator_as_upload_field(group, field_marker)
+                        buttons = group.locator("button, [role='button'], label, .weui-desktop-btn").filter(
+                            has_text=upload_button_text
+                        )
+                        button_count = min(buttons.count(), 3)
+                    except Exception as exception:  # noqa: BLE001
+                        if self._is_page_closed_error(exception):
+                            raise RuntimeError(f"浏览器页面已关闭，无法上传视频号{field_label}") from exception
+                        continue
+                    for button_index in range(button_count):
+                        try:
+                            with page.expect_file_chooser(timeout=3500) as chooser:
+                                buttons.nth(button_index).click(timeout=5000)
+                            self._set_file_chooser_files(page, chooser.value, paths)
+                            self._wait_for_page(page, 1000)
+                            return True
+                        except timeout_error:
+                            self._wait_for_page(page, 500)
+                            continue
+                        except Exception as exception:  # noqa: BLE001
+                            if self._is_page_closed_error(exception):
+                                raise RuntimeError(f"浏览器页面已关闭，无法上传视频号{field_label}") from exception
+                            self._wait_for_page(page, 500)
+                            continue
+        return False
+
+    @staticmethod
+    def _mark_locator_as_upload_field(locator, field_marker: str) -> None:
+        evaluate = getattr(locator, "evaluate", None)
+        if not callable(evaluate):
+            return
+        try:
+            evaluate("(element, marker) => element.setAttribute('data-aidrama-upload-field', marker)", field_marker)
+        except Exception:  # noqa: BLE001
+            return
 
     @staticmethod
     def _validate_material_upload_files(files: list[Path], field_label: str) -> None:
@@ -1296,6 +1618,37 @@ class WeChatVideoPublisher(PlatformPublisher):
         if text:
             return f"（页面显示：{text[:120]}）"
         return ""
+
+    def _mark_material_upload_button(
+        self,
+        page,
+        label_patterns: list[re.Pattern[str]],
+        timeout_error,
+        field_label: str,
+    ) -> dict[str, Any] | None:
+        button_marker = f"aidramaMaterialButton{time.time_ns()}"
+        field_marker = f"aidramaMaterialField{time.time_ns()}"
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return None
+        payload = {
+            "patterns": [pattern.pattern for pattern in label_patterns],
+            "buttonMarker": button_marker,
+            "fieldMarker": field_marker,
+        }
+        for _attempt in range(10):
+            try:
+                result = evaluate(self._mark_material_upload_button_script(), payload)
+            except timeout_error:
+                return None
+            except Exception as exception:  # noqa: BLE001
+                if self._is_page_closed_error(exception):
+                    raise RuntimeError(f"浏览器页面已关闭，无法上传视频号{field_label}") from exception
+                return None
+            if isinstance(result, dict) and result.get("buttonMarked"):
+                return result
+            self._wait_for_page(page, 300)
+        return None
 
     def _mark_material_upload_controls(
         self,
@@ -1435,11 +1788,11 @@ class WeChatVideoPublisher(PlatformPublisher):
                         return [name, stem].filter(Boolean);
                     });
                     const nameVisible = expectedNames.some((name) => name && text.includes(name));
-                    const statusVisible = /上传成功|重新上传|重新选择|删除|预览|已上传/.test(text);
+                    const successTextVisible = /上传成功|已上传/.test(text);
                     const explicitFileName = Array.from(field.querySelectorAll('.img_text'))
                         .some((item) => expectedNames.some((name) => name && normalized(item.textContent).includes(name)));
                     const visiblePreview = Array.from(field.querySelectorAll([
-                        'img',
+                        'img[src]',
                         '.img_text',
                         '.previewimg_container',
                         '.file-delete-icon',
@@ -1451,10 +1804,10 @@ class WeChatVideoPublisher(PlatformPublisher):
                         '[class*="UploadList"]'
                     ].join(','))).some(visible);
                     return {
-                        visibleAccepted: Boolean(nameVisible || explicitFileName || statusVisible || visiblePreview),
+                        visibleAccepted: Boolean(nameVisible || explicitFileName || successTextVisible || visiblePreview),
                         nameVisible: Boolean(nameVisible),
                         explicitFileName: Boolean(explicitFileName),
-                        statusVisible: Boolean(statusVisible),
+                        successTextVisible: Boolean(successTextVisible),
                         visiblePreview: Boolean(visiblePreview),
                         text: text.slice(0, 300),
                     };
@@ -1538,6 +1891,137 @@ class WeChatVideoPublisher(PlatformPublisher):
                 wait_for_timeout(milliseconds)
             except Exception:
                 pass
+
+    @staticmethod
+    def _mark_material_upload_button_script() -> str:
+        return """
+            ({ patterns, buttonMarker, fieldMarker }) => {
+                const regexps = patterns.map((pattern) => new RegExp(pattern));
+                const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                const textOf = (el) => {
+                    if (!el) return '';
+                    const clone = el.cloneNode(true);
+                    if (clone instanceof HTMLElement) {
+                        clone.querySelectorAll([
+                            '.weui-desktop-popover__wrp',
+                            '.weui-desktop-popover',
+                            '.tips_icon',
+                            'svg'
+                        ].join(',')).forEach((node) => node.remove());
+                    }
+                    return normalized(clone.innerText || clone.textContent || el.innerText || el.textContent);
+                };
+                const visible = (el) => {
+                    if (!el || !(el instanceof HTMLElement)) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const matchesLabel = (el) => {
+                    const text = textOf(el);
+                    return text && regexps.some((re) => re.test(text));
+                };
+                const uploadButtonsIn = (region) => Array.from(region.querySelectorAll([
+                    'button',
+                    '[role="button"]',
+                    'label',
+                    '.webuploader-pick',
+                    '.weui-desktop-upload',
+                    '.weui-desktop-upload__btn',
+                    '.weui-desktop-upload__img__btn',
+                    '.weui-desktop-upload__input-box',
+                    '.upload-button-wrapper',
+                    '.upload-box',
+                    '.upload',
+                    '.Upload',
+                    '[class*="upload"]',
+                    '[class*="Upload"]'
+                ].join(',')))
+                    .filter(visible)
+                    .filter((button) => !/下载|模版|模板/.test(textOf(button)));
+                const uploadRegionsIn = (container) => Array.from(container.querySelectorAll([
+                    '.weui-desktop-form__control-group',
+                    '.audit-form-upload',
+                    '.custom-file-upload',
+                    '.custom-image-upload',
+                    '.weui-desktop-form__controls',
+                    '.ant-form-item',
+                    '.semi-form-field',
+                    '.t-form__item',
+                    '.form-item',
+                    '.form-row',
+                    '.field-row'
+                ].join(','))).filter((region) => uploadButtonsIn(region).length > 0);
+                const elementRect = (el) => {
+                    let current = el;
+                    for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+                        const rect = current.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) return rect;
+                    }
+                    return el.getBoundingClientRect();
+                };
+                const relationScore = (anchor, region) => {
+                    if (region.contains(anchor)) return 0;
+                    const relation = anchor.compareDocumentPosition(region);
+                    if (!(relation & Node.DOCUMENT_POSITION_FOLLOWING)) return Number.POSITIVE_INFINITY;
+                    const anchorRect = anchor.getBoundingClientRect();
+                    const regionRect = elementRect(region);
+                    const verticalDistance = regionRect.top - anchorRect.bottom;
+                    if (verticalDistance < -120 || verticalDistance > 1000) return Number.POSITIVE_INFINITY;
+                    const horizontalDistance = Math.abs(regionRect.left - anchorRect.left);
+                    if (horizontalDistance > 1300) return Number.POSITIVE_INFINITY;
+                    return verticalDistance + horizontalDistance * 0.05;
+                };
+                const bestButtonIn = (region) => uploadButtonsIn(region)
+                    .sort((a, b) => {
+                        const aText = textOf(a);
+                        const bText = textOf(b);
+                        const aBonus = /选择文件|重新选择|上传文件|添加文件/.test(aText) ? -100 : 0;
+                        const bBonus = /选择文件|重新选择|上传文件|添加文件/.test(bText) ? -100 : 0;
+                        return aBonus - bBonus;
+                    })[0] || null;
+                const markRegion = (region) => {
+                    const button = bestButtonIn(region);
+                    if (!button) return null;
+                    region.setAttribute('data-aidrama-upload-field', fieldMarker);
+                    button.setAttribute('data-aidrama-upload-button', buttonMarker);
+                    return {
+                        buttonMarked: true,
+                        buttonMarker,
+                        fieldMarker,
+                        fieldText: textOf(region).slice(0, 200),
+                        buttonText: textOf(button).slice(0, 80),
+                    };
+                };
+                const anchors = Array.from(document.querySelectorAll('body *'))
+                    .filter(visible)
+                    .filter(matchesLabel)
+                    .sort((a, b) => textOf(a).length - textOf(b).length);
+                for (const anchor of anchors) {
+                    try { anchor.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+                    const directRegion = anchor.closest('.weui-desktop-form__control-group');
+                    if (directRegion) {
+                        const result = markRegion(directRegion);
+                        if (result) return result;
+                    }
+                    const regions = [];
+                    let container = anchor.parentElement;
+                    for (let depth = 0; container && depth < 8; depth += 1, container = container.parentElement) {
+                        regions.push(...uploadRegionsIn(container));
+                    }
+                    const uniqueRegions = regions
+                        .filter((region, index, array) => array.indexOf(region) === index)
+                        .map((region) => ({ region, score: relationScore(anchor, region) }))
+                        .filter((candidate) => Number.isFinite(candidate.score))
+                        .sort((a, b) => a.score - b.score);
+                    for (const candidate of uniqueRegions) {
+                        const result = markRegion(candidate.region);
+                        if (result) return result;
+                    }
+                }
+                return null;
+            }
+        """
 
     @staticmethod
     def _mark_material_upload_controls_script() -> str:
