@@ -257,6 +257,25 @@ def test_wechat_video_publisher_reuses_existing_playlet_tab(tmp_path: Path, monk
     assert unexpected_page not in FakeContext.pages
 
 
+def test_wechat_video_publisher_limits_playlet_summary_to_100_chars(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+    long_summary = "命运反转" * 30
+
+    summary = publisher._playlet_summary("穆家有女镇山河", long_summary, {})
+
+    assert len(summary) == 100
+    assert summary == long_summary[:100]
+
+
+def test_wechat_video_publisher_uses_fallback_playlet_summary(tmp_path: Path):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    summary = publisher._playlet_summary("穆家有女镇山河", None, {})
+
+    assert summary == "《穆家有女镇山河》讲述人物在命运转折中的情感与成长故事。"
+    assert len(summary) <= 100
+
+
 def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path: Path, monkeypatch):
     uploaded_pages = []
     opened = []
@@ -372,7 +391,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     monkeypatch.setattr(
         publisher,
         "_fill_first",
-        lambda page, labels, value: fills.append((labels, value)),
+        lambda page, labels, value: fills.append((labels, value)) or True,
     )
     monkeypatch.setattr(
         publisher,
@@ -429,8 +448,9 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert material_uploads == [
         ("剧目制作证明材料", [purchase_image], ["剧目制作证明材料", "制作证明材料", "剧目制作合同"]),
         ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
+        ("剧目海报", tmp_path / "cover.jpg", ["剧目海报", "海报", "封面"]),
     ]
-    assert files == [tmp_path / "cover.jpg"]
+    assert files == []
 
 
 def test_wechat_video_publisher_clicks_ai_statement_switch_control(tmp_path: Path):
@@ -662,6 +682,15 @@ def test_wechat_video_publisher_sets_material_file_input_near_target_label(tmp_p
 
         def evaluate(self, script, payload):
             calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "inputMarker" in payload:
+                return {
+                    "inputMarked": True,
+                    "inputMarker": payload["inputMarker"],
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True}
             return True
 
     page = FakePage()
@@ -675,8 +704,9 @@ def test_wechat_video_publisher_sets_material_file_input_near_target_label(tmp_p
     )
 
     evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
-    marker = evaluate_payloads[0]["inputMarker"]
+    marker = evaluate_payloads[1]["inputMarker"]
     assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
+    assert evaluate_payloads[1]["patterns"] == ["剧目制作证明材料"]
     assert ("DOM.querySelector", {"nodeId": 1, "selector": f'input[type="file"][data-aidrama-file-input="{marker}"]'}) in calls
     assert (
         "DOM.setFileInputFiles",
@@ -709,6 +739,15 @@ def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(t
 
         def evaluate(self, script, payload):
             calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "inputMarker" in payload:
+                return {
+                    "inputMarked": True,
+                    "inputMarker": payload["inputMarker"],
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": True}
             return True
 
         def wait_for_timeout(self, timeout):
@@ -723,15 +762,68 @@ def test_wechat_video_publisher_reveals_material_upload_then_sets_hidden_input(t
     )
 
     evaluate_payloads = [payload for method, payload in calls if method == "evaluate"]
-    assert len(evaluate_payloads) == 3
+    assert len(evaluate_payloads) == 4
     assert evaluate_payloads[0]["patterns"] == ["剧目制作证明材料"]
-    input_marker = evaluate_payloads[0]["inputMarker"]
+    assert evaluate_payloads[1]["patterns"] == ["剧目制作证明材料"]
+    input_marker = evaluate_payloads[1]["inputMarker"]
     assert (
         "DOM.setFileInputFiles",
         {"nodeId": 12, "files": [str(purchase_image.resolve())]},
     ) in calls
-    assert evaluate_payloads[1] == input_marker
-    assert evaluate_payloads[2]["marker"] == input_marker
+    assert evaluate_payloads[2] == input_marker
+    assert evaluate_payloads[3]["marker"] == evaluate_payloads[1]["fieldMarker"]
+
+
+def test_wechat_video_publisher_rejects_material_upload_without_visible_acceptance(tmp_path: Path):
+    calls = []
+    purchase_image = tmp_path / "purchase.png"
+    purchase_image.write_bytes(b"purchase")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakeSession:
+        def send(self, method, payload):
+            calls.append((method, payload))
+            if method == "DOM.getDocument":
+                return {"root": {"nodeId": 1}}
+            if method == "DOM.querySelector":
+                return {"nodeId": 12}
+            return {}
+
+    class FakeContext:
+        def new_cdp_session(self, page):
+            return FakeSession()
+
+    class FakePage:
+        context = FakeContext()
+
+        def evaluate(self, script, payload):
+            calls.append(("evaluate", payload))
+            if isinstance(payload, dict) and "inputMarker" in payload:
+                return {
+                    "inputMarked": True,
+                    "inputMarker": payload["inputMarker"],
+                    "buttonMarker": payload["buttonMarker"],
+                    "fieldMarker": payload["fieldMarker"],
+                }
+            if isinstance(payload, dict) and "files" in payload:
+                return {"visibleAccepted": False}
+            return True
+
+        def wait_for_timeout(self, timeout):
+            calls.append(("wait_for_timeout", timeout))
+
+    try:
+        publisher._set_file_input_near_text(
+            FakePage(),
+            [purchase_image],
+            [re.compile("剧目制作证明材料")],
+            TimeoutError,
+            "剧目制作证明材料",
+        )
+    except RuntimeError as exception:
+        assert "文件未被页面接收" in str(exception)
+    else:
+        raise AssertionError("expected material upload rejection")
 
 
 def test_wechat_video_material_upload_button_script_ignores_download_links(tmp_path: Path):

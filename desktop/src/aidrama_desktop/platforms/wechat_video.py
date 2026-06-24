@@ -10,6 +10,9 @@ from aidrama_desktop.browser.chrome import ChromeController
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
 
 
+PLAYLET_SUMMARY_MAX_CHARS = 100
+
+
 class WeChatVideoPublisher(PlatformPublisher):
     login_url = "https://channels.weixin.qq.com/platform"
     playlet_url = "https://channels.weixin.qq.com/platform/native-drama-post"
@@ -166,7 +169,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         timeout_error,
     ) -> None:
         publish_title = str(metadata.get("publishTitle") or title)
-        publish_summary = str(metadata.get("summary") or summary or "")
+        publish_summary = self._playlet_summary(publish_title, summary, metadata)
         self._enter_playlet_plan(page, timeout_error)
         create_button = page.get_by_text(re.compile("创建剧集|新建剧集|新增剧集|上传剧集|添加剧集")).first
         try:
@@ -190,19 +193,22 @@ class WeChatVideoPublisher(PlatformPublisher):
             publish_title,
         )
         if publish_summary:
-            self._fill_first(
+            summary_filled = self._fill_first(
                 page,
                 [
                     "剧目简介",
                     "简介",
                     "剧情简介",
                     "描述",
+                    "请介绍相关剧情概要，便于用户更好地了解作品内容",
                     "请介绍相关剧情概要",
                     "请输入简介",
                     "请输入剧情简介",
                 ],
                 publish_summary,
             )
+            if not summary_filled:
+                raise RuntimeError("未能填写视频号剧目简介，请重新打开发布页面后重试")
 
         episode_count = metadata.get("episodeCount") or len(metadata.get("episodes", []) or media_files)
         if episode_count:
@@ -270,7 +276,17 @@ class WeChatVideoPublisher(PlatformPublisher):
 
         cover_file = metadata.get("coverFile")
         if cover_file:
-            self._set_file_input(page, Path(cover_file), re.compile("剧目海报|海报|封面|上传封面|添加封面|选择文件"), timeout_error)
+            self._set_file_input_near_text(
+                page,
+                Path(cover_file),
+                [
+                    re.compile("剧目海报"),
+                    re.compile("海报"),
+                    re.compile("封面"),
+                ],
+                timeout_error,
+                "剧目海报",
+            )
 
         raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
 
@@ -319,7 +335,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         except timeout_error as exception:
             raise RuntimeError("视频已选择，但未找到发布按钮，请检查视频号后台页面") from exception
 
-    def _fill_first(self, page, labels: list[str], value: str) -> None:
+    def _fill_first(self, page, labels: list[str], value: str) -> bool:
         for label in labels:
             for query in (label, re.compile(re.escape(label))):
                 locator = page.get_by_placeholder(query).first
@@ -327,7 +343,8 @@ class WeChatVideoPublisher(PlatformPublisher):
                     locator = page.get_by_label(query).first
                 if locator.count() > 0:
                     locator.fill(value)
-                    return
+                    return True
+        return False
 
     @staticmethod
     def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
@@ -336,6 +353,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             if value is not None and str(value).strip():
                 return str(value).strip()
         return ""
+
+    @classmethod
+    def _playlet_summary(cls, title: str, summary: str | None, metadata: dict[str, Any]) -> str:
+        raw_summary = cls._metadata_text(metadata, "summary", "description", "intro", "brief") or str(summary or "")
+        normalized = re.sub(r"\s+", " ", raw_summary).strip()
+        if not normalized:
+            normalized = f"《{title}》讲述人物在命运转折中的情感与成长故事。"
+        return normalized[:PLAYLET_SUMMARY_MAX_CHARS]
 
     @staticmethod
     def _production_cost_wan(metadata: dict[str, Any]) -> str:
@@ -843,14 +868,24 @@ class WeChatVideoPublisher(PlatformPublisher):
         controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
         input_marker = str(controls["inputMarker"])
         button_marker = str(controls.get("buttonMarker") or "")
+        field_marker = str(controls.get("fieldMarker") or "")
         if button_marker and self._try_set_material_files_by_marked_button(page, paths, button_marker, timeout_error, field_label):
-            if self._marked_file_input_has_files(page, input_marker, len(path_list)):
+            if self._material_upload_field_accepted_files(page, field_marker, path_list):
                 return
+        if button_marker:
+            controls = self._mark_material_upload_controls(page, label_patterns, timeout_error, field_label)
+            input_marker = str(controls["inputMarker"])
+            button_marker = str(controls.get("buttonMarker") or "")
+            field_marker = str(controls.get("fieldMarker") or "")
+            if button_marker and self._try_set_material_files_by_marked_button(page, paths, button_marker, timeout_error, field_label):
+                if self._material_upload_field_accepted_files(page, field_marker, path_list):
+                    return
         self._set_marked_file_input_files(page, input_marker, paths, field_label)
         self._dispatch_marked_file_input_events(page, input_marker)
-        if not self._marked_file_input_has_files(page, input_marker, len(path_list)):
-            names = "、".join(path.name for path in path_list)
-            raise RuntimeError(f"视频号{field_label}文件未被页面接收：{names}，请重新打开发布页面后重试")
+        if self._material_upload_field_accepted_files(page, field_marker, path_list):
+            return
+        names = "、".join(path.name for path in path_list)
+        raise RuntimeError(f"视频号{field_label}文件未被页面接收：{names}，请重新打开发布页面后重试")
 
     @staticmethod
     def _validate_material_upload_files(files: list[Path], field_label: str) -> None:
@@ -870,6 +905,7 @@ class WeChatVideoPublisher(PlatformPublisher):
     ) -> dict[str, Any]:
         input_marker = f"aidramaMaterialInput{time.time_ns()}"
         button_marker = f"aidramaMaterialButton{time.time_ns()}"
+        field_marker = f"aidramaMaterialField{time.time_ns()}"
         evaluate = getattr(page, "evaluate", None)
         if not callable(evaluate):
             raise RuntimeError(f"未找到视频号{field_label}上传控件，请重新打开发布页面后重试")
@@ -877,6 +913,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             "patterns": [pattern.pattern for pattern in label_patterns],
             "inputMarker": input_marker,
             "buttonMarker": button_marker,
+            "fieldMarker": field_marker,
         }
         for _attempt in range(10):
             try:
@@ -962,6 +999,68 @@ class WeChatVideoPublisher(PlatformPublisher):
         except Exception:  # noqa: BLE001
             return False
 
+    def _material_upload_field_accepted_files(self, page, field_marker: str, files: list[Path]) -> bool:
+        if not field_marker:
+            return False
+        for _attempt in range(20):
+            result = self._material_upload_field_state(page, field_marker, files)
+            if isinstance(result, dict) and result.get("visibleAccepted"):
+                return True
+            self._wait_for_page(page, 300)
+        return False
+
+    @staticmethod
+    def _material_upload_field_state(page, field_marker: str, files: list[Path]) -> dict[str, Any]:
+        evaluate = getattr(page, "evaluate", None)
+        if not callable(evaluate):
+            return {}
+        try:
+            return evaluate(
+                """
+                ({ marker, files }) => {
+                    const field = document.querySelector(`[data-aidrama-upload-field="${marker}"]`);
+                    if (!field) return { visibleAccepted: false, reason: 'field-missing' };
+                    const normalized = (value) => String(value || '').replace(/\\s+/g, '');
+                    const visible = (el) => {
+                        if (!el || !(el instanceof HTMLElement)) return false;
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    const text = normalized(field.innerText || field.textContent);
+                    const expectedNames = files.flatMap((file) => {
+                        const name = normalized(file.name);
+                        const stem = normalized(file.stem);
+                        return [name, stem].filter(Boolean);
+                    });
+                    const nameVisible = expectedNames.some((name) => name && text.includes(name));
+                    const statusVisible = /上传成功|重新上传|删除|预览|已上传/.test(text);
+                    const visiblePreview = Array.from(field.querySelectorAll([
+                        'img',
+                        '[class*="preview"]',
+                        '[class*="Preview"]',
+                        '[class*="file-list"]',
+                        '[class*="FileList"]',
+                        '[class*="upload-list"]',
+                        '[class*="UploadList"]'
+                    ].join(','))).some(visible);
+                    return {
+                        visibleAccepted: Boolean(nameVisible || statusVisible || visiblePreview),
+                        nameVisible: Boolean(nameVisible),
+                        statusVisible: Boolean(statusVisible),
+                        visiblePreview: Boolean(visiblePreview),
+                        text: text.slice(0, 300),
+                    };
+                }
+                """,
+                {
+                    "marker": field_marker,
+                    "files": [{"name": path.name, "stem": path.stem} for path in files],
+                },
+            )
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _try_set_material_files_by_button(
         self,
         page,
@@ -1036,7 +1135,7 @@ class WeChatVideoPublisher(PlatformPublisher):
     @staticmethod
     def _mark_material_upload_controls_script() -> str:
         return """
-            ({ patterns, inputMarker, buttonMarker }) => {
+            ({ patterns, inputMarker, buttonMarker, fieldMarker }) => {
                 const regexps = patterns.map((pattern) => new RegExp(pattern));
                 const normalized = (value) => String(value || '').replace(/\\s+/g, '');
                 const textOf = (el) => normalized(el.innerText || el.textContent);
@@ -1099,6 +1198,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                     const inputs = Array.from(region.querySelectorAll('input[type="file"]'));
                     const input = inputs[0];
                     if (!input) return null;
+                    region.setAttribute('data-aidrama-upload-field', fieldMarker);
                     input.setAttribute('data-aidrama-file-input', inputMarker);
                     const button = uploadButtonsIn(region)
                         .sort((a, b) => {
@@ -1112,6 +1212,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                     return {
                         inputMarked: true,
                         inputMarker,
+                        fieldMarker,
                         buttonMarked: Boolean(button),
                         buttonMarker: button ? buttonMarker : null,
                         inputAccept: input.getAttribute('accept') || '',

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -32,6 +33,8 @@ BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
 }
+FILENAME_EDGE_CHARS = " ._-—–·，,。.!！?？、:：;；《》<>【】[]()（）"
+INVALID_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
 @dataclass
@@ -345,6 +348,7 @@ def download_episodes(
                 index,
                 total,
                 target_dir,
+                episode_video_filename(download_plan, episode, index),
                 base_url,
                 headers,
                 progress_callback,
@@ -367,6 +371,7 @@ def download_episode(
     index: int,
     total: int,
     target_dir: Path,
+    filename: str,
     base_url: str,
     headers: dict[str, str] | None,
     progress_callback: Callable[[int, int, dict, int, int | None], None] | None,
@@ -377,7 +382,10 @@ def download_episode(
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
 ) -> Path:
     raise_if_task_interrupted(should_stop, should_pause, should_skip)
-    target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+    target = target_dir / filename
+    legacy_target = target_dir / legacy_episode_video_filename(episode, index)
+    if target != legacy_target and is_complete_episode_file(legacy_target, episode) and not target.exists():
+        legacy_target.replace(target)
     if is_complete_episode_file(target, episode):
         if progress_callback:
             downloaded = target.stat().st_size
@@ -483,6 +491,35 @@ def is_downloaded_file_complete(target: Path, episode: dict) -> bool:
     return actual_size > 0
 
 
+def episode_video_filename(download_plan: dict, episode: dict, index: int) -> str:
+    drama_name = safe_episode_drama_name(
+        download_plan.get("aiTitle")
+        or download_plan.get("publishTitle")
+        or download_plan.get("title")
+        or download_plan.get("name")
+    )
+    episode_no = episode_number(episode, index)
+    return f"{drama_name}-第{episode_no}集.mp4"
+
+
+def legacy_episode_video_filename(episode: dict, index: int) -> str:
+    return f"{episode_number(episode, index):03d}.mp4"
+
+
+def episode_number(episode: dict, index: int) -> int:
+    try:
+        value = int(episode.get("episodeNo") or index)
+    except (TypeError, ValueError):
+        value = index
+    return max(value, 1)
+
+
+def safe_episode_drama_name(value: object) -> str:
+    clean = INVALID_FILENAME_CHARS_RE.sub("", str(value or "").strip())
+    clean = re.sub(r"\s+", "", clean).strip(FILENAME_EDGE_CHARS)
+    return clean or "短剧"
+
+
 def cleanup_part_file(part_file: Path) -> None:
     try:
         if part_file.exists():
@@ -560,9 +597,9 @@ def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path
                 "title": episode.get("title"),
                 "sourcePath": episode.get("sourcePath"),
                 "size": episode.get("size"),
-                "fileName": f"{int(episode['episodeNo']):03d}.mp4",
+                "fileName": episode_video_filename(download_plan, episode, index),
             }
-            for episode in episodes
+            for index, episode in enumerate(episodes, start=1)
         ],
     }
     target = target_dir / "meta.json"

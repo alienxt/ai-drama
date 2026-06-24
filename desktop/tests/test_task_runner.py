@@ -4,7 +4,7 @@ import time
 import urllib.error
 from pathlib import Path
 
-from aidrama_desktop.tasks.runner import TaskRunner, download_episodes
+from aidrama_desktop.tasks.runner import TaskRunner, download_episodes, episode_video_filename
 
 
 class FakeApi:
@@ -450,16 +450,17 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
 
     files = download_episodes(download_plan, tmp_path / "drama-1", "http://server/api")
 
-    assert files == [tmp_path / "drama-1" / "001.mp4"]
+    episode_file = tmp_path / "drama-1" / "神医归来AI-第1集.mp4"
+    assert files == [episode_file]
     assert (tmp_path / "drama-1" / "fengmian.jpg").read_bytes() == b"cover"
-    assert (tmp_path / "drama-1" / "001.mp4").read_bytes() == b"video"
+    assert episode_file.read_bytes() == b"video"
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
     assert metadata["title"] == "神医归来"
     assert metadata["publishTitle"] == "神医归来AI"
     assert metadata["summary"] == "简介"
     assert metadata["coverFile"] == "fengmian.jpg"
     assert metadata["episodeCount"] == 1
-    assert metadata["episodes"][0]["fileName"] == "001.mp4"
+    assert metadata["episodes"][0]["fileName"] == "神医归来AI-第1集.mp4"
     assert metadata["episodes"][0]["size"] is None
     assert opened_urls == ["http://server/uploads/covers/drama.jpg", "http://server/files/1.mp4"]
 
@@ -467,8 +468,9 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
 def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch):
     target_dir = tmp_path / "drama-1"
     target_dir.mkdir()
-    existing_file = target_dir / "001.mp4"
-    existing_file.write_bytes(b"already-downloaded")
+    legacy_file = target_dir / "001.mp4"
+    legacy_file.write_bytes(b"already-downloaded")
+    expected_file = target_dir / "续传短剧-第1集.mp4"
     opened_urls = []
 
     def fake_urlopen(request):
@@ -491,8 +493,9 @@ def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch
 
     files = download_episodes(download_plan, target_dir, "http://server/api")
 
-    assert files == [existing_file]
-    assert existing_file.read_bytes() == b"already-downloaded"
+    assert files == [expected_file]
+    assert expected_file.read_bytes() == b"already-downloaded"
+    assert not legacy_file.exists()
     assert opened_urls == []
 
 
@@ -541,9 +544,10 @@ def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatc
         retry_delay_seconds=0,
     )
 
-    assert files == [tmp_path / "drama-1" / "001.mp4"]
-    assert (tmp_path / "drama-1" / "001.mp4").read_bytes() == b"video"
-    assert not (tmp_path / "drama-1" / "001.mp4.part").exists()
+    episode_file = tmp_path / "drama-1" / "重试短剧-第1集.mp4"
+    assert files == [episode_file]
+    assert episode_file.read_bytes() == b"video"
+    assert not (tmp_path / "drama-1" / "重试短剧-第1集.mp4.part").exists()
     assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
 
 
@@ -649,8 +653,19 @@ def test_download_episodes_downloads_episodes_concurrently_with_limit(tmp_path, 
 
     files = download_episodes(download_plan, tmp_path / "drama-1", "http://server/api")
 
-    assert files == [tmp_path / "drama-1" / f"{episode_no:03d}.mp4" for episode_no in range(1, 9)]
+    assert files == [tmp_path / "drama-1" / f"并发短剧-第{episode_no}集.mp4" for episode_no in range(1, 9)]
     assert max_active == 6
     assert {url for url in opened_urls if "/files/" in url} == {
         f"http://server/files/{episode_no}.mp4" for episode_no in range(1, 9)
     }
+
+
+def test_episode_video_filename_uses_ai_title_and_episode_number():
+    assert (
+        episode_video_filename(
+            {"title": "原始剧名", "aiTitle": "AI剧名"},
+            {"episodeNo": 12},
+            1,
+        )
+        == "AI剧名-第12集.mp4"
+    )
