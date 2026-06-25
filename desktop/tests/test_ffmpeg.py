@@ -60,3 +60,47 @@ def test_ffmpeg_processor_ignores_unreadable_bitrate(monkeypatch, tmp_path):
 
     assert processor.video_bitrate_bps(source) is None
     assert processor.needs_wechat_video_bitrate_transcode(source) is False
+
+
+def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    cover = tmp_path / "fengmian.jpg"
+    source.write_text("video")
+    cover.write_text("cover")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 1281, "height": 721}]}),
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.transcode_for_wechat_video(source, target, cover_path=cover) == target
+
+    ffmpeg_command = commands[-1]
+    assert ffmpeg_command[0] == "ffmpeg"
+    assert str(source) in ffmpeg_command
+    assert str(cover) in ffmpeg_command
+    assert "-filter_complex" in ffmpeg_command
+    assert ffmpeg_command[ffmpeg_command.index("-x264-params") + 1] == "nal-hrd=cbr:filler=1"
+    filter_complex = ffmpeg_command[ffmpeg_command.index("-filter_complex") + 1]
+    assert "scale=1280:720" in filter_complex
+    assert "boxblur=24:2" in filter_complex
+    assert "force_original_aspect_ratio=decrease" in filter_complex
+    assert "overlay=(W-w)/2:(H-h)/2" in filter_complex
+    assert "split=2[coverv][picv]" in filter_complex
+    assert "overlay=0:0:enable='lt(t,1)'" in filter_complex
+    assert ffmpeg_command[ffmpeg_command.index("-map") + 1] == "[outv]"
+    assert "0:a?" in ffmpeg_command
+    assert "[picv]" in ffmpeg_command
+    assert ffmpeg_command[ffmpeg_command.index("-c:v:1") + 1] == "mjpeg"
+    assert ffmpeg_command[ffmpeg_command.index("-disposition:v:1") + 1] == "attached_pic"

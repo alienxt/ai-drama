@@ -145,6 +145,7 @@ class DistributionServiceTest {
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
+        markPrepared(drama);
 
         MediaAccount first = activeMedia("media-1", "owner-1", "urban");
         MediaAccount second = activeMedia("media-2", "owner-1", "urban");
@@ -176,6 +177,26 @@ class DistributionServiceTest {
     }
 
     @Test
+    void skipsReadyDramaWithoutAiSummary() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = readyDrama("drama-1", "urban");
+        drama.setAiSummary("");
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+
+        assertThat(service.generateTasksForOwner("owner-1")).isEmpty();
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
     void skipsDramaWhenBlockingTaskAlreadyExistsForSameMediaAccount() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
@@ -190,6 +211,7 @@ class DistributionServiceTest {
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
+        markPrepared(drama);
 
         when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
                 any(DramaStatus.class),
@@ -223,6 +245,7 @@ class DistributionServiceTest {
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
+        markPrepared(drama);
 
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
@@ -262,6 +285,11 @@ class DistributionServiceTest {
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
         markUpdatedNow(drama);
+        markPrepared(drama);
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/drama/1.mp4");
+        drama.setEpisodes(List.of(episode));
         DistributionTask existing = new DistributionTask();
         existing.setId("task-1");
         existing.setDramaId("drama-1");
@@ -319,6 +347,7 @@ class DistributionServiceTest {
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
         drama.setEpisodes(List.of(episode));
+        markPrepared(drama);
 
         when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
                 any(DramaStatus.class),
@@ -677,11 +706,19 @@ class DistributionServiceTest {
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of(categoryId));
         markUpdatedNow(drama);
+        markPrepared(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/" + id + ".mp4");
         drama.setEpisodes(List.of(episode));
         return drama;
+    }
+
+    private static void markPrepared(Drama drama) {
+        drama.setAiTitle("AI剧名");
+        drama.setAiSummary("AI简介...");
+        drama.setAiCoverUrl("/uploads/ai-covers/" + drama.getId() + ".jpg");
+        drama.setAiVideoCoverUrl("/uploads/ai-covers/" + drama.getId() + "-video.jpg");
     }
 
     private static void markUpdatedNow(Drama drama) {

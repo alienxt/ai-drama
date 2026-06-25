@@ -8,8 +8,10 @@ public class DramaDtos {
             String title,
             String aiTitle,
             String summary,
+            String aiSummary,
             String coverUrl,
             String aiCoverUrl,
+            String aiVideoCoverUrl,
             Integer rating,
             Integer costAmountWan,
             List<String> categoryIds,
@@ -26,13 +28,18 @@ public class DramaDtos {
     public record BackfillTotalMinutesResponse(int requested, long updated, Instant updatedAt) {
     }
 
+    public record BackfillAiSummariesAccepted(int requested, Instant acceptedAt) {
+    }
+
     public record DownloadPlan(
             String dramaId,
             String title,
             String aiTitle,
             String summary,
+            String aiSummary,
             String coverUrl,
             String aiCoverUrl,
+            String aiVideoCoverUrl,
             String effectiveCoverUrl,
             Integer rating,
             Integer totalMinutes,
@@ -64,8 +71,10 @@ public class DramaDtos {
             String title,
             String aiTitle,
             String summary,
+            String aiSummary,
             String coverUrl,
             String aiCoverUrl,
+            String aiVideoCoverUrl,
             Integer rating,
             List<String> categoryIds,
             List<String> categoryNames,
@@ -80,8 +89,10 @@ public class DramaDtos {
                 String title,
                 String aiTitle,
                 String summary,
+                String aiSummary,
                 String coverUrl,
                 String aiCoverUrl,
+                String aiVideoCoverUrl,
                 Integer rating,
                 List<String> categoryIds,
                 List<String> categoryNames,
@@ -96,8 +107,10 @@ public class DramaDtos {
                     effectiveTitle(title, aiTitle),
                     null,
                     summary,
+                    aiSummary,
                     effectiveCoverUrl(coverUrl, aiCoverUrl),
                     null,
+                    aiVideoCoverUrl,
                     rating == null ? 5 : rating,
                     categoryIds == null ? List.of() : categoryIds,
                     categoryNames,

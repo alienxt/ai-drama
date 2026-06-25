@@ -16,8 +16,10 @@ public class Drama {
     private String title;
     private String aiTitle;
     private String summary;
+    private String aiSummary;
     private String coverUrl;
     private String aiCoverUrl;
+    private String aiVideoCoverUrl;
     private boolean aiCoverGenerating;
     private Instant aiPreparationFailedAt;
     private Integer rating = 5;
@@ -41,10 +43,14 @@ public class Drama {
     public void setAiTitle(String aiTitle) { this.aiTitle = aiTitle; }
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
+    public String getAiSummary() { return aiSummary; }
+    public void setAiSummary(String aiSummary) { this.aiSummary = aiSummary; }
     public String getCoverUrl() { return coverUrl; }
     public void setCoverUrl(String coverUrl) { this.coverUrl = coverUrl; }
     public String getAiCoverUrl() { return aiCoverUrl; }
     public void setAiCoverUrl(String aiCoverUrl) { this.aiCoverUrl = aiCoverUrl; }
+    public String getAiVideoCoverUrl() { return aiVideoCoverUrl; }
+    public void setAiVideoCoverUrl(String aiVideoCoverUrl) { this.aiVideoCoverUrl = aiVideoCoverUrl; }
     public boolean isAiCoverGenerating() { return aiCoverGenerating; }
     public void setAiCoverGenerating(boolean aiCoverGenerating) { this.aiCoverGenerating = aiCoverGenerating; }
     public Instant getAiPreparationFailedAt() { return aiPreparationFailedAt; }

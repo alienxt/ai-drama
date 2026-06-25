@@ -47,6 +47,7 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -122,7 +123,7 @@ public class DramaController {
         Pageable pageable
     ) {
         MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "aiTitle", "summary", "sourcePath")
+                .containsAny(keyword, "title", "aiTitle", "summary", "aiSummary", "sourcePath")
                 .eq("status", status)
                 .in("categoryIds", categoryIds)
                 .arraySize("episodes", episodeCount)
@@ -131,6 +132,8 @@ public class DramaController {
             query.missingText("coverUrl");
         } else if (assetState == DramaAssetState.MISSING_SUMMARY) {
             query.missingText("summary");
+        } else if (assetState == DramaAssetState.MISSING_AI_SUMMARY) {
+            query.missingText("aiSummary");
         }
         PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, pageable));
         List<Drama> content = page.content().stream()
@@ -150,7 +153,7 @@ public class DramaController {
     ) {
         Instant listedFrom = Instant.now().minus(7, ChronoUnit.DAYS);
         MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "aiTitle")
+                .containsAny(keyword, "title", "aiTitle", "aiSummary")
                 .eq("status", DramaStatus.READY)
                 .range("updatedAt", listedFrom, null);
         long total = mongoTemplate.count(query.toQuery(), Drama.class);
@@ -159,7 +162,7 @@ public class DramaController {
                 : pageable;
         Query pageQuery = query.toQuery().with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "summary", "coverUrl", "aiCoverUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
+                .include("title", "aiTitle", "summary", "aiSummary", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -176,8 +179,10 @@ public class DramaController {
                             document.getString("title"),
                             document.getString("aiTitle"),
                             document.getString("summary"),
+                            document.getString("aiSummary"),
                             document.getString("coverUrl"),
                             document.getString("aiCoverUrl"),
+                            document.getString("aiVideoCoverUrl"),
                             document.getInteger("rating"),
                             categoryIds,
                             categoryIds.stream()
@@ -353,12 +358,41 @@ public class DramaController {
         );
     }
 
+    @PostMapping("/api/admin/dramas/backfill-ai-summaries")
+    ApiResponse<DramaDtos.BackfillAiSummariesAccepted> backfillAiSummaries() {
+        List<String> ids = repository.findAll().stream()
+                .map(Drama::getId)
+                .filter(this::hasText)
+                .toList();
+        Instant acceptedAt = Instant.now();
+        taskExecutor.execute(() -> ids.forEach(id -> {
+            try {
+                dramaAiService.generateSummary(id);
+                LOGGER.info("AI summary backfill finished: dramaId={}", id);
+            } catch (RuntimeException exception) {
+                LOGGER.error("AI summary backfill failed: dramaId={}", id, exception);
+            }
+        }));
+        return ApiResponse.ok(
+                new DramaDtos.BackfillAiSummariesAccepted(ids.size(), acceptedAt),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     private Drama apply(Drama drama, DramaDtos.DramaRequest request) {
+        String previousSummary = drama.getSummary();
+        String previousAiSummary = drama.getAiSummary();
         drama.setTitle(request.title());
         drama.setAiTitle(request.aiTitle());
         drama.setSummary(request.summary());
+        if (!Objects.equals(previousSummary, request.summary()) && Objects.equals(previousAiSummary, request.aiSummary())) {
+            drama.setAiSummary(null);
+        } else {
+            drama.setAiSummary(request.aiSummary());
+        }
         drama.setCoverUrl(request.coverUrl());
         drama.setAiCoverUrl(request.aiCoverUrl());
+        drama.setAiVideoCoverUrl(request.aiVideoCoverUrl());
         drama.setRating(request.rating());
         if (request.costAmountWan() != null) {
             drama.setCostAmountWan(request.costAmountWan());
@@ -393,7 +427,7 @@ public class DramaController {
         taskExecutor.execute(() -> {
             try {
                 Drama drama = dramaAiService.generateCover(id);
-                LOGGER.info("AI cover generation finished: dramaId={}, aiCoverUrl={}", id, drama.getAiCoverUrl());
+                LOGGER.info("AI cover generation finished: dramaId={}, aiCoverUrl={}, aiVideoCoverUrl={}", id, drama.getAiCoverUrl(), drama.getAiVideoCoverUrl());
             } catch (RuntimeException exception) {
                 LOGGER.error("AI cover generation failed: dramaId={}", id, exception);
                 repository.findById(id).ifPresent(drama -> {
@@ -425,8 +459,10 @@ public class DramaController {
                         effectiveTitle(drama),
                         drama.getAiTitle(),
                         drama.getSummary(),
+                        drama.getAiSummary(),
                         drama.getCoverUrl(),
                         drama.getAiCoverUrl(),
+                        drama.getAiVideoCoverUrl(),
                         effectiveCoverUrl(drama),
                         drama.getRating(),
                         drama.getTotalMinutes(),
@@ -526,11 +562,11 @@ public class DramaController {
         if (drama.getStatus() != DramaStatus.READY) {
             return;
         }
-        if (!hasText(drama.getAiTitle()) || !hasText(drama.getAiCoverUrl()) || drama.isAiCoverGenerating()
+        if (!hasText(drama.getAiTitle()) || !hasText(drama.getAiSummary()) || !hasText(drama.getAiCoverUrl()) || !hasText(drama.getAiVideoCoverUrl()) || drama.isAiCoverGenerating()
                 || drama.getEpisodes() == null || drama.getEpisodes().isEmpty()) {
             throw new BusinessException(
                     "DRAMA_NOT_PREPARED",
-                    "AI 剧名和 AI 封面生成完成后才能设为待分发",
+                    "AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能设为待分发",
                     HttpStatus.BAD_REQUEST
             );
         }

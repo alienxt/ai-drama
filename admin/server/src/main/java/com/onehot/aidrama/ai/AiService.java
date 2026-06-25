@@ -19,6 +19,7 @@ public class AiService {
     public static final String DEFAULT_TEXT_MODEL = "gpt-5.5";
     public static final String DEFAULT_IMAGE_MODEL = "gpt-image-2";
     public static final String DEFAULT_IMAGE_SIZE = "1024x1536";
+    public static final String DEFAULT_VIDEO_COVER_IMAGE_SIZE = "1536x1024";
     public static final String DEFAULT_IMAGE_QUALITY = "medium";
     public static final String DEFAULT_IMAGE_FORMAT = "jpeg";
 
@@ -52,13 +53,17 @@ public class AiService {
     }
 
     public String generateImageBase64(String prompt) {
+        return generateImageBase64(prompt, config("openai.imageSize", DEFAULT_IMAGE_SIZE));
+    }
+
+    public String generateImageBase64(String prompt, String size) {
         JsonNode response = post(
                 "/images/generations",
                 Map.of(
                         "model", config("openai.imageModel", DEFAULT_IMAGE_MODEL),
                         "prompt", prompt,
                         "n", 1,
-                        "size", config("openai.imageSize", DEFAULT_IMAGE_SIZE),
+                        "size", size == null || size.isBlank() ? DEFAULT_IMAGE_SIZE : size,
                         "quality", config("openai.imageQuality", DEFAULT_IMAGE_QUALITY),
                         "output_format", config("openai.imageOutputFormat", DEFAULT_IMAGE_FORMAT)
                 )
@@ -80,6 +85,10 @@ public class AiService {
 
     public String imageSize() {
         return config("openai.imageSize", DEFAULT_IMAGE_SIZE);
+    }
+
+    public String videoCoverImageSize() {
+        return config("openai.videoCoverImageSize", DEFAULT_VIDEO_COVER_IMAGE_SIZE);
     }
 
     public String imageQuality() {

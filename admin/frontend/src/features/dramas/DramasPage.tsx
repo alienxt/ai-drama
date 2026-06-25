@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -31,6 +31,7 @@ export function DramasPage() {
   const [syncingAssets, setSyncingAssets] = useState(false);
   const [freshing, setFreshing] = useState(false);
   const [backfillingMinutes, setBackfillingMinutes] = useState(false);
+  const [backfillingAiSummaries, setBackfillingAiSummaries] = useState(false);
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
   const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
@@ -44,7 +45,7 @@ export function DramasPage() {
 
   async function scan() {
     await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
-    appMessage.success('已开始后台扫描，扫描成功后会更新上次扫描时间并继续生成 AI 剧名和封面');
+    appMessage.success('已开始后台扫描，扫描成功后会更新上次扫描时间并继续生成 AI 剧名、AI 简介和封面');
     setVersion((value) => value + 1);
   }
 
@@ -59,6 +60,17 @@ export function DramasPage() {
     }
   }
 
+  async function backfillAiSummaries() {
+    setBackfillingAiSummaries(true);
+    try {
+      const result = await apiPost<DramaBackfillAiSummariesAccepted>('/admin/dramas/backfill-ai-summaries', {});
+      appMessage.success(`已提交 ${result.requested} 部短剧的 AI 简介补跑任务`);
+      setVersion((value) => value + 1);
+    } finally {
+      setBackfillingAiSummaries(false);
+    }
+  }
+
   function showEditor(drama?: Drama) {
     setEditing(drama ?? null);
     form.setFieldsValue(drama ?? { categoryIds: [], status: 'DRAFT', rating: 5 });
@@ -70,8 +82,10 @@ export function DramasPage() {
       title: values.title,
       aiTitle: values.aiTitle,
       summary: values.summary,
+      aiSummary: values.aiSummary,
       coverUrl: values.coverUrl,
       aiCoverUrl: values.aiCoverUrl,
+      aiVideoCoverUrl: values.aiVideoCoverUrl,
       rating: values.rating ?? 5,
       costAmountWan: values.costAmountWan,
       categoryIds: values.categoryIds,
@@ -94,7 +108,7 @@ export function DramasPage() {
     setGenerating(key);
     try {
       const updated = await apiPost<Drama>(`/admin/dramas/${record.id}/generate-title`, {});
-      appMessage.success('新剧名已生成');
+      appMessage.success('新剧名和 AI 简介已生成');
       syncViewedDrama(updated);
       setVersion((value) => value + 1);
     } finally {
@@ -128,7 +142,7 @@ export function DramasPage() {
       const result = await apiPost<DramaAssetSyncAccepted>('/admin/dramas/sync-assets', {
         ids: selectedRowKeys.map(String),
       });
-      appMessage.success(`已开始后台同步 ${result.requested} 部短剧，同步后会继续生成 AI 剧名和封面`);
+      appMessage.success(`已开始后台同步 ${result.requested} 部短剧，同步后会继续生成 AI 剧名、AI 简介和封面`);
       setSelectedRowKeys([]);
       setSyncModeOpen(false);
     } finally {
@@ -193,7 +207,7 @@ export function DramasPage() {
           await http.post<DramaClientAssetSyncComplete>(`/admin/dramas/sync-assets/client-complete/${item.dramaId}`, formData, {
             timeout: 120000,
           });
-          updateClientSyncItem(item.dramaId, { status: 'success', detail: '已保存，后台会继续生成 AI 剧名和封面' });
+          updateClientSyncItem(item.dramaId, { status: 'success', detail: '已保存，后台会继续生成 AI 剧名、AI 简介和封面' });
         } catch (error) {
           updateClientSyncItem(item.dramaId, {
             status: 'failed',
@@ -263,6 +277,7 @@ export function DramasPage() {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditor()}>新增短剧</Button>
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
           <Button icon={<ClockCircleOutlined />} loading={backfillingMinutes} onClick={backfillTotalMinutes}>补总时长</Button>
+          <Button icon={<FileTextOutlined />} loading={backfillingAiSummaries} onClick={backfillAiSummaries}>补跑AI简介</Button>
           <Button
             icon={<SyncOutlined />}
             disabled={!selectedRowKeys.length}
@@ -285,7 +300,7 @@ export function DramasPage() {
       extra={(
         <TableToolbar
           fields={[
-            { name: 'keyword', placeholder: '搜索剧名/AI剧名/简介/目录', width: 240 },
+            { name: 'keyword', placeholder: '搜索剧名/AI剧名/简介/AI简介/目录', width: 260 },
             {
               name: 'status',
               placeholder: '状态',
@@ -300,6 +315,7 @@ export function DramasPage() {
               options: [
                 { value: 'MISSING_COVER', label: '无封面' },
                 { value: 'MISSING_SUMMARY', label: '无简介' },
+                { value: 'MISSING_AI_SUMMARY', label: '无AI简介' },
               ],
             },
             { name: 'episodeCount', placeholder: '集数', type: 'number', width: 120 },
@@ -318,7 +334,7 @@ export function DramasPage() {
     >
       <AdminTable<Drama>
         rowKey="id"
-        scroll={{ x: 1760 }}
+        scroll={{ x: 2170 }}
         tableLayout="fixed"
         reloadKey={`${version}-${JSON.stringify(filters)}`}
         loadPage={(page, size) => apiGetPage<Drama>('/admin/dramas', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
@@ -334,6 +350,12 @@ export function DramasPage() {
             width: 90,
             render: (coverUrl?: string) => coverUrl ? <Image className="drama-cover" src={coverUrl} alt="短剧封面" /> : <span className="muted">无封面</span>,
           },
+          {
+            title: 'AI封面',
+            dataIndex: 'aiCoverUrl',
+            width: 90,
+            render: (aiCoverUrl?: string) => aiCoverUrl ? <Image className="drama-cover" src={aiCoverUrl} alt="AI封面" /> : <span className="muted">未生成</span>,
+          },
           { title: '短剧名称', dataIndex: 'title', width: 220 },
           {
             title: 'AI 剧名',
@@ -348,6 +370,16 @@ export function DramasPage() {
             render: (summary?: string) => (
               <Typography.Paragraph className="table-summary" ellipsis={{ rows: 2, tooltip: summary }}>
                 {summary || '-'}
+              </Typography.Paragraph>
+            ),
+          },
+          {
+            title: 'AI 简介',
+            dataIndex: 'aiSummary',
+            width: 320,
+            render: (aiSummary?: string) => (
+              <Typography.Paragraph className="table-summary" ellipsis={{ rows: 2, tooltip: aiSummary }}>
+                {aiSummary || <span className="muted">未生成</span>}
               </Typography.Paragraph>
             ),
           },
@@ -380,7 +412,7 @@ export function DramasPage() {
                 <Tooltip title="编辑">
                   <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => showEditor(record)} />
                 </Tooltip>
-                <Tooltip title="生成新剧名">
+                <Tooltip title="生成新剧名和 AI 简介">
                   <Button
                     className="table-action"
                     size="small"
@@ -463,6 +495,13 @@ export function DramasPage() {
             </section>
 
             <section className="drama-detail-section">
+              <h3>AI 简介</h3>
+              <Typography.Paragraph className="drama-detail-summary">
+                {viewing.aiSummary || '-'}
+              </Typography.Paragraph>
+            </section>
+
+            <section className="drama-detail-section">
               <h3>封面</h3>
               <div className="drama-cover-pair">
                 <div className="drama-cover-preview">
@@ -481,6 +520,14 @@ export function DramasPage() {
                     </div>
                   ) : viewing.aiCoverUrl ? (
                     <Image className="drama-detail-cover-small" src={viewing.aiCoverUrl} alt="AI 新封面" />
+                  ) : (
+                    <div className="drama-cover-placeholder">未生成</div>
+                  )}
+                </div>
+                <div className="drama-cover-preview">
+                  <span>横版视频封面</span>
+                  {viewing.aiVideoCoverUrl ? (
+                    <Image className="drama-detail-cover-small" src={viewing.aiVideoCoverUrl} alt="横版视频封面" />
                   ) : (
                     <div className="drama-cover-placeholder">未生成</div>
                   )}
@@ -578,10 +625,16 @@ export function DramasPage() {
           <Form.Item name="summary" label="简介">
             <Input.TextArea rows={3} />
           </Form.Item>
+          <Form.Item name="aiSummary" label="AI 简介">
+            <Input.TextArea rows={3} maxLength={100} showCount />
+          </Form.Item>
           <Form.Item name="coverUrl" label="封面地址">
             <Input />
           </Form.Item>
           <Form.Item name="aiCoverUrl" label="AI 新封面地址">
+            <Input />
+          </Form.Item>
+          <Form.Item name="aiVideoCoverUrl" label="横版视频封面地址">
             <Input />
           </Form.Item>
           <Form.Item name="rating" label="评分" rules={[{ required: true }]}>

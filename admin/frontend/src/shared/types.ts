@@ -29,8 +29,10 @@ export type Drama = {
   title: string;
   aiTitle?: string;
   summary?: string;
+  aiSummary?: string;
   coverUrl?: string;
   aiCoverUrl?: string;
+  aiVideoCoverUrl?: string;
   aiCoverGenerating?: boolean;
   rating?: number;
   totalMinutes?: number;
@@ -83,6 +85,11 @@ export type DramaBackfillTotalMinutesResponse = {
   requested: number;
   updated: number;
   updatedAt?: string;
+};
+
+export type DramaBackfillAiSummariesAccepted = {
+  requested: number;
+  acceptedAt?: string;
 };
 
 export type DramaClientAssetSyncPlanItem = {
@@ -154,7 +161,7 @@ export type DistributionTaskStatusCount = {
 
 export type AiTask = {
   id: string;
-  type: 'DRAMA_TITLE' | 'DRAMA_COVER';
+  type: 'DRAMA_TITLE' | 'DRAMA_SUMMARY' | 'DRAMA_COVER' | 'DRAMA_VIDEO_COVER';
   status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
   provider?: string;
   model?: string;

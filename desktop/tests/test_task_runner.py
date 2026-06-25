@@ -30,6 +30,7 @@ class FakeApi:
             "dramaId": "drama-1",
             "title": "神医归来",
             "summary": "简介",
+            "aiSummary": "AI简介...",
             "totalMinutes": 20,
             "costAmountWan": 3,
             "episodes": [
@@ -49,12 +50,16 @@ class FakeApi:
 class FakeProcessor:
     def __init__(self):
         self.calls = []
+        self.dimensions = {}
 
-    def transcode_for_wechat_video(self, source: Path, target: Path) -> Path:
-        self.calls.append((source, target))
+    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
+        self.calls.append((source, target, cover_path))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.name)
         return target
+
+    def video_dimensions(self, source: Path):
+        return self.dimensions.get(source.name)
 
 
 class LowBitrateProcessor(FakeProcessor):
@@ -191,7 +196,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
 
     assert runner.publish_once() == "succeeded"
 
-    assert publisher.summary == "简介"
+    assert publisher.summary == "AI简介..."
     assert publisher.metadata["dramaId"] == "drama-1"
     assert publisher.metadata["publishTitle"] == "神医归来"
     assert publisher.metadata["coverFile"] == cover_file
@@ -237,9 +242,88 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
 
     processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
     assert publisher.files == [processed_file, tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
-    assert processor.calls == [(tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_file)]
+    assert processor.calls == [(tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_file, None)]
     assert publisher.metadata["episodes"][0]["file"] == processed_file
     assert publisher.metadata["episodes"][1]["file"] == tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
+
+
+def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+    processor = LowBitrateProcessor()
+    processor.dimensions = {"001.mp4": (720, 1280)}
+    cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        cover_file.parent.mkdir(parents=True, exist_ok=True)
+        cover_file.write_text("cover")
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    processed_2 = tmp_path / "dramas" / "processed" / "drama-1" / "002.mp4"
+    assert publisher.files == [processed_1, processed_2]
+    assert processor.calls == [
+        (tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_1, cover_file),
+        (tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4", processed_2, cover_file),
+    ]
+    marker = processed_2.with_name("002.mp4.aidrama.json")
+    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(cover_file)
+
+
+def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+    processor = LowBitrateProcessor()
+    processor.dimensions = {"001.mp4": (1280, 720)}
+    cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
+    video_cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "video-cover.jpg"
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        cover_file.parent.mkdir(parents=True, exist_ok=True)
+        cover_file.write_text("poster-cover")
+        video_cover_file.write_text("video-cover")
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    assert processor.calls[0] == (
+        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+        processed_1,
+        video_cover_file,
+    )
+    marker = processed_1.with_name("001.mp4.aidrama.json")
+    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(video_cover_file)
 
 
 def test_publish_metadata_uses_stable_free_episode_count():
@@ -516,6 +600,8 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
         opened_urls.append(request.full_url)
         if request.full_url.endswith("/uploads/covers/drama.jpg"):
             return FakeResponse(b"cover")
+        if request.full_url.endswith("/uploads/covers/video.jpg"):
+            return FakeResponse(b"video-cover")
         return FakeResponse(b"video")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -524,7 +610,9 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
         "title": "神医归来",
         "aiTitle": "神医归来AI",
         "summary": "简介",
+        "aiSummary": "AI简介...",
         "effectiveCoverUrl": "/uploads/covers/drama.jpg",
+        "aiVideoCoverUrl": "/uploads/covers/video.jpg",
         "rating": 5,
         "categoryIds": ["urban"],
         "episodes": [
@@ -537,16 +625,25 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     episode_file = tmp_path / "drama-1" / "神医归来AI-第1集.mp4"
     assert files == [episode_file]
     assert (tmp_path / "drama-1" / "fengmian.jpg").read_bytes() == b"cover"
+    assert (tmp_path / "drama-1" / "video-cover.jpg").read_bytes() == b"video-cover"
     assert episode_file.read_bytes() == b"video"
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
     assert metadata["title"] == "神医归来"
     assert metadata["publishTitle"] == "神医归来AI"
-    assert metadata["summary"] == "简介"
+    assert metadata["summary"] == "AI简介..."
+    assert metadata["aiSummary"] == "AI简介..."
+    assert metadata["originalSummary"] == "简介"
     assert metadata["coverFile"] == "fengmian.jpg"
+    assert metadata["videoCoverFile"] == "video-cover.jpg"
+    assert metadata["videoCoverUrl"] == "/uploads/covers/video.jpg"
     assert metadata["episodeCount"] == 1
     assert metadata["episodes"][0]["fileName"] == "神医归来AI-第1集.mp4"
     assert metadata["episodes"][0]["size"] is None
-    assert opened_urls == ["http://server/uploads/covers/drama.jpg", "http://server/files/1.mp4"]
+    assert opened_urls == [
+        "http://server/uploads/covers/drama.jpg",
+        "http://server/uploads/covers/video.jpg",
+        "http://server/files/1.mp4",
+    ]
 
 
 def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch):

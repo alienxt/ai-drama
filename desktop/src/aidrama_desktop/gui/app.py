@@ -504,7 +504,7 @@ class DesktopWindow(QMainWindow):
         list_layout.addLayout(filters)
 
         self.drama_table = QTableWidget(0, 11)
-        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "简介", "评分", "分类", "集数", "成本金额", "下载状态", "已下载集数", "上架时间", "操作"])
+        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "AI简介", "评分", "分类", "集数", "成本金额", "下载状态", "已下载集数", "上架时间", "操作"])
         self.align_table_header_left(self.drama_table)
         self.drama_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1589,7 +1589,7 @@ class DesktopWindow(QMainWindow):
         drama = self.current_drama_rows[row]
         title = str(drama.get("aiTitle") or drama.get("title") or "短剧详情")
         original_title = str(drama.get("title") or "")
-        summary = str(drama.get("summary") or "暂无简介")
+        summary = str(drama.get("aiSummary") or drama.get("summary") or "暂无AI简介")
         categories = "，".join(str(name) for name in drama.get("categoryNames") or [])
         if not categories:
             categories = "，".join(str(code) for code in drama.get("categoryIds") or [])
@@ -1630,7 +1630,7 @@ class DesktopWindow(QMainWindow):
         top.addLayout(info, 1)
         layout.addLayout(top)
 
-        summary_title = QLabel("简介")
+        summary_title = QLabel("AI简介")
         summary_title.setObjectName("panelTitle")
         layout.addWidget(summary_title)
         summary_text = QTextEdit()
@@ -1673,7 +1673,7 @@ class DesktopWindow(QMainWindow):
             categories = "，".join(str(code) for code in drama.get("categoryIds") or [])
         return [
             str(drama.get("aiTitle") or drama.get("title") or "-"),
-            str(drama.get("summary") or "-"),
+            str(drama.get("aiSummary") or drama.get("summary") or "-"),
             cls.format_rating(drama.get("rating")),
             categories or "-",
             str(cls.drama_episode_count(drama)),

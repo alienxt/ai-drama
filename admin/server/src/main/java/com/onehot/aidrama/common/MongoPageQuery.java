@@ -49,6 +49,11 @@ public class MongoPageQuery {
         return this;
     }
 
+    public MongoPageQuery hasText(String field) {
+        criteria.add(Criteria.where(field).exists(true).nin(null, ""));
+        return this;
+    }
+
     public MongoPageQuery arraySize(String field, Integer size) {
         if (size != null && size > 0) {
             criteria.add(Criteria.where(field).size(size));

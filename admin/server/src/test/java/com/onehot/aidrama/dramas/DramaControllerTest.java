@@ -93,8 +93,10 @@ class DramaControllerTest {
                 .append("title", drama.getTitle())
                 .append("aiTitle", drama.getAiTitle())
                 .append("summary", drama.getSummary())
+                .append("aiSummary", drama.getAiSummary())
                 .append("coverUrl", drama.getCoverUrl())
                 .append("aiCoverUrl", drama.getAiCoverUrl())
+                .append("aiVideoCoverUrl", drama.getAiVideoCoverUrl())
                 .append("rating", drama.getRating())
                 .append("totalMinutes", drama.getTotalMinutes())
                 .append("categoryIds", drama.getCategoryIds())
@@ -140,6 +142,19 @@ class DramaControllerTest {
     }
 
     @Test
+    void filtersDramasMissingAiSummary() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, DramaAssetState.MISSING_AI_SUMMARY, null, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).count(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getQueryObject().toJson()).contains("aiSummary");
+    }
+
+    @Test
     void filtersDramasByEpisodeCount() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
@@ -156,7 +171,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void adminListFiltersByOriginalAiTitleSummaryOrSourcePathKeyword() {
+    void adminListFiltersByOriginalAiTitleSummaryAiSummaryOrSourcePathKeyword() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
         when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
@@ -169,6 +184,7 @@ class DramaControllerTest {
         assertThat(queryJson).contains("title");
         assertThat(queryJson).contains("aiTitle");
         assertThat(queryJson).contains("summary");
+        assertThat(queryJson).contains("aiSummary");
         assertThat(queryJson).contains("sourcePath");
         assertThat(queryJson).contains("山风");
     }
@@ -187,7 +203,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void desktopListOnlyReturnsReadyDramasUpdatedInLastSevenDays() {
+    void desktopListReturnsReadyDramasUpdatedInLastSevenDaysWithoutRequiringAiAssets() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
         when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
@@ -200,6 +216,9 @@ class DramaControllerTest {
         assertThat(queryJson).contains("status=READY");
         assertThat(queryJson).contains("updatedAt");
         assertThat(queryJson).contains("$gte");
+        assertThat(queryJson).doesNotContain("aiTitle");
+        assertThat(queryJson).doesNotContain("aiSummary");
+        assertThat(queryJson).doesNotContain("aiCoverUrl");
     }
 
     @Test
@@ -239,7 +258,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void desktopListFiltersByOriginalOrAiTitleKeyword() {
+    void desktopListFiltersByOriginalAiTitleOrAiSummaryKeyword() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
         when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
@@ -251,6 +270,7 @@ class DramaControllerTest {
         String queryJson = query.getValue().getQueryObject().toString();
         assertThat(queryJson).contains("title");
         assertThat(queryJson).contains("aiTitle");
+        assertThat(queryJson).contains("aiSummary");
         assertThat(queryJson).contains("神医");
     }
 
@@ -374,6 +394,7 @@ class DramaControllerTest {
         drama.setAiTitle("AI剧名");
         drama.setCoverUrl("/uploads/covers/original.jpg");
         drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
+        drama.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         mockDesktopDocuments(mongoTemplate, drama);
 
         DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
@@ -382,6 +403,7 @@ class DramaControllerTest {
         assertThat(row.coverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(row.aiTitle()).isNull();
         assertThat(row.aiCoverUrl()).isNull();
+        assertThat(row.aiVideoCoverUrl()).isEqualTo("/uploads/ai-covers/video.jpg");
     }
 
     @Test
@@ -463,7 +485,9 @@ class DramaControllerTest {
                 "原始剧名",
                 "",
                 "简介",
+                "",
                 "/uploads/covers/source.jpg",
+                "",
                 "",
                 5,
                 3,
@@ -473,7 +497,7 @@ class DramaControllerTest {
 
         assertThatThrownBy(() -> controller.update("drama-1", request))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage("AI 剧名和 AI 封面生成完成后才能设为待分发");
+                .hasMessage("AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能设为待分发");
     }
 
     @Test
@@ -526,8 +550,10 @@ class DramaControllerTest {
         drama.setTitle("短剧");
         drama.setAiTitle("AI短剧名");
         drama.setSummary("简介");
+        drama.setAiSummary("AI简介...");
         drama.setCoverUrl("/uploads/covers/source.jpg");
         drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
+        drama.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         drama.setCategoryIds(List.of("urban"));
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
@@ -542,8 +568,10 @@ class DramaControllerTest {
         assertThat(plan.title()).isEqualTo("AI短剧名");
         assertThat(plan.aiTitle()).isEqualTo("AI短剧名");
         assertThat(plan.summary()).isEqualTo("简介");
+        assertThat(plan.aiSummary()).isEqualTo("AI简介...");
         assertThat(plan.coverUrl()).isEqualTo("/uploads/covers/source.jpg");
         assertThat(plan.aiCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
+        assertThat(plan.aiVideoCoverUrl()).isEqualTo("/uploads/ai-covers/video.jpg");
         assertThat(plan.effectiveCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(plan.categoryIds()).containsExactly("urban");
         assertThat(plan.episodes().getFirst().size()).isEqualTo(12345);

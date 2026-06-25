@@ -367,7 +367,8 @@ public class DistributionService {
         Pattern pattern = Pattern.compile(Pattern.quote(keyword), Pattern.CASE_INSENSITIVE);
         Query query = new Query(new Criteria().orOperator(
                 Criteria.where("title").regex(pattern),
-                Criteria.where("aiTitle").regex(pattern)
+                Criteria.where("aiTitle").regex(pattern),
+                Criteria.where("aiSummary").regex(pattern)
         )).limit(200);
         return mongoTemplate.find(query, com.onehot.aidrama.dramas.Drama.class).stream()
                 .map(com.onehot.aidrama.dramas.Drama::getId)
@@ -506,6 +507,9 @@ public class DistributionService {
         if (!isRecentUpdatedDrama(drama)) {
             throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在最近更新剧池内", HttpStatus.BAD_REQUEST);
         }
+        if (!isPreparedForDistribution(drama)) {
+            throw new BusinessException("DRAMA_NOT_PREPARED", "AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能分发", HttpStatus.BAD_REQUEST);
+        }
         List<String> ownedMediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .map(MediaAccount::getId)
                 .toList();
@@ -553,7 +557,19 @@ public class DistributionService {
                 DramaStatus.READY,
                 recentUpdatedFrom(),
                 Sort.by(Sort.Direction.DESC, "updatedAt")
-        );
+        ).stream()
+                .filter(this::isPreparedForDistribution)
+                .toList();
+    }
+
+    private boolean isPreparedForDistribution(com.onehot.aidrama.dramas.Drama drama) {
+        return hasText(drama.getAiTitle())
+                && hasText(drama.getAiSummary())
+                && hasText(drama.getAiCoverUrl())
+                && hasText(drama.getAiVideoCoverUrl())
+                && !drama.isAiCoverGenerating()
+                && drama.getEpisodes() != null
+                && !drama.getEpisodes().isEmpty();
     }
 
     private boolean isRecentUpdatedDrama(com.onehot.aidrama.dramas.Drama drama) {
@@ -566,6 +582,10 @@ public class DistributionService {
 
     private boolean hasSavedLoginState(MediaAccount media) {
         return media.getLoginStateRef() != null && !media.getLoginStateRef().isBlank();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private List<String> ownerMediaAccountIds(String ownerAccountId) {

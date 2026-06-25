@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -183,7 +184,7 @@ public class BaiduDramaScanner {
         Drama drama = dramaRepository.findById(id)
                 .orElseThrow(() -> new BaiduPanException("Drama not found: " + id));
         if (summary != null && !summary.isBlank() && !looksLikeBaiduError(summary)) {
-            drama.setSummary(summary.trim());
+            setDramaSummary(drama, summary.trim());
         }
         if (coverBytes != null && coverBytes.length > 0) {
             if (coverPath == null || coverPath.isBlank()) {
@@ -228,7 +229,7 @@ public class BaiduDramaScanner {
                 new BaiduPanEntry(drama.getSourcePath(), fileName(drama.getSourcePath()), true, null, 0),
                 baiduPanClient.listDirectory(drama.getSourcePath())
         );
-        drama.setSummary(resolveSummary(planned));
+        setDramaSummary(drama, resolveSummary(planned));
         if (!isBlank(planned.coverPath())) {
             drama.setCoverUrl(resolveRequiredCoverUrl(planned));
         }
@@ -255,7 +256,7 @@ public class BaiduDramaScanner {
                 baiduPanClient.listDirectory(drama.getSourcePath())
         );
         if (looksLikeBaiduError(drama.getSummary()) || drama.getSummary() == null || drama.getSummary().isBlank()) {
-            drama.setSummary(resolveSummary(planned));
+            setDramaSummary(drama, resolveSummary(planned));
         }
         if (isRemoteBaiduCover(drama.getCoverUrl()) || drama.getCoverUrl() == null || drama.getCoverUrl().isBlank()) {
             drama.setCoverUrl(resolveCoverUrl(planned));
@@ -296,10 +297,10 @@ public class BaiduDramaScanner {
         } else {
             drama.setTitle(planned.title());
             if (scanDownloadAssetsEnabled()) {
-                drama.setSummary(resolveSummary(planned));
+                setDramaSummary(drama, resolveSummary(planned));
                 drama.setCoverUrl(resolveCoverUrl(planned));
             } else {
-                drama.setSummary(planned.summary());
+                setDramaSummary(drama, planned.summary());
             }
         }
         drama.setSource("BAIDU_PAN");
@@ -343,20 +344,28 @@ public class BaiduDramaScanner {
         }
     }
 
+    private void setDramaSummary(Drama drama, String summary) {
+        String normalized = summary == null ? null : summary.trim();
+        if (!Objects.equals(drama.getSummary(), normalized)) {
+            drama.setAiSummary(null);
+        }
+        drama.setSummary(normalized);
+    }
+
     private void mergeScannedMetadata(Drama drama, PlannedDrama planned) {
         if (isBlank(drama.getTitle())) {
             drama.setTitle(planned.title());
         }
         if (!scanDownloadAssetsEnabled()) {
             if (isBlank(drama.getSummary())) {
-                drama.setSummary(planned.summary());
+                setDramaSummary(drama, planned.summary());
             }
             return;
         }
         if (isBlank(drama.getSummary())) {
-            drama.setSummary(resolveSummary(planned));
+            setDramaSummary(drama, resolveSummary(planned));
         } else if (!isBlank(planned.summaryPath())) {
-            drama.setSummary(resolveSummary(planned));
+            setDramaSummary(drama, resolveSummary(planned));
         }
         if (isBlank(drama.getCoverUrl()) || isRemoteBaiduCover(drama.getCoverUrl())) {
             drama.setCoverUrl(resolveCoverUrl(planned));

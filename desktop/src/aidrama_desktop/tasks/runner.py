@@ -20,7 +20,7 @@ from aidrama_desktop.contracts import (
     render_contract_material_bundle,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
-from aidrama_desktop.video.ffmpeg import FfmpegProcessor
+from aidrama_desktop.video.ffmpeg import FfmpegProcessor, WECHAT_VIDEO_COVER_FRAME_VERSION
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -96,10 +96,11 @@ class TaskRunner:
             self._notify(f"发布：{drama_title}", task_id)
             metadata = self._publish_metadata(download_plan, upload_files)
             metadata.update(contract_metadata)
+            publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
             publish_id = self._publisher_for(task).publish(
                 upload_files,
                 title=drama_title,
-                summary=download_plan.get("summary"),
+                summary=publish_summary,
                 metadata=metadata,
             )
             self.api.put(
@@ -270,42 +271,127 @@ class TaskRunner:
         needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
         if not callable(needs_transcode):
             return source_files
+        cover_file = self._cover_file_for_sources(source_files)
         upload_files: list[Path] = []
-        transcode_count = 0
+        processed_count = 0
         for index, source_file in enumerate(source_files, start=1):
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
-            if not needs_transcode(source_file):
+            source_needs_transcode = bool(needs_transcode(source_file))
+            should_add_cover_frame = cover_file is not None
+            if not source_needs_transcode and not should_add_cover_frame:
                 upload_files.append(source_file)
                 continue
-            transcode_count += 1
+            processed_count += 1
             target = self.output_dir() / source_file.parent.name / source_file.name
-            if self._is_ready_upload_file(target) and not needs_transcode(target):
+            signature = self._processed_media_signature(source_file, cover_file)
+            if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not needs_transcode(target):
                 upload_files.append(target)
                 continue
-            self._notify(f"转码：{drama_title} 第 {index}/{len(source_files)} 集（提升码率）", task_id)
+            action = "提升码率并添加封面帧" if should_add_cover_frame else "提升码率"
+            self._notify(f"转码：{drama_title} 第 {index}/{len(source_files)} 集（{action}）", task_id)
             try:
-                upload_files.append(self.processor.transcode_for_wechat_video(source_file, target))
+                processed_file = self.processor.transcode_for_wechat_video(source_file, target, cover_path=cover_file)
+                self._write_processed_media_signature(processed_file, signature)
+                upload_files.append(processed_file)
             except Exception as exception:  # noqa: BLE001
                 raise RuntimeError(f"第 {index} 集视频转码失败，请确认 FFmpeg 可用：{exception}") from exception
-        if transcode_count:
-            self._notify(f"视频码率处理完成：{drama_title}（{transcode_count} 集）", task_id)
+        if processed_count:
+            label = "视频码率和封面帧处理完成" if cover_file else "视频码率处理完成"
+            self._notify(f"{label}：{drama_title}（{processed_count} 集）", task_id)
         return upload_files
 
     @staticmethod
     def _is_ready_upload_file(target: Path) -> bool:
         return target.exists() and target.is_file() and target.stat().st_size > 0
 
+    def _cover_file_for_sources(self, source_files: list[Path]) -> Path | None:
+        if not source_files:
+            return None
+        poster_cover = source_files[0].parent / "fengmian.jpg"
+        video_cover = source_files[0].parent / "video-cover.jpg"
+        first_source = source_files[0]
+        dimensions = self._video_dimensions(first_source)
+        if dimensions:
+            width, height = dimensions
+            if width > height:
+                return video_cover if video_cover.exists() and video_cover.is_file() else self._existing_file(poster_cover)
+            return self._existing_file(poster_cover)
+        return self._existing_file(poster_cover) or self._existing_file(video_cover)
+
+    def _video_dimensions(self, source_file: Path) -> tuple[int, int] | None:
+        video_dimensions = getattr(self.processor, "video_dimensions", None)
+        if not callable(video_dimensions):
+            return None
+        try:
+            dimensions = video_dimensions(source_file)
+        except Exception:  # noqa: BLE001
+            return None
+        if not dimensions:
+            return None
+        width, height = dimensions
+        return (int(width), int(height)) if width and height else None
+
+    @staticmethod
+    def _existing_file(path: Path) -> Path | None:
+        return path if path.exists() and path.is_file() else None
+
+    @staticmethod
+    def _processed_media_signature(source_file: Path, cover_file: Path | None) -> dict[str, Any]:
+        source_stat = source_file.stat()
+        signature: dict[str, Any] = {
+            "version": WECHAT_VIDEO_COVER_FRAME_VERSION,
+            "source": str(source_file),
+            "sourceSize": source_stat.st_size,
+            "sourceMtimeNs": source_stat.st_mtime_ns,
+            "cover": None,
+        }
+        if cover_file:
+            cover_stat = cover_file.stat()
+            signature.update(
+                {
+                    "cover": str(cover_file),
+                    "coverSize": cover_stat.st_size,
+                    "coverMtimeNs": cover_stat.st_mtime_ns,
+                }
+            )
+        return signature
+
+    @staticmethod
+    def _processed_media_signature_path(target: Path) -> Path:
+        return target.with_name(f"{target.name}.aidrama.json")
+
+    def _processed_media_signature_matches(self, target: Path, expected: dict[str, Any]) -> bool:
+        signature_file = self._processed_media_signature_path(target)
+        if not signature_file.exists():
+            return False
+        try:
+            actual = json.loads(signature_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return actual == expected
+
+    def _write_processed_media_signature(self, target: Path, signature: dict[str, Any]) -> None:
+        signature_file = self._processed_media_signature_path(target)
+        signature_file.parent.mkdir(parents=True, exist_ok=True)
+        signature_file.write_text(json.dumps(signature, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def _publish_metadata(self, download_plan: dict, processed_files: list[Path]) -> dict[str, Any]:
         episodes = download_plan.get("episodes") or []
         cover_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian.jpg"
+        video_cover_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover.jpg"
+        publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
         return {
             "dramaId": download_plan.get("dramaId"),
             "title": download_plan.get("title"),
             "aiTitle": download_plan.get("aiTitle"),
             "publishTitle": download_plan.get("aiTitle") or download_plan.get("title"),
-            "summary": download_plan.get("summary"),
+            "summary": publish_summary,
+            "aiSummary": download_plan.get("aiSummary"),
+            "originalSummary": download_plan.get("summary"),
             "coverFile": cover_file if cover_file.exists() else None,
+            "videoCoverFile": video_cover_file if video_cover_file.exists() else None,
             "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
+            "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
             "rating": download_plan.get("rating"),
             "categoryIds": download_plan.get("categoryIds") or [],
             "totalMinutes": download_plan.get("totalMinutes"),
@@ -384,7 +470,16 @@ def download_episodes(
         should_pause=should_pause,
         should_skip=should_skip,
     )
-    write_drama_metadata(download_plan, target_dir, cover_file)
+    video_cover_file = download_video_cover(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+    write_drama_metadata(download_plan, target_dir, cover_file, video_cover_file)
     episodes = download_plan["episodes"]
     total = len(episodes)
     if not episodes:
@@ -617,11 +712,50 @@ def download_cover(
     should_skip: Callable[[], bool] | None = None,
 ) -> Path | None:
     cover_url = download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl")
-    if not cover_url:
+    return download_plan_asset(
+        cover_url,
+        target_dir / "fengmian.jpg",
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+
+
+def download_video_cover(
+    download_plan: dict,
+    target_dir: Path,
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> Path | None:
+    return download_plan_asset(
+        download_plan.get("aiVideoCoverUrl"),
+        target_dir / "video-cover.jpg",
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+
+
+def download_plan_asset(
+    asset_url: object,
+    target: Path,
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> Path | None:
+    if not asset_url:
         return None
     raise_if_task_interrupted(should_stop, should_pause, should_skip)
-    target = target_dir / "fengmian.jpg"
-    request = urllib.request.Request(resolve_download_url(str(cover_url), base_url), headers=episode_download_headers(headers))
+    request = urllib.request.Request(resolve_download_url(str(asset_url), base_url), headers=episode_download_headers(headers))
     with urllib.request.urlopen(request) as response, target.open("wb") as output:
         while True:
             raise_if_task_interrupted(should_stop, should_pause, should_skip)
@@ -632,16 +766,21 @@ def download_cover(
     return target
 
 
-def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path | None) -> Path:
+def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path | None, video_cover_file: Path | None = None) -> Path:
     episodes = download_plan.get("episodes") or []
+    publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
     metadata = {
         "dramaId": download_plan.get("dramaId"),
         "title": download_plan.get("title"),
         "aiTitle": download_plan.get("aiTitle"),
         "publishTitle": download_plan.get("aiTitle") or download_plan.get("title"),
-        "summary": download_plan.get("summary"),
+        "summary": publish_summary,
+        "aiSummary": download_plan.get("aiSummary"),
+        "originalSummary": download_plan.get("summary"),
         "coverFile": cover_file.name if cover_file else None,
+        "videoCoverFile": video_cover_file.name if video_cover_file else None,
         "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
+        "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
         "rating": download_plan.get("rating"),
         "categoryIds": download_plan.get("categoryIds") or [],
         "totalMinutes": download_plan.get("totalMinutes"),

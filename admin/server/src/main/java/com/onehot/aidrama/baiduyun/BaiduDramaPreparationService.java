@@ -64,7 +64,10 @@ public class BaiduDramaPreparationService {
             if (isBlank(prepared.getAiTitle())) {
                 prepared = aiService.generateTitle(drama.getId());
             }
-            if (isBlank(prepared.getAiCoverUrl())) {
+            if (isBlank(prepared.getAiSummary())) {
+                prepared = aiService.generateSummary(drama.getId());
+            }
+            if (isBlank(prepared.getAiCoverUrl()) || isBlank(prepared.getAiVideoCoverUrl())) {
                 markCoverGenerating(drama.getId(), true);
                 prepared = aiService.generateCover(drama.getId());
             }
@@ -96,8 +99,12 @@ public class BaiduDramaPreparationService {
         return drama != null
                 && drama.getAiTitle() != null
                 && !drama.getAiTitle().isBlank()
+                && drama.getAiSummary() != null
+                && !drama.getAiSummary().isBlank()
                 && drama.getAiCoverUrl() != null
                 && !drama.getAiCoverUrl().isBlank()
+                && drama.getAiVideoCoverUrl() != null
+                && !drama.getAiVideoCoverUrl().isBlank()
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
     }
@@ -116,7 +123,9 @@ public class BaiduDramaPreparationService {
             return false;
         }
         return drama.getAiTitle() == null || drama.getAiTitle().isBlank()
-                || drama.getAiCoverUrl() == null || drama.getAiCoverUrl().isBlank();
+                || drama.getAiSummary() == null || drama.getAiSummary().isBlank()
+                || drama.getAiCoverUrl() == null || drama.getAiCoverUrl().isBlank()
+                || drama.getAiVideoCoverUrl() == null || drama.getAiVideoCoverUrl().isBlank();
     }
 
     private boolean isCoolingDown(Drama drama) {

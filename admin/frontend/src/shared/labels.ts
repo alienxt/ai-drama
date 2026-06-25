@@ -104,7 +104,9 @@ export function distributionTaskStatusLabel(status: string) {
 
 export const aiTaskTypeLabels: Record<AiTaskType, string> = {
   DRAMA_TITLE: 'AI剧名',
+  DRAMA_SUMMARY: 'AI简介',
   DRAMA_COVER: 'AI封面',
+  DRAMA_VIDEO_COVER: '横版视频封面',
 };
 
 export const aiTaskTypeOptions = Object.entries(aiTaskTypeLabels).map(([value, label]) => ({

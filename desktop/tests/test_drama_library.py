@@ -84,6 +84,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
             "title": "原剧名",
             "aiTitle": "新剧名",
             "summary": "一段简介",
+            "aiSummary": "AI一段简介...",
             "rating": 4,
             "costAmountWan": 3,
             "categoryIds": ["sci-fi"],
@@ -95,7 +96,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
         }
     )
 
-    assert values == ["新剧名", "一段简介", "4分", "科幻", "2", "3万", "-", "-", "2026-06-14 16:42:03"]
+    assert values == ["新剧名", "AI一段简介...", "4分", "科幻", "2", "3万", "-", "-", "2026-06-14 16:42:03"]
 
 
 def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():

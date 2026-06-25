@@ -30,6 +30,11 @@ public class BootstrapConfig {
             不要把温柔、美感、情感向的原题改成血腥暴力、恐怖猎奇或过度复仇表达；避免使用灭门、血洗、屠、虐杀、杀疯、索命等词。
             可以更有悬念、更抓人，但不要偏离原题类型；不要使用书名号；只输出剧名本身。
             """;
+    private static final String DEFAULT_SUMMARY_PROMPT = """
+            你是短剧发行增长编辑。根据原始剧名、AI 剧名和原始简介，改写一个适合中文短剧分发平台的 AI 简介。
+            要求：中文；不超过 100 个字符；最后三个字符必须是英文省略号 ...；不要脱离原简介的人物关系、剧情冲突和类型基调。
+            写得更抓人、更有悬念，但不要编造原简介没有的核心设定；不要输出标题、引号、字段名或解释说明，只输出简介本身。
+            """;
     private static final String OLD_DEFAULT_COVER_PROMPT = """
             你是短剧封面视觉总监。根据原始剧名、简介和原始封面信息，生成一张竖版中文短剧封面。
             画面要求：9:16 竖版海报；强剧情冲突；人物情绪明确；高点击率短剧风格；避免品牌水印和平台 Logo；画面中不要生成大段文字。
@@ -44,6 +49,13 @@ public class BootstrapConfig {
             你是短剧封面视觉总监。根据封面剧名、简介和原始封面信息，生成一张竖版中文短剧封面。
             画面要求：9:16 竖版海报；保持美感和人物吸引力；人物好看、有情绪、有关系张力；氛围精致，有悬念和看点，让用户看了想点进内容。
             封面中要出现“封面剧名”的中文标题，标题清晰醒目但不要生成大段文字；优先表现情感、误会、重逢、身份反转等戏剧钩子。
+            画面文字只能出现“封面剧名”，不要出现原始剧名、旧标题、副标题或其他额外文字。
+            不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
+            """;
+    private static final String DEFAULT_VIDEO_COVER_PROMPT = """
+            你是短剧视频封面视觉总监。根据封面剧名、简介和原始封面信息，生成一张横版中文短剧视频封面。
+            画面要求：16:9 横版构图，适合 1280x720 视频首帧和视频缩略图；保持美感和人物吸引力；人物好看、有情绪、有关系张力；氛围精致，有悬念和看点，让用户看了想点进内容。
+            封面中要出现“封面剧名”的中文标题，标题清晰醒目但不要生成大段文字；标题和人物不要贴边，避免被视频平台裁切。
             画面文字只能出现“封面剧名”，不要出现原始剧名、旧标题、副标题或其他额外文字。
             不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
             """;
@@ -101,12 +113,15 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.textModel", "gpt-5.5", false);
         configService.putIfAbsent("openai.imageModel", "gpt-image-2", false);
         configService.putIfAbsent("openai.imageSize", "1024x1536", false);
+        configService.putIfAbsent("openai.videoCoverImageSize", "1536x1024", false);
         configService.putIfAbsent("openai.imageQuality", "medium", false);
         configService.putIfAbsent("openai.imageOutputFormat", "jpeg", false);
         configService.putIfAbsent("openai.connectTimeoutSeconds", "30", false);
         configService.putIfAbsent("openai.readTimeoutSeconds", "300", false);
         putDefaultTitlePrompt(configService);
+        putDefaultSummaryPrompt(configService);
         putDefaultCoverPrompt(configService);
+        putDefaultVideoCoverPrompt(configService);
     }
 
     private void putDefaultTitlePrompt(SystemConfigService configService) {
@@ -117,6 +132,10 @@ public class BootstrapConfig {
         }
     }
 
+    private void putDefaultSummaryPrompt(SystemConfigService configService) {
+        configService.putIfAbsent("openai.prompts.dramaSummary", DEFAULT_SUMMARY_PROMPT, false);
+    }
+
     private void putDefaultCoverPrompt(SystemConfigService configService) {
         String key = "openai.prompts.dramaCover";
         String current = configService.get(key).orElse(null);
@@ -125,6 +144,10 @@ public class BootstrapConfig {
                 || current.equals(OLD_DEFAULT_COVER_PROMPT_WITH_ORIGINAL_TITLE)) {
             configService.put(key, DEFAULT_COVER_PROMPT, false);
         }
+    }
+
+    private void putDefaultVideoCoverPrompt(SystemConfigService configService) {
+        configService.putIfAbsent("openai.prompts.dramaVideoCover", DEFAULT_VIDEO_COVER_PROMPT, false);
     }
 
     private void put(SystemConfigService configService, String key, Object value, boolean secret) {
