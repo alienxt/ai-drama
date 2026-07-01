@@ -135,7 +135,7 @@ public class DramaController {
         } else if (assetState == DramaAssetState.MISSING_AI_SUMMARY) {
             query.missingText("aiSummary");
         }
-        PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, pageable));
+        PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, adminDramaListPageable(pageable)));
         List<Drama> content = page.content().stream()
                 .map(this::ensureCostAmountWan)
                 .toList();
@@ -143,6 +143,17 @@ public class DramaController {
                 new PageResult<>(content, page.totalElements(), page.totalPages(), page.page(), page.size()),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
+    }
+
+    private Pageable adminDramaListPageable(Pageable pageable) {
+        if (pageable.getSort().isSorted()) {
+            return pageable;
+        }
+        Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");
+        if (pageable.isPaged()) {
+            return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
+        }
+        return Pageable.unpaged(sort);
     }
 
     @GetMapping("/api/desktop/dramas")
@@ -295,10 +306,15 @@ public class DramaController {
                     .header(HttpHeaders.ACCEPT_RANGES, "bytes")
                     .body(resource);
         }
-        String playUrl = baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst();
-        return ResponseEntity.status(HttpStatus.FOUND)
-                .location(URI.create(playUrl))
-                .build();
+        baiduPanClient.downloadFile(episode.getSourcePath(), file);
+        FileSystemResource resource = new FileSystemResource(file);
+        MediaType mediaType = MediaTypeFactory.getMediaType(resource)
+                .orElse(MediaType.APPLICATION_OCTET_STREAM);
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .contentLength(resource.contentLength())
+                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                .body(resource);
     }
 
     @PostMapping("/api/admin/dramas")
@@ -321,13 +337,7 @@ public class DramaController {
 
     @PostMapping("/api/admin/dramas/batch-fresh")
     ApiResponse<DramaDtos.BatchFreshResponse> batchFresh(@RequestBody DramaDtos.BatchIdsRequest request) {
-        List<String> ids = Optional.ofNullable(request)
-                .map(DramaDtos.BatchIdsRequest::ids)
-                .orElse(List.of())
-                .stream()
-                .filter(this::hasText)
-                .distinct()
-                .toList();
+        List<String> ids = selectedIds(request);
         if (ids.isEmpty()) {
             return ApiResponse.ok(new DramaDtos.BatchFreshResponse(0, 0, null), MDC.get(TraceIdFilter.TRACE_ID));
         }
@@ -344,8 +354,12 @@ public class DramaController {
     }
 
     @PostMapping("/api/admin/dramas/backfill-total-minutes")
-    ApiResponse<DramaDtos.BackfillTotalMinutesResponse> backfillTotalMinutes() {
-        List<Drama> dramas = repository.findAll();
+    ApiResponse<DramaDtos.BackfillTotalMinutesResponse> backfillTotalMinutes(@RequestBody(required = false) DramaDtos.BatchIdsRequest request) {
+        List<String> ids = selectedIds(request);
+        if (ids.isEmpty()) {
+            return ApiResponse.ok(new DramaDtos.BackfillTotalMinutesResponse(0, 0, null), MDC.get(TraceIdFilter.TRACE_ID));
+        }
+        List<Drama> dramas = repository.findAllById(ids);
         Instant updatedAt = Instant.now();
         long updated = dramas.stream()
                 .filter(DramaDurationEstimator::needsTotalMinutes)
@@ -353,14 +367,18 @@ public class DramaController {
                 .map(repository::save)
                 .count();
         return ApiResponse.ok(
-                new DramaDtos.BackfillTotalMinutesResponse(dramas.size(), updated, updatedAt),
+                new DramaDtos.BackfillTotalMinutesResponse(ids.size(), updated, updatedAt),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
 
     @PostMapping("/api/admin/dramas/backfill-ai-summaries")
-    ApiResponse<DramaDtos.BackfillAiSummariesAccepted> backfillAiSummaries() {
-        List<String> ids = repository.findAll().stream()
+    ApiResponse<DramaDtos.BackfillAiSummariesAccepted> backfillAiSummaries(@RequestBody(required = false) DramaDtos.BatchIdsRequest request) {
+        List<String> selectedIds = selectedIds(request);
+        if (selectedIds.isEmpty()) {
+            return ApiResponse.ok(new DramaDtos.BackfillAiSummariesAccepted(0, null), MDC.get(TraceIdFilter.TRACE_ID));
+        }
+        List<String> ids = repository.findAllById(selectedIds).stream()
                 .map(Drama::getId)
                 .filter(this::hasText)
                 .toList();
@@ -574,6 +592,16 @@ public class DramaController {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private List<String> selectedIds(DramaDtos.BatchIdsRequest request) {
+        return Optional.ofNullable(request)
+                .map(DramaDtos.BatchIdsRequest::ids)
+                .orElse(List.of())
+                .stream()
+                .filter(this::hasText)
+                .distinct()
+                .toList();
     }
 
     private List<String> prioritizedDramaIds(JwtPrincipal principal) {

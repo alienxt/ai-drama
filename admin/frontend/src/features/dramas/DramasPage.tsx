@@ -38,6 +38,8 @@ export function DramasPage() {
   const [form] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
+  const selectedDramaIds = useMemo(() => selectedRowKeys.map(String), [selectedRowKeys]);
+  const hasSelectedDramas = selectedDramaIds.length > 0;
   const categoryName = useMemo(
     () => new Map((categories ?? []).map((category) => [category.code, category.name])),
     [categories],
@@ -50,9 +52,14 @@ export function DramasPage() {
   }
 
   async function backfillTotalMinutes() {
+    if (!hasSelectedDramas) {
+      return;
+    }
     setBackfillingMinutes(true);
     try {
-      const result = await apiPost<DramaBackfillTotalMinutesResponse>('/admin/dramas/backfill-total-minutes', {});
+      const result = await apiPost<DramaBackfillTotalMinutesResponse>('/admin/dramas/backfill-total-minutes', {
+        ids: selectedDramaIds,
+      });
       appMessage.success(`总时长已补齐：更新 ${result.updated} / ${result.requested} 条`);
       setVersion((value) => value + 1);
     } finally {
@@ -61,9 +68,14 @@ export function DramasPage() {
   }
 
   async function backfillAiSummaries() {
+    if (!hasSelectedDramas) {
+      return;
+    }
     setBackfillingAiSummaries(true);
     try {
-      const result = await apiPost<DramaBackfillAiSummariesAccepted>('/admin/dramas/backfill-ai-summaries', {});
+      const result = await apiPost<DramaBackfillAiSummariesAccepted>('/admin/dramas/backfill-ai-summaries', {
+        ids: selectedDramaIds,
+      });
       appMessage.success(`已提交 ${result.requested} 部短剧的 AI 简介补跑任务`);
       setVersion((value) => value + 1);
     } finally {
@@ -130,7 +142,7 @@ export function DramasPage() {
   }
 
   function openSyncAssetsMode() {
-    if (!selectedRowKeys.length) {
+    if (!hasSelectedDramas) {
       return;
     }
     setSyncModeOpen(true);
@@ -140,7 +152,7 @@ export function DramasPage() {
     setSyncingAssets(true);
     try {
       const result = await apiPost<DramaAssetSyncAccepted>('/admin/dramas/sync-assets', {
-        ids: selectedRowKeys.map(String),
+        ids: selectedDramaIds,
       });
       appMessage.success(`已开始后台同步 ${result.requested} 部短剧，同步后会继续生成 AI 剧名、AI 简介和封面`);
       setSelectedRowKeys([]);
@@ -151,13 +163,13 @@ export function DramasPage() {
   }
 
   async function batchFreshSelected() {
-    if (!selectedRowKeys.length) {
+    if (!hasSelectedDramas) {
       return;
     }
     setFreshing(true);
     try {
       const result = await apiPost<DramaBatchFreshResponse>('/admin/dramas/batch-fresh', {
-        ids: selectedRowKeys.map(String),
+        ids: selectedDramaIds,
       });
       appMessage.success(`已上新 ${result.updated}/${result.requested} 部短剧`);
       setSelectedRowKeys([]);
@@ -168,7 +180,7 @@ export function DramasPage() {
   }
 
   async function syncSelectedAssetsInBrowser() {
-    const ids = selectedRowKeys.map(String);
+    const ids = selectedDramaIds;
     setSyncingAssets(true);
     setSyncModeOpen(false);
     setClientSyncOpen(true);
@@ -276,23 +288,37 @@ export function DramasPage() {
         <>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditor()}>新增短剧</Button>
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
-          <Button icon={<ClockCircleOutlined />} loading={backfillingMinutes} onClick={backfillTotalMinutes}>补总时长</Button>
-          <Button icon={<FileTextOutlined />} loading={backfillingAiSummaries} onClick={backfillAiSummaries}>补跑AI简介</Button>
+          <Button
+            icon={<ClockCircleOutlined />}
+            disabled={!hasSelectedDramas}
+            loading={backfillingMinutes}
+            onClick={backfillTotalMinutes}
+          >
+            补总时长{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
+          </Button>
+          <Button
+            icon={<FileTextOutlined />}
+            disabled={!hasSelectedDramas}
+            loading={backfillingAiSummaries}
+            onClick={backfillAiSummaries}
+          >
+            补跑AI简介{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
+          </Button>
           <Button
             icon={<SyncOutlined />}
-            disabled={!selectedRowKeys.length}
+            disabled={!hasSelectedDramas}
             loading={syncingAssets}
             onClick={openSyncAssetsMode}
           >
-            同步封面和简介{selectedRowKeys.length ? `（${selectedRowKeys.length}）` : ''}
+            同步封面和简介{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
           </Button>
           <Button
             icon={<RocketOutlined />}
-            disabled={!selectedRowKeys.length}
+            disabled={!hasSelectedDramas}
             loading={freshing}
             onClick={batchFreshSelected}
           >
-            批量上新{selectedRowKeys.length ? `（${selectedRowKeys.length}）` : ''}
+            批量上新{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
           </Button>
           <span className="scan-meta">上次扫描：{formatDateTime(scanStatus?.lastScanAt)}</span>
         </>

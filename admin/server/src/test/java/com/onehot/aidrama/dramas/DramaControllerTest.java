@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
@@ -33,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -65,11 +67,15 @@ class DramaControllerTest {
     }
 
     private DramaController controller(DramaRepository repository, BaiduPanClient baiduPanClient) {
+        return controller(repository, baiduPanClient, mock(DramaAiService.class));
+    }
+
+    private DramaController controller(DramaRepository repository, BaiduPanClient baiduPanClient, DramaAiService dramaAiService) {
         return new DramaController(
                 repository,
                 baiduPanClient,
                 mock(MongoTemplate.class),
-                mock(DramaAiService.class),
+                dramaAiService,
                 mock(DramaCategoryRepository.class),
                 mediaAccountRepository,
                 distributionTaskRepository,
@@ -187,6 +193,33 @@ class DramaControllerTest {
         assertThat(queryJson).contains("aiSummary");
         assertThat(queryJson).contains("sourcePath");
         assertThat(queryJson).contains("山风");
+    }
+
+    @Test
+    void adminListDefaultsToCreatedAtDescending() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, null, null, null, null, PageRequest.of(0, 10));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).find(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getSortObject().toString()).contains("createdAt=-1");
+    }
+
+    @Test
+    void adminListPreservesRequestedSort() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Drama.class))).thenReturn(List.of());
+
+        controller.list(null, null, null, null, null, null, null, PageRequest.of(0, 10, Sort.by("title").ascending()));
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).find(query.capture(), eq(Drama.class));
+        assertThat(query.getValue().getSortObject().toString()).contains("title=1");
+        assertThat(query.getValue().getSortObject().toString()).doesNotContain("createdAt");
     }
 
     @Test
@@ -335,7 +368,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void backfillTotalMinutesUpdatesMissingAndNonRoundedValues() {
+    void backfillTotalMinutesUpdatesSelectedMissingAndNonRoundedValues() {
         DramaRepository repository = mock(DramaRepository.class);
         DramaController controller = controller(repository, mock(BaiduPanClient.class));
         Drama missing = new Drama();
@@ -352,18 +385,57 @@ class DramaControllerTest {
         nonRounded.setTitle("非整十时长");
         nonRounded.setEpisodes(List.of(episode(1), episode(2), episode(3)));
         nonRounded.setTotalMinutes(121);
-        when(repository.findAll()).thenReturn(List.of(missing, existing, nonRounded));
+        when(repository.findAllById(List.of("missing", "existing"))).thenReturn(List.of(missing, existing));
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        DramaDtos.BackfillTotalMinutesResponse response = controller.backfillTotalMinutes().data();
+        DramaDtos.BackfillTotalMinutesResponse response = controller.backfillTotalMinutes(
+                new DramaDtos.BatchIdsRequest(List.of("missing", "existing"))
+        ).data();
 
-        assertThat(response.requested()).isEqualTo(3);
-        assertThat(response.updated()).isEqualTo(2);
+        assertThat(response.requested()).isEqualTo(2);
+        assertThat(response.updated()).isEqualTo(1);
         assertThat(missing.getTotalMinutes()).isEqualTo(10);
         assertThat(existing.getTotalMinutes()).isEqualTo(120);
-        assertThat(nonRounded.getTotalMinutes() % 10).isZero();
+        assertThat(nonRounded.getTotalMinutes()).isEqualTo(121);
         verify(repository).save(missing);
-        verify(repository).save(nonRounded);
+        verify(repository, never()).save(nonRounded);
+        verify(repository, never()).findAll();
+    }
+
+    @Test
+    void backfillTotalMinutesDoesNothingWithoutSelectedIds() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class));
+
+        DramaDtos.BackfillTotalMinutesResponse response = controller.backfillTotalMinutes(
+                new DramaDtos.BatchIdsRequest(List.of())
+        ).data();
+
+        assertThat(response.requested()).isZero();
+        assertThat(response.updated()).isZero();
+        verify(repository, never()).findAllById(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void backfillAiSummariesSubmitsOnlySelectedDramaIds() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService dramaAiService = mock(DramaAiService.class);
+        DramaController controller = controller(repository, mock(BaiduPanClient.class), dramaAiService);
+        Drama first = new Drama();
+        first.setId("drama-1");
+        Drama second = new Drama();
+        second.setId("drama-2");
+        when(repository.findAllById(List.of("drama-1", "drama-2"))).thenReturn(List.of(first, second));
+
+        DramaDtos.BackfillAiSummariesAccepted response = controller.backfillAiSummaries(
+                new DramaDtos.BatchIdsRequest(List.of("drama-1", "", "drama-2", "drama-1"))
+        ).data();
+
+        assertThat(response.requested()).isEqualTo(2);
+        verify(repository).findAllById(List.of("drama-1", "drama-2"));
+        verify(dramaAiService).generateSummary("drama-1");
+        verify(dramaAiService).generateSummary("drama-2");
+        verify(dramaAiService, never()).generateSummary("drama-3");
     }
 
     @Test
@@ -756,7 +828,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void streamAdminEpisodeRedirectsToBaiduWhenLocalFileMissing() throws Exception {
+    void streamAdminEpisodeDownloadsAndServesFileWhenLocalFileMissing() throws Exception {
         DramaRepository repository = mock(DramaRepository.class);
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaController controller = controller(repository, baiduPanClient);
@@ -767,13 +839,18 @@ class DramaControllerTest {
         episode.setSourcePath("/短剧/002.mp4");
         drama.setEpisodes(List.of(episode));
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
-        when(baiduPanClient.createDownloadUrls(List.of("/短剧/002.mp4")))
-                .thenReturn(List.of("https://pan.baidu.com/direct.mp4?token=secret"));
+        doAnswer(invocation -> {
+            Path target = invocation.getArgument(1);
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, "video");
+            return null;
+        }).when(baiduPanClient).downloadFile(eq("/短剧/002.mp4"), org.mockito.ArgumentMatchers.any(Path.class));
 
         var response = controller.streamAdminEpisode("drama-1", 2, null);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
-        assertThat(response.getHeaders().getLocation().toString())
-                .isEqualTo("https://pan.baidu.com/direct.mp4?token=secret");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getContentLength()).isEqualTo(5);
+        assertThat(Files.readString(downloadDir.resolve("drama-1").resolve("002.mp4"))).isEqualTo("video");
+        verify(baiduPanClient).downloadFile(eq("/短剧/002.mp4"), org.mockito.ArgumentMatchers.any(Path.class));
     }
 }
