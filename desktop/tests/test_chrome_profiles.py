@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from aidrama_desktop.browser.chrome import ChromeController
+from aidrama_desktop.platforms.base import PlatformPublishPaused
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.platforms.wechat_video import WeChatVideoPublisher, remote_debugging_port_for_profile
 
@@ -375,8 +376,9 @@ def test_wechat_video_publisher_advances_to_file_step_after_uploads(tmp_path: Pa
     calls = []
     cover = tmp_path / "fengmian.jpg"
     purchase = tmp_path / "purchase.png"
+    rights = tmp_path / "rights.png"
     cost = tmp_path / "cost.png"
-    for path in (cover, purchase, cost):
+    for path in (cover, purchase, rights, cost):
         path.write_bytes(b"image")
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 
@@ -399,13 +401,14 @@ def test_wechat_video_publisher_advances_to_file_step_after_uploads(tmp_path: Pa
         {
             "coverFile": cover,
             "buyDramaContractImages": [purchase],
+            "rightsStatementImages": [rights],
             "costConfigReportImages": [cost],
         },
         TimeoutError,
     )
 
     upload_payload = next(payload for script, payload in calls if isinstance(payload, list))
-    assert [item["name"] for item in upload_payload] == ["fengmian.jpg", "purchase.png", "cost.png"]
+    assert [item["name"] for item in upload_payload] == ["fengmian.jpg", "purchase.png", "rights.png", "cost.png"]
     assert any(".weui-desktop-icon-checkbox" in script for script, payload in calls if isinstance(script, str))
     assert any("剧集文件选取" in script for script, payload in calls if isinstance(script, str))
 
@@ -632,15 +635,17 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     final_ensures = []
     advances = []
     video_uploads = []
-    submissions = []
+    review_steps = []
     events = []
     agreement_clicks = []
     entry_clicks = []
     option_clicks = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
     purchase_image = tmp_path / "purchase.png"
+    rights_image = tmp_path / "rights.png"
     cost_image = tmp_path / "cost.png"
     purchase_image.write_bytes(b"purchase")
+    rights_image.write_bytes(b"rights")
     cost_image.write_bytes(b"cost")
 
     class FakeLocator:
@@ -741,29 +746,32 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     )
     monkeypatch.setattr(
         publisher,
-        "_submit_playlet_and_wait_for_success",
-        lambda page, timeout_error: submissions.append(page),
+        "_advance_playlet_to_confirmation_review",
+        lambda page, timeout_error: review_steps.append(page),
     )
-    publisher._upload_playlet(
-        FakePage(),
-        [tmp_path / "001.mp4"],
-        "神医归来",
-        "简介",
-        {
-            "publishTitle": "神医归来AI",
-            "summary": "简介",
-            "coverFile": tmp_path / "cover.jpg",
-            "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
-            "monetizationLabel": "IAA广告变现",
-            "freeEpisodeCount": 6,
-            "episodeCount": 27,
-            "producerName": "乙方公司",
-            "productionCostWan": 3,
-            "buyDramaContractImages": [purchase_image],
-            "costConfigReportImages": [cost_image],
-        },
-        TimeoutError,
-    )
+    page = FakePage()
+    with pytest.raises(PlatformPublishPaused, match="提审信息确认页"):
+        publisher._upload_playlet(
+            page,
+            [tmp_path / "001.mp4"],
+            "神医归来",
+            "简介",
+            {
+                "publishTitle": "神医归来AI",
+                "summary": "简介",
+                "coverFile": tmp_path / "cover.jpg",
+                "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
+                "monetizationLabel": "IAA广告变现",
+                "freeEpisodeCount": 6,
+                "episodeCount": 27,
+                "producerName": "乙方公司",
+                "productionCostWan": 3,
+                "buyDramaContractImages": [purchase_image],
+                "rightsStatementImages": [rights_image],
+                "costConfigReportImages": [cost_image],
+            },
+            TimeoutError,
+        )
 
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
@@ -779,8 +787,8 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert final_ensures == [("神医归来AI", "简介", 27, 6, "乙方公司", "3")]
     assert len(advances) == 1
     assert video_uploads == [([tmp_path / "001.mp4"], 27)]
-    assert len(submissions) == 1
-    assert "^漫剧$" in option_clicks
+    assert review_steps == [page]
+    assert "^数字真人$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
     assert "^其他微短剧$" in option_clicks
@@ -790,7 +798,11 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert events.index("summary") > events.index("option:^其他微短剧$")
     assert material_uploads == [
         ("剧目海报", tmp_path / "cover.jpg", ["剧目海报", "海报", "封面"]),
-        ("剧目制作证明材料", [purchase_image], ["剧目制作证明材料", "制作证明材料", "剧目制作合同"]),
+        (
+            "剧目制作证明材料",
+            [purchase_image, rights_image],
+            ["剧目制作证明材料", "制作证明材料", "剧目制作合同"],
+        ),
         ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
     ]
     assert files == []
@@ -1070,6 +1082,27 @@ def test_wechat_video_publisher_does_not_complete_without_submit_confirmation(tm
 
 
 def test_wechat_video_publisher_clicks_second_review_submit_button(tmp_path: Path, monkeypatch):
+    clicks = []
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    checks = iter([False, True])
+    monkeypatch.setattr(
+        publisher,
+        "_page_has_text",
+        lambda page, pattern: next(checks, True),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_click_playlet_submit_button",
+        lambda page, timeout_error: clicks.append("确认提审") or True,
+    )
+
+    publisher._advance_playlet_to_confirmation_review(object(), TimeoutError)
+
+    assert clicks == ["确认提审"]
+
+
+def test_wechat_video_publisher_submit_clicks_until_success(tmp_path: Path, monkeypatch):
     clicks = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 

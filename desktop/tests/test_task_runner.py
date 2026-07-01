@@ -340,10 +340,12 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
     api = FakeApi()
     publisher = FakePublisher()
     templates = {}
-    for contract_type in ("cost", "purchase"):
+    for contract_type in ("cost", "purchase", "rights"):
         template = tmp_path / f"{contract_type}.docx"
         document = Document()
-        document.add_paragraph("{{contractType}} {{dramaTitle}} {{episodeCount}} {{episodeMinutes}} {{price}}")
+        document.add_paragraph(
+            "{{contractType}} {{agreementNumber}} {{dramaTitle}} {{episodeCount}} {{episodeMinutes}} {{price}} {{halfPrice}}"
+        )
         document.save(template)
         templates[f"wechat_video:{contract_type}"] = template
 
@@ -377,10 +379,20 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
 
     assert publisher.metadata["purchaseContractDocx"].exists()
     assert publisher.metadata["costContractDocx"].exists()
-    assert len(publisher.metadata["buyDramaContractImages"]) == 1
+    assert publisher.metadata["rightsStatementDocx"].exists()
+    assert len(publisher.metadata["purchaseContractImages"]) == 1
+    assert len(publisher.metadata["rightsStatementImages"]) == 1
+    assert len(publisher.metadata["buyDramaContractImages"]) == 2
     assert len(publisher.metadata["costConfigReportImages"]) == 1
     assert publisher.metadata["buyDramaContractImages"][0].exists()
+    assert publisher.metadata["buyDramaContractImages"][1].exists()
     assert publisher.metadata["costConfigReportImages"][0].exists()
+    purchase_number = Document(publisher.metadata["purchaseContractDocx"]).paragraphs[0].text.split()[1]
+    cost_number = Document(publisher.metadata["costContractDocx"]).paragraphs[0].text.split()[1]
+    rights_number = Document(publisher.metadata["rightsStatementDocx"]).paragraphs[0].text.split()[1]
+    assert purchase_number.startswith("HZ-")
+    assert cost_number == purchase_number
+    assert rights_number == purchase_number
 
 
 def test_publish_once_uses_media_account_specific_publisher(tmp_path, monkeypatch):

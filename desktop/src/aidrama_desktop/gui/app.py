@@ -4,6 +4,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
@@ -58,6 +59,7 @@ from aidrama_desktop.contracts import (
     contract_party_key,
     contract_template_key,
     copy_contract_template,
+    generate_agreement_number,
     required_contract_party_fields,
     required_contract_template_types,
     render_contract_docx,
@@ -1539,12 +1541,12 @@ class DesktopWindow(QMainWindow):
     def load_dramas(self, page: int = 0) -> None:
         filter_value = self.current_drama_download_filter()
         keyword = self.current_drama_keyword()
-        request_page = 0 if filter_value != "ALL" else page
-        request_size = 1000 if filter_value != "ALL" else self.drama_size
+        request_page = 0
+        request_size = 1000
         path = self.build_drama_list_path(page=request_page, size=request_size, keyword=keyword)
 
         def render(result: dict[str, Any]) -> None:
-            rows = result.get("content") or []
+            rows = self.filter_recent_dramas(result.get("content") or [])
             if filter_value == "PRIORITIZED":
                 rows = [row for row in rows if self.is_drama_prioritized(row)]
                 self.drama_page = 0
@@ -1556,15 +1558,46 @@ class DesktopWindow(QMainWindow):
                 self.drama_total_pages = 1
                 self.drama_total_elements = len(rows)
             else:
-                self.drama_page = int(result.get("page") or 0)
-                self.drama_total_pages = max(int(result.get("totalPages") or 1), 1)
-                self.drama_total_elements = int(result.get("totalElements") or 0)
+                self.drama_page = 0
+                self.drama_total_pages = 1
+                self.drama_total_elements = len(rows)
             self.render_drama_table(rows)
             self.drama_page_label.setText(
                 f"共 {self.drama_total_elements} 条 · 第 {self.drama_page + 1}/{self.drama_total_pages} 页"
             )
 
         self.run_async("加载短剧库", lambda: self.api().get(path), render, log_result=False)
+
+    @classmethod
+    def filter_recent_dramas(cls, rows: list[Any], days: int = 7) -> list[dict[str, Any]]:
+        cutoff = datetime.now().astimezone() - timedelta(days=days)
+        recent: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            listed_at = cls.drama_listed_at(row)
+            if listed_at and listed_at >= cutoff:
+                recent.append(row)
+        return recent
+
+    @staticmethod
+    def drama_listed_at(drama: dict[str, Any]) -> datetime | None:
+        for key in ("listedAt", "publishedAt", "createdAt"):
+            value = drama.get(key)
+            if not value:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            normalized = text.replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.astimezone()
+            return parsed.astimezone()
+        return None
 
     def render_drama_table(self, rows: list[dict[str, Any]]) -> None:
         self.current_drama_rows = rows
@@ -2361,7 +2394,12 @@ class DesktopWindow(QMainWindow):
 
     @staticmethod
     def contract_api_type(key: str) -> str:
-        return "PURCHASE_CONTRACT" if key == "purchase" else "COST_CONTRACT"
+        mapping = {
+            "cost": "COST_CONTRACT",
+            "purchase": "PURCHASE_CONTRACT",
+            "rights": "RIGHTS_STATEMENT",
+        }
+        return mapping.get(key, "PURCHASE_CONTRACT")
 
     def current_contract_template_path(self, contract_type: str) -> Path | None:
         value = self.contract_templates.get(self.current_contract_key(contract_type))
@@ -2462,10 +2500,12 @@ class DesktopWindow(QMainWindow):
             self,
             "Word 模版占位符",
             "Word 模版里可用占位符：\n\n"
+            "{{agreementNumber}}：协议编号\n"
             "{{dramaTitle}}：剧名\n"
             "{{episodeCount}}：集数\n"
             "{{episodeMinutes}}：总时长（分钟）\n"
             "{{price}}：价格（万）\n"
+            "{{halfPrice}}：价格的一半（万）\n"
             "{{buyer}}：买方/甲方\n"
             "{{seller}}：卖方/乙方\n"
             "{{date}}：签署日期\n"
@@ -2569,13 +2609,14 @@ class DesktopWindow(QMainWindow):
         self.load_selected_contract_template()
         self.append_log("合同模板已清空。")
 
-    def contract_render_input(self, contract_type: str) -> ContractRenderInput:
+    def contract_render_input(self, contract_type: str, agreement_number: str | None = None) -> ContractRenderInput:
         drama = self.contract_drama_input.currentData()
         drama_title = ""
         if isinstance(drama, dict):
             drama_title = str(drama.get("aiTitle") or drama.get("title") or "")
         if not drama_title:
             drama_title = self.contract_drama_input.currentText().strip()
+        sign_date = self.contract_date_input.date().toString("yyyy-MM-dd")
         return ContractRenderInput(
             contract_type=self.contract_type_name(contract_type),
             drama_title=drama_title or "未命名短剧",
@@ -2584,7 +2625,8 @@ class DesktopWindow(QMainWindow):
             price=self.contract_price_input.text().strip() or "0",
             buyer=self.contract_party_value(self.current_contract_platform(), "buyer"),
             seller=self.contract_party_value(self.current_contract_platform(), "seller"),
-            sign_date=self.contract_date_input.date().toString("yyyy-MM-dd"),
+            sign_date=sign_date,
+            agreement_number=agreement_number or generate_agreement_number(sign_date),
         )
 
     def generate_contract(self) -> list[Path] | None:
@@ -2594,12 +2636,14 @@ class DesktopWindow(QMainWindow):
             QMessageBox.warning(self, "合同生成", f"请先配置：{'、'.join(missing_labels)}。")
             return None
         generated_paths: list[Path] = []
+        sign_date = self.contract_date_input.date().toString("yyyy-MM-dd")
+        agreement_number = generate_agreement_number(sign_date)
         for contract_type, _label in required_contract_template_types(self.current_contract_platform()):
             template = self.current_contract_template_path(contract_type)
             if not template:
                 QMessageBox.warning(self, "合同生成", "请先配置当前媒体号所需的全部 Word 合同模板。")
                 return None
-            data = self.contract_render_input(contract_type)
+            data = self.contract_render_input(contract_type, agreement_number)
             output = build_contract_output_path(self.settings.contracts_dir, data)
             generated_paths.append(
                 render_contract_docx(template, output, data, normalize_for_rendering=contract_type == "cost")

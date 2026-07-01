@@ -1,6 +1,7 @@
 import os
 import pytest
 import threading
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -40,6 +41,17 @@ def test_desktop_drama_list_path_supports_title_keyword_search():
     path = DesktopWindow.build_drama_list_path(page=0, size=10, keyword="神医 太子")
 
     assert path == "/desktop/dramas?page=0&size=10&sort=updatedAt,desc&keyword=%E7%A5%9E%E5%8C%BB+%E5%A4%AA%E5%AD%90"
+
+
+def test_filter_recent_dramas_keeps_only_last_seven_days():
+    now = datetime.now().astimezone()
+    rows = [
+        {"id": "recent", "createdAt": (now - timedelta(days=2)).isoformat()},
+        {"id": "old", "createdAt": (now - timedelta(days=8)).isoformat()},
+        {"id": "missing"},
+    ]
+
+    assert [row["id"] for row in DesktopWindow.filter_recent_dramas(rows)] == ["recent"]
 
 
 def test_desktop_task_history_path_supports_keyword_and_status():
@@ -622,16 +634,19 @@ def test_task_execution_requires_wechat_contract_templates(tmp_path):
 
     assert (
         window.contract_task_block_reason(media_accounts)
-        == "请先在“合同配置”中配置视频号所需的买方/甲方、卖方/乙方、成本合同、购买合同。"
+        == "请先在“合同配置”中配置视频号所需的买方/甲方、卖方/乙方、成本合同、购买合同、权利声明。"
     )
 
     cost = tmp_path / "cost.docx"
     purchase = tmp_path / "purchase.docx"
+    rights = tmp_path / "rights.docx"
     cost.write_text("cost", encoding="utf-8")
     purchase.write_text("purchase", encoding="utf-8")
+    rights.write_text("rights", encoding="utf-8")
     window.contract_templates = {
         contract_template_key("WECHAT_VIDEO", "cost"): cost,
         contract_template_key("WECHAT_VIDEO", "purchase"): purchase,
+        contract_template_key("WECHAT_VIDEO", "rights"): rights,
     }
 
     assert window.contract_task_block_reason(media_accounts) == "请先在“合同配置”中配置视频号所需的买方/甲方、卖方/乙方。"

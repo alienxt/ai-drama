@@ -17,6 +17,7 @@ from aidrama_desktop import __version__
 from aidrama_desktop.api.client import ApiClient
 from aidrama_desktop.contracts import (
     ContractRenderInput,
+    generate_agreement_number,
     render_contract_material_bundle,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
@@ -163,9 +164,11 @@ class TaskRunner:
             return {}
         self._notify(f"生成合同材料：{drama_title}", task_id)
         output_dir = (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
+        sign_date = date.today().isoformat()
+        agreement_number = generate_agreement_number(sign_date)
 
         def data_factory(contract_type: str, label: str) -> ContractRenderInput:
-            return self._contract_render_input(download_plan, drama_title, contract_type, label)
+            return self._contract_render_input(download_plan, drama_title, contract_type, label, agreement_number, sign_date)
 
         bundle = render_contract_material_bundle(
             self.contract_templates,
@@ -183,6 +186,8 @@ class TaskRunner:
         drama_title: str,
         contract_type: str,
         label: str,
+        agreement_number: str,
+        sign_date: str,
     ) -> ContractRenderInput:
         episodes = download_plan.get("episodes") or []
         episode_count = self._int_value(download_plan.get("episodeCount"), len(episodes))
@@ -196,7 +201,8 @@ class TaskRunner:
             price=str(cost_amount_wan),
             buyer=self.contract_buyer or "甲方公司",
             seller=self.contract_seller or "乙方公司",
-            sign_date=date.today().isoformat(),
+            sign_date=sign_date,
+            agreement_number=agreement_number,
         )
 
     @staticmethod

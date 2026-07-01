@@ -37,13 +37,16 @@ aidrama-desktop run-once
 
 ## Contract templates
 
-桌面端“合同配置”页支持维护成本合同和买剧合同 Word 模板。用户选择 `.docx` 后，
+桌面端“合同配置”页支持维护成本合同、买剧合同和权利声明 Word 模板。用户选择 `.docx` 后，
 桌面端会复制到配置目录的 `contract-templates/`，并在 `contract-templates.json`
 里保存模板路径。模板可使用以下占位符：
 
+- `{{agreementNumber}}`: 协议编号，格式为 `HZ-yyyy-MM-随机6位数字`
 - `{{dramaTitle}}`: 剧名
 - `{{episodeCount}}`: 剧集数量
+- `{{episodeMinutes}}`: 总时长，单位分钟
 - `{{price}}`: 价格
+- `{{halfPrice}}`: 价格的一半
 - `{{buyer}}`: 买方或甲方
 - `{{seller}}`: 卖方或乙方
 - `{{date}}`: 签署日期

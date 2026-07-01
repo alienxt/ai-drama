@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublisher
+from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
 
 
 PLAYLET_SUMMARY_MAX_CHARS = 100
@@ -332,7 +332,8 @@ class WeChatVideoPublisher(PlatformPublisher):
 
         self._advance_playlet_to_file_step(page, metadata, timeout_error)
         self._upload_playlet_episode_files(page, media_files, episode_count, timeout_error)
-        self._submit_playlet_and_wait_for_success(page, timeout_error)
+        self._advance_playlet_to_confirmation_review(page, timeout_error)
+        raise PlatformPublishPaused("剧目提审第二步视频已上传完成，已停留在提审信息确认页，请人工审核表单并手动确认提审。")
 
     def _enter_playlet_plan(self, page, timeout_error) -> None:
         self._accept_playlet_agreement(page, timeout_error)
@@ -746,7 +747,12 @@ class WeChatVideoPublisher(PlatformPublisher):
         return str(amount) if amount > 0 else ""
 
     def _upload_playlet_contract_materials(self, page, metadata: dict[str, Any], timeout_error) -> None:
-        purchase_images = self._metadata_paths(metadata, "buyDramaContractImages", "purchaseContractImages")
+        purchase_images = self._metadata_paths(
+            metadata,
+            "buyDramaContractImages",
+            "purchaseContractImages",
+            "rightsStatementImages",
+        )
         if purchase_images:
             self._set_file_input_near_text(
                 page,
@@ -790,7 +796,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             cover_path = Path(cover_file)
             if cover_path.exists():
                 paths.append(cover_path)
-        paths.extend(self._metadata_paths(metadata, "buyDramaContractImages", "purchaseContractImages"))
+        paths.extend(
+            self._metadata_paths(
+                metadata,
+                "buyDramaContractImages",
+                "purchaseContractImages",
+                "rightsStatementImages",
+            )
+        )
         paths.extend(self._metadata_paths(metadata, "costConfigReportImages", "costContractImages"))
         return paths
 
@@ -1333,6 +1346,19 @@ class WeChatVideoPublisher(PlatformPublisher):
                 seen.add(resolved)
         return paths
 
+    def _advance_playlet_to_confirmation_review(self, page, timeout_error) -> None:
+        confirmation_pattern = re.compile("提审信息确认")
+        if self._page_has_text(page, confirmation_pattern):
+            return
+        if not self._click_playlet_submit_button(page, timeout_error):
+            raise RuntimeError("视频号剧集视频已全部上传，但未找到进入提审信息确认页的按钮。")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if self._page_has_text(page, confirmation_pattern):
+                return
+            self._wait_for_page(page, 500)
+        raise RuntimeError("视频号剧集视频已全部上传，但未进入提审信息确认页。")
+
     def _submit_playlet_and_wait_for_success(self, page, timeout_error, *, success_timeout_seconds: int = 30) -> None:
         success_pattern = re.compile("提审成功|提交成功|发布成功|上架成功|已提交|待审核|审核中")
         deadline = time.time() + max(success_timeout_seconds, 0)
@@ -1440,7 +1466,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         return False
 
     def _set_default_playlet_options(self, page, timeout_error) -> None:
-        self._click_text_option(page, [re.compile("^漫剧$")], timeout_error)
+        self._click_text_option(page, [re.compile("^数字真人$")], timeout_error)
         self._set_ai_content_statement(page, timeout_error)
         self._set_submit_identity(page, timeout_error)
         self._click_text_option(page, [re.compile("^其他微短剧$")], timeout_error)

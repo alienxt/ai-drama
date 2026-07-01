@@ -42,10 +42,11 @@ const platformOptions: { value: ContractTemplate['platform']; label: string }[] 
 const contractTypeOptions: { value: ContractTemplate['type']; label: string }[] = [
   { value: 'COST_CONTRACT', label: '成本合同' },
   { value: 'PURCHASE_CONTRACT', label: '购买合同' },
+  { value: 'RIGHTS_STATEMENT', label: '权利声明' },
 ];
 
 const platformAllowedContractTypes: Record<ContractTemplate['platform'], ContractTemplate['type'][]> = {
-  WECHAT_VIDEO: ['COST_CONTRACT', 'PURCHASE_CONTRACT'],
+  WECHAT_VIDEO: ['COST_CONTRACT', 'PURCHASE_CONTRACT', 'RIGHTS_STATEMENT'],
   TIKTOK: ['PURCHASE_CONTRACT'],
   DOUYIN: ['PURCHASE_CONTRACT'],
 };

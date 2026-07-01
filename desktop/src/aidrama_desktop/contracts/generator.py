@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 from xml.etree import ElementTree
@@ -17,21 +19,22 @@ from docx import Document
 
 
 CONTRACT_MEDIA_PLATFORMS = ("WECHAT_VIDEO",)
-CONTRACT_TEMPLATE_TYPES = ("cost", "purchase")
+CONTRACT_TEMPLATE_TYPES = ("cost", "purchase", "rights")
 CONTRACT_TEMPLATE_TYPE_LABELS = {
     "cost": "成本合同",
     "purchase": "购买合同",
+    "rights": "权利声明",
 }
 CONTRACT_PARTY_FIELD_LABELS = {
     "buyer": "买方/甲方",
     "seller": "卖方/乙方",
 }
 CONTRACT_PLATFORM_TEMPLATE_TYPES = {
-    "WECHAT_VIDEO": ("cost", "purchase"),
+    "WECHAT_VIDEO": ("cost", "purchase", "rights"),
     "TIKTOK": ("purchase",),
     "DOUYIN": ("purchase",),
 }
-CONTRACT_MATERIAL_CACHE_VERSION = 2
+CONTRACT_MATERIAL_CACHE_VERSION = 4
 DOUBLE_DATE_FOOTER_SPACER = " " * 20
 DOUBLE_DATE_FOOTER_RE = re.compile(
     r"(日期\s*[:：]\s*)\{\{\s*date\s*\}\}(\s+)(日期\s*[:：]\s*)\{\{\s*date\s*\}\}"
@@ -104,14 +107,17 @@ class ContractRenderInput:
     seller: str
     sign_date: str = ""
     episode_minutes: str = ""
+    agreement_number: str = ""
 
     def placeholders(self) -> dict[str, str]:
         return {
             "contractType": self.contract_type,
+            "agreementNumber": self.agreement_number,
             "dramaTitle": self.drama_title,
             "episodeCount": self.episode_count,
             "episodeMinutes": self.episode_minutes,
             "price": self.price,
+            "halfPrice": format_half_price(self.price),
             "buyer": self.buyer,
             "seller": self.seller,
             "date": format_contract_date_no_wrap(self.sign_date),
@@ -132,15 +138,23 @@ class ContractMaterialBundle:
 
     def metadata(self) -> dict[str, object]:
         result: dict[str, object] = {"contractMaterials": self.materials}
+        purchase_images: list[Path] = []
+        rights_images: list[Path] = []
         for material in self.materials:
             if material.contract_type == "purchase":
                 result["purchaseContractDocx"] = material.docx_path
                 result["purchaseContractImages"] = material.image_paths
-                result["buyDramaContractImages"] = material.image_paths
+                purchase_images = material.image_paths
             elif material.contract_type == "cost":
                 result["costContractDocx"] = material.docx_path
                 result["costContractImages"] = material.image_paths
                 result["costConfigReportImages"] = material.image_paths
+            elif material.contract_type == "rights":
+                result["rightsStatementDocx"] = material.docx_path
+                result["rightsStatementImages"] = material.image_paths
+                rights_images = material.image_paths
+        if purchase_images or rights_images:
+            result["buyDramaContractImages"] = [*purchase_images, *rights_images]
         return result
 
 
@@ -237,6 +251,22 @@ def format_contract_date_compact(value: str = "") -> str:
     return format_contract_date(value).replace(" ", "")
 
 
+def format_half_price(value: str = "") -> str:
+    try:
+        amount = Decimal(str(value).strip() or "0") / Decimal("2")
+    except (InvalidOperation, ValueError):
+        return ""
+    normalized = amount.normalize()
+    if normalized == normalized.to_integral():
+        return str(normalized.quantize(Decimal("1")))
+    return format(normalized, "f").rstrip("0").rstrip(".")
+
+
+def generate_agreement_number(value: str = "") -> str:
+    parsed = parse_contract_date(value) or date.today()
+    return f"HZ-{parsed.year:04d}-{parsed.month:02d}-{secrets.randbelow(1_000_000):06d}"
+
+
 def format_contract_date_short(value: str = "") -> str:
     compact = format_contract_date_compact(value)
     match = re.fullmatch(r"(\d{4})年(\d{2})月(\d{2})日", compact)
@@ -250,27 +280,32 @@ def format_contract_date_no_wrap(value: str = "") -> str:
 
 
 def format_contract_date(value: str = "") -> str:
+    parsed = parse_contract_date(value)
+    if parsed is None:
+        return value.strip()
+    return f"{parsed.year:04d} 年 {parsed.month:02d} 月 {parsed.day:02d} 日"
+
+
+def parse_contract_date(value: str = "") -> date | None:
     clean = value.strip()
     if not clean:
-        parsed = date.today()
-    else:
-        normalized = (
-            clean.replace("年", "-")
-            .replace("月", "-")
-            .replace("日", "")
-            .replace("/", "-")
-            .replace(".", "-")
-        )
-        normalized = re.sub(r"\s+", "", normalized)
-        match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", normalized)
-        if not match:
-            return clean
-        year, month, day = (int(part) for part in match.groups())
-        try:
-            parsed = date(year, month, day)
-        except ValueError:
-            return clean
-    return f"{parsed.year:04d} 年 {parsed.month:02d} 月 {parsed.day:02d} 日"
+        return date.today()
+    normalized = (
+        clean.replace("年", "-")
+        .replace("月", "-")
+        .replace("日", "")
+        .replace("/", "-")
+        .replace(".", "-")
+    )
+    normalized = re.sub(r"\s+", "", normalized)
+    match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", normalized)
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def replace_double_date_footer_text(text: str, date_value: str) -> str:
@@ -343,7 +378,6 @@ def render_contract_material_bundle(
         ]
         raise RuntimeError(f"请先在合同配置中配置：{'、'.join(missing)}。")
 
-    converter = image_converter or export_contract_docx_images
     materials: list[ContractMaterial] = []
     for contract_type, label in required_contract_template_types(platform):
         template = Path(templates[contract_template_key(platform, contract_type)])
@@ -371,13 +405,42 @@ def render_contract_material_bundle(
             data,
             normalize_for_rendering=normalize_for_rendering,
         )
-        image_paths = converter(docx_path, output_dir / "images", image_stem)
+        image_paths = convert_contract_docx_images(
+            contract_type,
+            docx_path,
+            output_dir / "images",
+            image_stem,
+            image_converter,
+        )
+        if contract_type == "purchase" and len(image_paths) > 1:
+            image_paths = [
+                merge_pngs_vertically(
+                    image_paths,
+                    output_dir / "images" / f"{safe_contract_filename(image_stem)}.png",
+                )
+            ]
         if not image_paths or any(not path.exists() for path in image_paths):
             raise RuntimeError(f"{label}图片生成失败。")
         material = ContractMaterial(contract_type, label, docx_path, image_paths)
         write_contract_material_cache(manifest_path, cache_key, material)
         materials.append(material)
     return ContractMaterialBundle(materials)
+
+
+def convert_contract_docx_images(
+    contract_type: str,
+    docx_path: Path,
+    image_dir: Path,
+    image_stem: str,
+    image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None,
+) -> list[Path]:
+    if image_converter is not None:
+        return image_converter(docx_path, image_dir, image_stem)
+    if contract_type == "rights":
+        quicklook = quicklook_docx_to_image(docx_path, image_dir, image_stem)
+        if quicklook:
+            return [quicklook]
+    return export_contract_docx_images(docx_path, image_dir, image_stem)
 
 
 def build_contract_material_cache_path(cache_dir: Path, image_stem: str) -> Path:
@@ -738,6 +801,46 @@ def convert_pdf_to_pngs(pdf_path: Path, image_dir: Path, image_stem: str) -> lis
         if target.exists():
             return [target]
     raise RuntimeError("无法将 PDF 合同转换为图片，请安装 poppler(pdftoppm)。")
+
+
+def merge_pngs_vertically(image_paths: list[Path], target: Path) -> Path:
+    if not image_paths:
+        raise RuntimeError("没有可合并的合同图片。")
+    if len(image_paths) == 1:
+        return image_paths[0]
+    try:
+        from PySide6.QtGui import QColor, QImage, QPainter
+    except ImportError as exception:
+        raise RuntimeError("无法合并多页合同图片，请确认 PySide6 已安装。") from exception
+
+    images = [QImage(str(path)) for path in image_paths]
+    if any(image.isNull() for image in images):
+        raise RuntimeError("采购合同图片读取失败，无法合并。")
+    width = max(image.width() for image in images)
+    height = sum(image.height() for image in images)
+    merged = QImage(width, height, QImage.Format.Format_RGB32)
+    merged.fill(QColor("white"))
+    painter = QPainter(merged)
+    try:
+        y = 0
+        for image in images:
+            x = max((width - image.width()) // 2, 0)
+            painter.drawImage(x, y, image)
+            y += image.height()
+    finally:
+        painter.end()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    if not merged.save(str(target), "PNG"):
+        raise RuntimeError("采购合同长图保存失败。")
+    for path in image_paths:
+        if path != target and path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return target
 
 
 def quicklook_docx_to_image(docx_path: Path, image_dir: Path, image_stem: str) -> Path | None:
