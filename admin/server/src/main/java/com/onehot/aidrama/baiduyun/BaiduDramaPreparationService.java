@@ -35,6 +35,9 @@ public class BaiduDramaPreparationService {
             initialDelayString = "${aidrama.baidu.prepare-initial-delay-ms:10000}"
     )
     public void scheduledPrepareNextPendingDrama() {
+        if (prepareOnDemandOnly()) {
+            return;
+        }
         if (!preparing.compareAndSet(false, true)) {
             return;
         }
@@ -62,7 +65,7 @@ public class BaiduDramaPreparationService {
         try {
             Drama prepared = drama;
             if (isBlank(prepared.getAiTitle())) {
-                prepared = aiService.generateTitle(drama.getId());
+                prepared = aiService.generateTitleForDistribution(drama.getId());
             }
             if (isBlank(prepared.getAiSummary())) {
                 prepared = aiService.generateSummary(drama.getId());
@@ -137,6 +140,12 @@ public class BaiduDramaPreparationService {
                 .map(BaiduDramaPreparationService::parseLong)
                 .orElse(600000L);
         return cooldownMs > 0 && failedAt.plus(Duration.ofMillis(cooldownMs)).isAfter(Instant.now());
+    }
+
+    private boolean prepareOnDemandOnly() {
+        return configService.get("drama.prepareOnDemandOnly")
+                .map(Boolean::parseBoolean)
+                .orElse(true);
     }
 
     private static long parseLong(String value) {

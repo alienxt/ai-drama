@@ -1,7 +1,9 @@
 package com.onehot.aidrama.distribution;
 
+import com.onehot.aidrama.baiduyun.BaiduDramaPreparationService;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.error.BusinessException;
+import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.media.MediaAccount;
@@ -10,6 +12,7 @@ import com.onehot.aidrama.users.Account;
 import com.onehot.aidrama.users.AccountRepository;
 import org.bson.types.ObjectId;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -29,6 +32,8 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -36,6 +41,9 @@ import java.util.stream.Collectors;
 @Service
 public class DistributionService {
     private static final Duration ACTIVE_TASK_RETRY_GRACE = Duration.ofMinutes(15);
+    private static final Duration PREPARATION_FAILURE_GRACE = Duration.ofMinutes(10);
+    private static final int PREPARATION_RETRY_AFTER_SECONDS = 3;
+    private static final String PREPARATION_FAILURE_PREFIX = "AI 素材生成失败：";
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
             DistributionTaskStatus.CLAIMED,
             DistributionTaskStatus.DOWNLOADING,
@@ -51,7 +59,10 @@ public class DistributionService {
     private final DistributionTaskRepository taskRepository;
     private final AccountRepository accountRepository;
     private final MongoTemplate mongoTemplate;
+    private final BaiduDramaPreparationService preparationService;
+    private final TaskExecutor taskExecutor;
     private final DistributionPlanner planner = new DistributionPlanner();
+    private final ConcurrentMap<String, Object> preparationLocks = new ConcurrentHashMap<>();
 
     @Autowired
     public DistributionService(
@@ -59,13 +70,27 @@ public class DistributionService {
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository,
             AccountRepository accountRepository,
-            MongoTemplate mongoTemplate
+            MongoTemplate mongoTemplate,
+            BaiduDramaPreparationService preparationService,
+            TaskExecutor taskExecutor
     ) {
         this.dramaRepository = dramaRepository;
         this.mediaAccountRepository = mediaAccountRepository;
         this.taskRepository = taskRepository;
         this.accountRepository = accountRepository;
         this.mongoTemplate = mongoTemplate;
+        this.preparationService = preparationService;
+        this.taskExecutor = taskExecutor;
+    }
+
+    public DistributionService(
+            DramaRepository dramaRepository,
+            MediaAccountRepository mediaAccountRepository,
+            DistributionTaskRepository taskRepository,
+            AccountRepository accountRepository,
+            MongoTemplate mongoTemplate
+    ) {
+        this(dramaRepository, mediaAccountRepository, taskRepository, accountRepository, mongoTemplate, null, null);
     }
 
     DistributionService(
@@ -73,7 +98,26 @@ public class DistributionService {
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, null, null);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, null, null);
+    }
+
+    DistributionService(
+            DramaRepository dramaRepository,
+            MediaAccountRepository mediaAccountRepository,
+            DistributionTaskRepository taskRepository,
+            BaiduDramaPreparationService preparationService
+    ) {
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, preparationService, null);
+    }
+
+    DistributionService(
+            DramaRepository dramaRepository,
+            MediaAccountRepository mediaAccountRepository,
+            DistributionTaskRepository taskRepository,
+            BaiduDramaPreparationService preparationService,
+            TaskExecutor taskExecutor
+    ) {
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, preparationService, taskExecutor);
     }
 
     public List<DistributionTask> generateTasks() {
@@ -382,6 +426,10 @@ public class DistributionService {
     }
 
     public Optional<DistributionTask> claimForOwner(String ownerAccountId, String deviceId) {
+        return claimForOwner(ownerAccountId, deviceId, false);
+    }
+
+    public Optional<DistributionTask> claimForOwner(String ownerAccountId, String deviceId, boolean asyncPreparation) {
         List<String> mediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .map(MediaAccount::getId)
                 .toList();
@@ -392,16 +440,20 @@ public class DistributionService {
                         DistributionTaskStatus.PENDING,
                         mediaAccountIds
                 )
-                .map(task -> claim(task, deviceId));
+                .map(task -> prepareAndClaim(task, deviceId, asyncPreparation));
     }
 
     public Optional<DistributionTask> prepareAndClaimForOwner(String ownerAccountId, String deviceId) {
-        Optional<DistributionTask> pendingTask = claimForOwner(ownerAccountId, deviceId);
+        return prepareAndClaimForOwner(ownerAccountId, deviceId, false);
+    }
+
+    public Optional<DistributionTask> prepareAndClaimForOwner(String ownerAccountId, String deviceId, boolean asyncPreparation) {
+        Optional<DistributionTask> pendingTask = claimForOwner(ownerAccountId, deviceId, asyncPreparation);
         if (pendingTask.isPresent()) {
             return pendingTask;
         }
         return generateNextTaskForOwner(ownerAccountId)
-                .map(task -> claim(task, deviceId));
+                .map(task -> prepareAndClaim(task, deviceId, asyncPreparation));
     }
 
     private Optional<DistributionTask> generateNextTaskForOwner(String ownerAccountId) {
@@ -420,6 +472,10 @@ public class DistributionService {
     }
 
     public DistributionTask retryAndClaimForOwner(String ownerAccountId, String taskId, String deviceId) {
+        return retryAndClaimForOwner(ownerAccountId, taskId, deviceId, false);
+    }
+
+    public DistributionTask retryAndClaimForOwner(String ownerAccountId, String taskId, String deviceId, boolean asyncPreparation) {
         List<String> mediaAccountIds = ownerMediaAccountIds(ownerAccountId);
         DistributionTask task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
@@ -437,7 +493,7 @@ public class DistributionService {
             throw activeTaskStillRunningException();
         }
         clearTaskForRetry(task);
-        return claim(task, deviceId);
+        return prepareAndClaim(task, deviceId, asyncPreparation);
     }
 
     private boolean isRetryableFromDesktop(DistributionTaskStatus status) {
@@ -498,6 +554,73 @@ public class DistributionService {
         return taskRepository.save(task);
     }
 
+    public DistributionTask forceStopTaskForOwner(String ownerAccountId, String taskId) {
+        List<String> mediaAccountIds = ownerMediaAccountIds(ownerAccountId);
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        if (!mediaAccountIds.contains(task.getMediaAccountId())) {
+            throw new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        if (task.getStatus() == DistributionTaskStatus.CANCELLED) {
+            return task;
+        }
+        if (!isForceStoppable(task.getStatus())) {
+            throw new BusinessException(
+                    "TASK_NOT_RUNNING",
+                    "只有待执行或执行中的任务可以强制停止",
+                    HttpStatus.BAD_REQUEST
+            );
+        }
+        task.setStatus(DistributionTaskStatus.CANCELLED);
+        task.setLockedByDeviceId(null);
+        task.setFailureReason("用户强制停止任务");
+        task.setFinishedAt(Instant.now());
+        return taskRepository.save(task);
+    }
+
+    private boolean isForceStoppable(DistributionTaskStatus status) {
+        return status == DistributionTaskStatus.PENDING || ACTIVE_TASK_STATUSES.contains(status);
+    }
+
+    public DistributionDtos.PreparationResponse prepareTaskDramaForOwner(String ownerAccountId, String taskId) {
+        List<String> mediaAccountIds = ownerMediaAccountIds(ownerAccountId);
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        if (!mediaAccountIds.contains(task.getMediaAccountId())) {
+            throw new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        if (task.getStatus() == DistributionTaskStatus.CANCELLED) {
+            return preparationFailed("任务已取消");
+        }
+        if (task.getStatus() == DistributionTaskStatus.SUCCEEDED) {
+            return preparationFailed("任务已完成，不能重新准备素材");
+        }
+        if (task.getStatus() == DistributionTaskStatus.FAILED && isPreparationFailureTask(task)) {
+            return preparationFailed(task.getFailureReason());
+        }
+        if (preparationService == null) {
+            return preparationFailed("AI 素材准备服务不可用");
+        }
+        if (task.getDramaId() == null || task.getDramaId().isBlank()) {
+            return preparationFailed("任务缺少短剧 ID");
+        }
+        Drama drama = dramaRepository.findById(task.getDramaId())
+                .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
+        if (isPreparedForDistribution(drama)) {
+            return preparationPrepared();
+        }
+        if (isRecentPreparationFailure(drama)) {
+            return preparationFailed("AI 素材准备失败，请检查 OpenAI 配置后重试");
+        }
+        Object marker = new Object();
+        Object existing = preparationLocks.putIfAbsent(task.getDramaId(), marker);
+        if (existing != null) {
+            return preparationPreparing("AI 素材准备中，请稍候");
+        }
+        executePreparation(() -> prepareTaskDramaInBackground(task.getId(), task.getDramaId(), marker));
+        return preparationPreparing("AI 素材准备已开始，请稍候");
+    }
+
     public DistributionTask prioritizeDramaForOwner(String ownerAccountId, String dramaId) {
         var drama = dramaRepository.findById(dramaId)
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
@@ -506,9 +629,6 @@ public class DistributionService {
         }
         if (!isRecentUpdatedDrama(drama)) {
             throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在最近更新剧池内", HttpStatus.BAD_REQUEST);
-        }
-        if (!isPreparedForDistribution(drama)) {
-            throw new BusinessException("DRAMA_NOT_PREPARED", "AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能分发", HttpStatus.BAD_REQUEST);
         }
         List<String> ownedMediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .map(MediaAccount::getId)
@@ -545,11 +665,25 @@ public class DistributionService {
     }
 
     private boolean hasBlockingGeneratedTask(String mediaAccountId, String dramaId) {
-        return taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+        if (taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
                 mediaAccountId,
                 dramaId,
                 NON_BLOCKING_GENERATION_STATUSES
-        );
+        )) {
+            return true;
+        }
+        return taskRepository.findFirstByMediaAccountIdAndDramaIdAndStatusOrderByCreatedAtDesc(
+                        mediaAccountId,
+                        dramaId,
+                        DistributionTaskStatus.FAILED
+                )
+                .map(this::isPreparationFailureTask)
+                .orElse(false);
+    }
+
+    private boolean isPreparationFailureTask(DistributionTask task) {
+        String failureReason = task.getFailureReason();
+        return failureReason != null && failureReason.startsWith(PREPARATION_FAILURE_PREFIX);
     }
 
     private List<com.onehot.aidrama.dramas.Drama> recentReadyDramas() {
@@ -557,9 +691,7 @@ public class DistributionService {
                 DramaStatus.READY,
                 recentUpdatedFrom(),
                 Sort.by(Sort.Direction.DESC, "updatedAt")
-        ).stream()
-                .filter(this::isPreparedForDistribution)
-                .toList();
+        );
     }
 
     private boolean isPreparedForDistribution(com.onehot.aidrama.dramas.Drama drama) {
@@ -599,6 +731,134 @@ public class DistributionService {
         task.setLockedByDeviceId(deviceId);
         task.setFinishedAt(null);
         return taskRepository.save(task);
+    }
+
+    private DistributionTask prepareAndClaim(DistributionTask task, String deviceId, boolean asyncPreparation) {
+        if (!asyncPreparation) {
+            ensureTaskDramaPrepared(task);
+        }
+        return claim(task, deviceId);
+    }
+
+    private void executePreparation(Runnable runnable) {
+        if (taskExecutor == null) {
+            runnable.run();
+            return;
+        }
+        taskExecutor.execute(runnable);
+    }
+
+    private void prepareTaskDramaInBackground(String taskId, String dramaId, Object marker) {
+        try {
+            Drama drama = dramaRepository.findById(dramaId)
+                    .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
+            if (isPreparedForDistribution(drama)) {
+                return;
+            }
+            Drama prepared = preparationService.prepareForDistribution(drama);
+            if (!isPreparedForDistribution(prepared)) {
+                markTaskPreparationFailed(taskId, "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试");
+            }
+        } catch (RuntimeException exception) {
+            markTaskPreparationFailed(taskId, preparationFailureMessage(exception));
+        } finally {
+            preparationLocks.remove(dramaId, marker);
+        }
+    }
+
+    private void markTaskPreparationFailed(String taskId, String message) {
+        taskRepository.findById(taskId).ifPresent(task -> {
+            if (task.getStatus() == DistributionTaskStatus.CANCELLED || task.getStatus() == DistributionTaskStatus.SUCCEEDED) {
+                return;
+            }
+            task.setStatus(DistributionTaskStatus.FAILED);
+            task.setProgress(0);
+            task.setLockedByDeviceId(null);
+            task.setFailureReason(message.startsWith(PREPARATION_FAILURE_PREFIX) ? message : PREPARATION_FAILURE_PREFIX + message);
+            task.setFinishedAt(Instant.now());
+            taskRepository.save(task);
+        });
+    }
+
+    private boolean isRecentPreparationFailure(Drama drama) {
+        Instant failedAt = drama.getAiPreparationFailedAt();
+        return failedAt != null && failedAt.isAfter(Instant.now().minus(PREPARATION_FAILURE_GRACE));
+    }
+
+    private DistributionDtos.PreparationResponse preparationPrepared() {
+        return new DistributionDtos.PreparationResponse(
+                true,
+                false,
+                false,
+                "AI 素材已准备完成",
+                0
+        );
+    }
+
+    private DistributionDtos.PreparationResponse preparationPreparing(String message) {
+        return new DistributionDtos.PreparationResponse(
+                false,
+                true,
+                false,
+                message,
+                PREPARATION_RETRY_AFTER_SECONDS
+        );
+    }
+
+    private DistributionDtos.PreparationResponse preparationFailed(String message) {
+        return new DistributionDtos.PreparationResponse(
+                false,
+                false,
+                true,
+                message,
+                0
+        );
+    }
+
+    private void ensureTaskDramaPrepared(DistributionTask task) {
+        if (preparationService == null || task == null || task.getDramaId() == null || task.getDramaId().isBlank()) {
+            return;
+        }
+        Object lock = preparationLocks.computeIfAbsent(task.getDramaId(), ignored -> new Object());
+        try {
+            synchronized (lock) {
+                Drama drama = dramaRepository.findById(task.getDramaId())
+                        .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
+                if (isPreparedForDistribution(drama)) {
+                    return;
+                }
+                Drama prepared = preparationService.prepareForDistribution(drama);
+                if (!isPreparedForDistribution(prepared)) {
+                    throw new BusinessException(
+                            "DRAMA_PREPARATION_FAILED",
+                            "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试",
+                            HttpStatus.BAD_GATEWAY
+                    );
+                }
+            }
+        } catch (RuntimeException exception) {
+            markTaskPreparationFailed(task, exception);
+            throw exception;
+        } finally {
+            preparationLocks.remove(task.getDramaId(), lock);
+        }
+    }
+
+    private void markTaskPreparationFailed(DistributionTask task, RuntimeException exception) {
+        task.setStatus(DistributionTaskStatus.FAILED);
+        task.setProgress(0);
+        task.setLockedByDeviceId(null);
+        task.setFailureReason(preparationFailureMessage(exception));
+        task.setFinishedAt(Instant.now());
+        taskRepository.save(task);
+    }
+
+    private String preparationFailureMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            message = exception.getClass().getSimpleName();
+        }
+        return PREPARATION_FAILURE_PREFIX + message;
     }
 
     private DistributionTask createTask(String mediaAccountId, String dramaId, int priority) {

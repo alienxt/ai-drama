@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from aidrama_desktop.api.client import ApiClient
+from aidrama_desktop.api.diagnostics import diagnose_server, write_diagnostic_report
 from aidrama_desktop import __version__
 from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
@@ -162,6 +163,10 @@ class LoginPage(QWidget):
         self.login_button = QPushButton("登录桌面端")
         self.login_button.setObjectName("primaryButton")
         self.login_button.clicked.connect(self._login)
+        self.diagnose_button = QPushButton("网络诊断")
+        self.diagnose_button.setObjectName("secondaryButton")
+        self.diagnose_button.clicked.connect(self._diagnose_network)
+        self.active_workers: list[Worker] = []
 
         panel = QFrame()
         panel.setObjectName("loginPanel")
@@ -211,6 +216,7 @@ class LoginPage(QWidget):
         form_layout.addWidget(self.remember_checkbox)
         form_layout.addSpacing(8)
         form_layout.addWidget(self.login_button)
+        form_layout.addWidget(self.diagnose_button)
         form_layout.addStretch(1)
 
         panel_layout.addWidget(brand)
@@ -262,6 +268,48 @@ class LoginPage(QWidget):
         else:
             self.remember_store.clear()
         self.logged_in.emit()
+
+    def _diagnose_network(self) -> None:
+        settings = update_settings(self.settings)
+        self.diagnose_button.setEnabled(False)
+        self.diagnose_button.setText("诊断中...")
+
+        def task() -> tuple[str, str]:
+            report = diagnose_server(settings.server_url)
+            report_path = write_diagnostic_report(report, settings.work_dir)
+            return report.to_text(), str(report_path)
+
+        worker = Worker(task)
+        self.active_workers.append(worker)
+        worker.signals.done.connect(lambda result, item=worker: self._show_diagnostic_report(item, result))
+        worker.signals.failed.connect(lambda error, item=worker: self._show_diagnostic_error(item, error))
+        QThreadPool.globalInstance().start(worker)
+
+    def _finish_diagnostic_worker(self, worker: Worker) -> None:
+        if worker in self.active_workers:
+            self.active_workers.remove(worker)
+        self.diagnose_button.setEnabled(True)
+        self.diagnose_button.setText("网络诊断")
+
+    def _show_diagnostic_report(self, worker: Worker, result: object) -> None:
+        self._finish_diagnostic_worker(worker)
+        report_text, report_path = result if isinstance(result, tuple) else ("", "")
+        message = QMessageBox(self)
+        message.setWindowTitle("网络诊断")
+        message.setIcon(QMessageBox.Information)
+        message.setText("网络诊断已完成。")
+        message.setInformativeText(f"报告已保存到：{report_path}")
+        message.setDetailedText(str(report_text))
+        message.exec()
+
+    def _show_diagnostic_error(self, worker: Worker, error: str) -> None:
+        self._finish_diagnostic_worker(worker)
+        message = QMessageBox(self)
+        message.setWindowTitle("网络诊断失败")
+        message.setIcon(QMessageBox.Critical)
+        message.setText("网络诊断没有完成。")
+        message.setDetailedText(error)
+        message.exec()
 
 
 class DesktopWindow(QMainWindow):
@@ -932,7 +980,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.setColumnWidth(3, 300)
         self.task_history_table.setColumnWidth(5, 150)
         self.task_history_table.setColumnWidth(6, 150)
-        self.task_history_table.setColumnWidth(7, 86)
+        self.task_history_table.setColumnWidth(7, 142)
         self.align_table_header_left(self.task_history_table)
         self.task_history_table.itemSelectionChanged.connect(self.on_task_history_selection_changed)
         history_layout.addWidget(self.task_history_table, 1)
@@ -1414,8 +1462,51 @@ class DesktopWindow(QMainWindow):
         retry.setEnabled(self.is_task_retryable(task) and not self.is_current_task_running(str(task.get("id") or "")))
         retry.clicked.connect(lambda _=False, item=task: self.retry_distribution_task(item))
         layout.addWidget(retry)
+        force_stop = QPushButton("强停")
+        force_stop.setToolTip("取消待执行任务，或把卡住的执行中任务标记为已取消")
+        force_stop.setEnabled(self.is_task_force_stoppable(task))
+        force_stop.clicked.connect(lambda _=False, item=task: self.force_stop_distribution_task(item))
+        layout.addWidget(force_stop)
         layout.addStretch(1)
         return wrapper
+
+    def force_stop_distribution_task(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            QMessageBox.warning(self, "强制停止", "任务 ID 为空，无法停止。")
+            return
+        if not self.is_task_force_stoppable(task):
+            QMessageBox.information(self, "强制停止", "只有待执行或执行中的任务可以强制停止。")
+            return
+        drama_title = str(task.get("dramaTitle") or task.get("dramaId") or "当前任务")
+        answer = QMessageBox.question(
+            self,
+            "强制停止",
+            f"确定强制停止「{drama_title}」吗？\n\n任务会被标记为已取消，不会自动重新入队。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if self.is_current_task_running(task_id):
+            self.task_cancel_event.set()
+            self.task_pause_event.clear()
+            self.task_skip_event.clear()
+            self.update_task_progress("正在强制停止当前任务...", task_id, task)
+            self.update_task_control_buttons()
+        self.run_async(
+            "强制停止任务",
+            lambda: self.api().post(f"/desktop/tasks/{task_id}/force-stop"),
+            lambda _task: self.handle_task_force_stopped(task_id),
+            log_result=False,
+        )
+
+    def handle_task_force_stopped(self, task_id: str) -> None:
+        if self.current_task_id == task_id:
+            self.update_task_progress("任务已强制停止", task_id)
+        self.load_task_history(page=self.task_history_page)
+        self.update_task_control_buttons()
+        QMessageBox.information(self, "强制停止", "任务已强制停止。")
 
     def retry_distribution_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")
@@ -1474,6 +1565,16 @@ class DesktopWindow(QMainWindow):
             "UPLOADING",
         }
 
+    @staticmethod
+    def is_task_force_stoppable(task: dict[str, Any]) -> bool:
+        return str(task.get("status") or "") in {
+            "CLAIMED",
+            "PENDING",
+            "DOWNLOADING",
+            "PROCESSING",
+            "UPLOADING",
+        }
+
     def is_current_task_running(self, task_id: str) -> bool:
         return bool(
             task_id
@@ -1482,7 +1583,10 @@ class DesktopWindow(QMainWindow):
         )
 
     def retry_task_once(self, task_id: str) -> str:
-        task = self.api().post(f"/desktop/tasks/{task_id}/retry", {"deviceId": self.settings.device_id})
+        task = self.api().post(
+            f"/desktop/tasks/{task_id}/retry",
+            {"deviceId": self.settings.device_id, "asyncPreparation": True},
+        )
         return self.runner().execute_task(task)
 
     def handle_retry_task_done(self, result: str) -> None:
@@ -3228,6 +3332,30 @@ def apply_style(app: QApplication) -> None:
         QPushButton#primaryButton:pressed {
             background: #1e40af;
             border-color: #1e40af;
+        }
+        QPushButton#secondaryButton {
+            color: #1d4ed8;
+            background: #ffffff;
+            border: 1px solid #c7d2fe;
+            border-radius: 8px;
+            min-height: 40px;
+            max-height: 40px;
+            padding: 0 16px;
+            font-size: 13px;
+            font-weight: 800;
+        }
+        QPushButton#secondaryButton:hover {
+            background: #eff6ff;
+            border-color: #93c5fd;
+        }
+        QPushButton#secondaryButton:pressed {
+            background: #dbeafe;
+            border-color: #60a5fa;
+        }
+        QPushButton#secondaryButton:disabled {
+            color: #94a3b8;
+            background: #f8fafc;
+            border-color: #e2e8f0;
         }
         QLabel#pageTitle {
             color: #111827;

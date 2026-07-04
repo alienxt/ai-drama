@@ -10,6 +10,7 @@ import com.onehot.aidrama.common.security.JwtPrincipal;
 import com.onehot.aidrama.distribution.DistributionTask;
 import com.onehot.aidrama.distribution.DistributionTaskRepository;
 import com.onehot.aidrama.distribution.DistributionTaskStatus;
+import com.onehot.aidrama.hongguo.HongguoDramaService;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
 import org.bson.Document;
@@ -63,6 +64,7 @@ public class DramaController {
     private final MediaAccountRepository mediaAccountRepository;
     private final DistributionTaskRepository distributionTaskRepository;
     private final TaskExecutor taskExecutor;
+    private final HongguoDramaService hongguoDramaService;
     private final Path downloadDir;
 
     @Autowired
@@ -75,6 +77,7 @@ public class DramaController {
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository distributionTaskRepository,
             TaskExecutor taskExecutor,
+            HongguoDramaService hongguoDramaService,
             @Value("${aidrama.storage.download-dir:downloads/dramas}") Path downloadDir
     ) {
         this.repository = repository;
@@ -85,7 +88,33 @@ public class DramaController {
         this.mediaAccountRepository = mediaAccountRepository;
         this.distributionTaskRepository = distributionTaskRepository;
         this.taskExecutor = taskExecutor;
+        this.hongguoDramaService = hongguoDramaService;
         this.downloadDir = downloadDir.toAbsolutePath().normalize();
+    }
+
+    public DramaController(
+            DramaRepository repository,
+            com.onehot.aidrama.baiduyun.BaiduPanClient baiduPanClient,
+            MongoTemplate mongoTemplate,
+            DramaAiService dramaAiService,
+            DramaCategoryRepository categoryRepository,
+            MediaAccountRepository mediaAccountRepository,
+            DistributionTaskRepository distributionTaskRepository,
+            TaskExecutor taskExecutor,
+            @Value("${aidrama.storage.download-dir:downloads/dramas}") Path downloadDir
+    ) {
+        this(
+                repository,
+                baiduPanClient,
+                mongoTemplate,
+                dramaAiService,
+                categoryRepository,
+                mediaAccountRepository,
+                distributionTaskRepository,
+                taskExecutor,
+                null,
+                downloadDir
+        );
     }
 
     public DramaController(
@@ -107,6 +136,7 @@ public class DramaController {
                 mediaAccountRepository,
                 distributionTaskRepository,
                 taskExecutor,
+                null,
                 Path.of("downloads/dramas")
         );
     }
@@ -233,7 +263,7 @@ public class DramaController {
                             episode.getSourcePath(),
                             episode.getSize(),
                             downloaded,
-                            downloaded ? "LOCAL" : "BAIDU",
+                            downloaded ? "LOCAL" : remotePlaySource(drama),
                             downloaded ? adminEpisodeStreamUrl(id, episode.getEpisodeNo()) : null
                     );
                 })
@@ -246,10 +276,17 @@ public class DramaController {
             @PathVariable String id,
             @PathVariable int episodeNo
     ) {
-        DramaEpisode episode = getEpisode(id, episodeNo);
+        Drama drama = get(id);
+        findEpisode(drama, episodeNo);
         if (isDownloaded(id, episodeNo)) {
             return ApiResponse.ok(
                     new DramaDtos.EpisodePlaySource(episodeNo, "LOCAL", true, adminEpisodeStreamUrl(id, episodeNo)),
+                    MDC.get(TraceIdFilter.TRACE_ID)
+            );
+        }
+        if (isHongguo(drama)) {
+            return ApiResponse.ok(
+                    new DramaDtos.EpisodePlaySource(episodeNo, "HONGGUO", false, adminEpisodeStreamUrl(id, episodeNo)),
                     MDC.get(TraceIdFilter.TRACE_ID)
             );
         }
@@ -264,7 +301,11 @@ public class DramaController {
             @PathVariable String id,
             @PathVariable int episodeNo
     ) {
-        DramaEpisode episode = getEpisode(id, episodeNo);
+        Drama drama = get(id);
+        if (isHongguo(drama)) {
+            throw new BusinessException("HLS_NOT_SUPPORTED", "红果来源剧集请使用 MP4 播放", HttpStatus.BAD_REQUEST);
+        }
+        DramaEpisode episode = findEpisode(drama, episodeNo);
         String baiduManifestUrl = baiduPanClient.createStreamingUrl(episode.getSourcePath());
         String manifest = baiduPanClient.readUrl(baiduManifestUrl);
         return ResponseEntity.ok()
@@ -294,7 +335,8 @@ public class DramaController {
             @PathVariable int episodeNo,
             @RequestHeader(value = HttpHeaders.RANGE, required = false) String range
     ) throws IOException {
-        DramaEpisode episode = getEpisode(id, episodeNo);
+        Drama drama = get(id);
+        DramaEpisode episode = findEpisode(drama, episodeNo);
         Path file = episodeFile(id, episodeNo);
         if (file.startsWith(downloadDir) && Files.isRegularFile(file)) {
             FileSystemResource resource = new FileSystemResource(file);
@@ -306,7 +348,11 @@ public class DramaController {
                     .header(HttpHeaders.ACCEPT_RANGES, "bytes")
                     .body(resource);
         }
-        baiduPanClient.downloadFile(episode.getSourcePath(), file);
+        if (isHongguo(drama)) {
+            requireHongguoService().downloadEpisodeToFile(drama, episode, file);
+        } else {
+            baiduPanClient.downloadFile(episode.getSourcePath(), file);
+        }
         FileSystemResource resource = new FileSystemResource(file);
         MediaType mediaType = MediaTypeFactory.getMediaType(resource)
                 .orElse(MediaType.APPLICATION_OCTET_STREAM);
@@ -494,10 +540,13 @@ public class DramaController {
 
     @GetMapping("/api/desktop/dramas/{id}/episodes/{episodeNo}/download")
     ResponseEntity<Void> downloadEpisode(@PathVariable String id, @PathVariable int episodeNo) {
-        DramaEpisode episode = getEpisode(id, episodeNo);
-        String downloadUrl = baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst();
+        Drama drama = get(id);
+        DramaEpisode episode = findEpisode(drama, episodeNo);
+        URI downloadUri = isHongguo(drama)
+                ? requireHongguoService().createDownloadUri(drama, episode)
+                : URI.create(baiduPanClient.createDownloadUrls(List.of(episode.getSourcePath())).getFirst());
         return ResponseEntity.status(HttpStatus.FOUND)
-                .location(URI.create(downloadUrl))
+                .location(downloadUri)
                 .build();
     }
 
@@ -507,7 +556,11 @@ public class DramaController {
     }
 
     private DramaEpisode getEpisode(String id, int episodeNo) {
-        return get(id).getEpisodes().stream()
+        return findEpisode(get(id), episodeNo);
+    }
+
+    private DramaEpisode findEpisode(Drama drama, int episodeNo) {
+        return drama.getEpisodes().stream()
                 .filter(item -> item.getEpisodeNo() == episodeNo)
                 .findFirst()
                 .orElseThrow(() -> new BusinessException("EPISODE_NOT_FOUND", "剧集不存在", HttpStatus.NOT_FOUND));
@@ -527,6 +580,21 @@ public class DramaController {
 
     private String adminEpisodeHlsUrl(String dramaId, int episodeNo) {
         return "/api/admin/dramas/" + dramaId + "/episodes/" + episodeNo + "/hls.m3u8";
+    }
+
+    private String remotePlaySource(Drama drama) {
+        return isHongguo(drama) ? "HONGGUO" : "BAIDU";
+    }
+
+    private boolean isHongguo(Drama drama) {
+        return drama != null && DramaSources.isHongguo(drama.getSource());
+    }
+
+    private HongguoDramaService requireHongguoService() {
+        if (hongguoDramaService == null) {
+            throw new BusinessException("HONGGUO_SERVICE_DISABLED", "红果服务未启用", HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        return hongguoDramaService;
     }
 
     private String rewriteBaiduManifest(String dramaId, int episodeNo, String manifest) {
@@ -580,11 +648,10 @@ public class DramaController {
         if (drama.getStatus() != DramaStatus.READY) {
             return;
         }
-        if (!hasText(drama.getAiTitle()) || !hasText(drama.getAiSummary()) || !hasText(drama.getAiCoverUrl()) || !hasText(drama.getAiVideoCoverUrl()) || drama.isAiCoverGenerating()
-                || drama.getEpisodes() == null || drama.getEpisodes().isEmpty()) {
+        if (drama.getEpisodes() == null || drama.getEpisodes().isEmpty()) {
             throw new BusinessException(
                     "DRAMA_NOT_PREPARED",
-                    "AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能设为待分发",
+                    "短剧至少要有一集才能设为可分发",
                     HttpStatus.BAD_REQUEST
             );
         }

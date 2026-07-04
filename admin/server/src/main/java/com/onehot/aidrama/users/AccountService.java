@@ -96,6 +96,13 @@ public class AccountService {
         return AccountDto.from(repository.save(account));
     }
 
+    public AccountDto resetPassword(String id, String password) {
+        Account account = repository.findById(id)
+                .orElseThrow(() -> new BusinessException("ACCOUNT_NOT_FOUND", "账号不存在", HttpStatus.NOT_FOUND));
+        account.setPasswordHash(passwordEncoder.encode(password));
+        return AccountDto.from(repository.save(account));
+    }
+
     public AccountDto bindDevice(String id, String deviceId) {
         Account account = repository.findById(id)
                 .orElseThrow(() -> new BusinessException("ACCOUNT_NOT_FOUND", "账号不存在", HttpStatus.NOT_FOUND));

@@ -9,6 +9,7 @@ import com.onehot.aidrama.common.security.JwtPrincipal;
 import com.onehot.aidrama.distribution.DistributionTask;
 import com.onehot.aidrama.distribution.DistributionTaskRepository;
 import com.onehot.aidrama.distribution.DistributionTaskStatus;
+import com.onehot.aidrama.hongguo.HongguoDramaService;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
 import org.bson.Document;
@@ -80,6 +81,25 @@ class DramaControllerTest {
                 mediaAccountRepository,
                 distributionTaskRepository,
                 Runnable::run,
+                downloadDir
+        );
+    }
+
+    private DramaController controller(
+            DramaRepository repository,
+            BaiduPanClient baiduPanClient,
+            HongguoDramaService hongguoDramaService
+    ) {
+        return new DramaController(
+                repository,
+                baiduPanClient,
+                mock(MongoTemplate.class),
+                mock(DramaAiService.class),
+                mock(DramaCategoryRepository.class),
+                mediaAccountRepository,
+                distributionTaskRepository,
+                Runnable::run,
+                hongguoDramaService,
                 downloadDir
         );
     }
@@ -541,7 +561,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void updateRejectsReadyStatusBeforeAiTitleAndCoverAreGenerated() {
+    void updateAllowsReadyStatusBeforeAiTitleAndCoverAreGenerated() {
         DramaRepository repository = mock(DramaRepository.class);
         DramaController controller = controller(repository, mock(BaiduPanClient.class));
         Drama drama = new Drama();
@@ -566,10 +586,12 @@ class DramaControllerTest {
                 List.of("urban"),
                 DramaStatus.READY
         );
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThatThrownBy(() -> controller.update("drama-1", request))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage("AI 剧名、AI 简介、AI 封面和视频封面生成完成后才能设为待分发");
+        Drama updated = controller.update("drama-1", request).data();
+
+        assertThat(updated.getStatus()).isEqualTo(DramaStatus.READY);
+        verify(repository).save(drama);
     }
 
     @Test
@@ -752,6 +774,59 @@ class DramaControllerTest {
     }
 
     @Test
+    void adminEpisodePlaySourceUsesHongguoStreamUrlWithoutBaiduHls() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        HongguoDramaService hongguoDramaService = mock(HongguoDramaService.class);
+        DramaController controller = controller(repository, baiduPanClient, hongguoDramaService);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setSource(DramaSources.HONGGUO_52API);
+        drama.setProviderDramaId("hg-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setProviderVideoId("video-2");
+        episode.setSourcePath("52api://hongguo/hg-1/video/video-2");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+
+        DramaDtos.EpisodePlaySource source = controller.adminEpisodePlaySource("drama-1", 2).data();
+
+        assertThat(source.source()).isEqualTo("HONGGUO");
+        assertThat(source.downloaded()).isFalse();
+        assertThat(source.playUrl()).isEqualTo("/api/admin/dramas/drama-1/episodes/2/stream");
+        verifyNoInteractions(baiduPanClient, hongguoDramaService);
+    }
+
+    @Test
+    void desktopDownloadEpisodeRedirectsToHongguoUriWithoutBaiduLinks() {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        HongguoDramaService hongguoDramaService = mock(HongguoDramaService.class);
+        DramaController controller = controller(repository, baiduPanClient, hongguoDramaService);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setSource(DramaSources.HONGGUO_52API);
+        drama.setProviderDramaId("hg-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setProviderVideoId("video-2");
+        episode.setSourcePath("52api://hongguo/hg-1/video/video-2");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(hongguoDramaService.createDownloadUri(drama, episode))
+                .thenReturn(java.net.URI.create("https://video.example.com/002.mp4"));
+
+        var response = controller.downloadEpisode("drama-1", 2);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
+        assertThat(response.getHeaders().getLocation().toString())
+                .isEqualTo("https://video.example.com/002.mp4");
+        verify(hongguoDramaService).createDownloadUri(drama, episode);
+        verifyNoInteractions(baiduPanClient);
+    }
+
+    @Test
     void baiduHlsManifestRewritesSegmentsToSameOriginUrls() {
         DramaRepository repository = mock(DramaRepository.class);
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
@@ -852,5 +927,37 @@ class DramaControllerTest {
         assertThat(response.getHeaders().getContentLength()).isEqualTo(5);
         assertThat(Files.readString(downloadDir.resolve("drama-1").resolve("002.mp4"))).isEqualTo("video");
         verify(baiduPanClient).downloadFile(eq("/短剧/002.mp4"), org.mockito.ArgumentMatchers.any(Path.class));
+    }
+
+    @Test
+    void streamAdminEpisodeDownloadsHongguoFileWithoutBaiduClient() throws Exception {
+        DramaRepository repository = mock(DramaRepository.class);
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        HongguoDramaService hongguoDramaService = mock(HongguoDramaService.class);
+        DramaController controller = controller(repository, baiduPanClient, hongguoDramaService);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setSource(DramaSources.HONGGUO_52API);
+        drama.setProviderDramaId("hg-1");
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(2);
+        episode.setProviderVideoId("video-2");
+        episode.setSourcePath("52api://hongguo/hg-1/video/video-2");
+        drama.setEpisodes(List.of(episode));
+        when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
+        doAnswer(invocation -> {
+            Path target = invocation.getArgument(2);
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, "video");
+            return null;
+        }).when(hongguoDramaService).downloadEpisodeToFile(eq(drama), eq(episode), org.mockito.ArgumentMatchers.any(Path.class));
+
+        var response = controller.streamAdminEpisode("drama-1", 2, null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getContentLength()).isEqualTo(5);
+        assertThat(Files.readString(downloadDir.resolve("drama-1").resolve("002.mp4"))).isEqualTo("video");
+        verify(hongguoDramaService).downloadEpisodeToFile(eq(drama), eq(episode), org.mockito.ArgumentMatchers.any(Path.class));
+        verifyNoInteractions(baiduPanClient);
     }
 }

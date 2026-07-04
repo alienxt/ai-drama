@@ -1,5 +1,6 @@
 package com.onehot.aidrama.distribution;
 
+import com.onehot.aidrama.baiduyun.BaiduDramaPreparationService;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
@@ -78,6 +79,149 @@ class DistributionServiceTest {
                 any(Sort.class)
         );
         verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
+    }
+
+    @Test
+    void claimPreparesAiAssetsBeforeReturningTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository, preparationService);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setId("task-1");
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-1");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+        Drama drama = readyDrama("drama-1", "urban");
+        drama.setAiTitle(null);
+        drama.setAiSummary(null);
+        drama.setAiCoverUrl(null);
+        drama.setAiVideoCoverUrl(null);
+        Drama prepared = readyDrama("drama-1", "urban");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(Optional.of(pending));
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(preparationService.prepareForDistribution(drama)).thenReturn(prepared);
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1");
+
+        assertThat(claimed).contains(pending);
+        assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(pending.getLockedByDeviceId()).isEqualTo("device-1");
+        verify(preparationService).prepareForDistribution(drama);
+    }
+
+    @Test
+    void asyncClaimReturnsTaskBeforeAiPreparation() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository, preparationService);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setId("task-1");
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-1");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(Optional.of(pending));
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(pending);
+        assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(pending.getLockedByDeviceId()).isEqualTo("device-1");
+        verify(dramaRepository, never()).findById("drama-1");
+        verify(preparationService, never()).prepareForDistribution(any());
+    }
+
+    @Test
+    void asyncPreparationEndpointStartsPreparationAndLaterReportsReady() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                preparationService,
+                Runnable::run
+        );
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.CLAIMED);
+        Drama unprepared = readyDrama("drama-1", "urban");
+        unprepared.setAiTitle(null);
+        unprepared.setAiSummary(null);
+        unprepared.setAiCoverUrl(null);
+        unprepared.setAiVideoCoverUrl(null);
+        Drama prepared = readyDrama("drama-1", "urban");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(unprepared), Optional.of(unprepared), Optional.of(prepared));
+        when(preparationService.prepareForDistribution(unprepared)).thenReturn(prepared);
+
+        DistributionDtos.PreparationResponse first = service.prepareTaskDramaForOwner("owner-1", "task-1");
+        DistributionDtos.PreparationResponse second = service.prepareTaskDramaForOwner("owner-1", "task-1");
+
+        assertThat(first.preparing()).isTrue();
+        assertThat(second.prepared()).isTrue();
+        verify(preparationService).prepareForDistribution(unprepared);
+    }
+
+    @Test
+    void claimMarksTaskFailedWhenAiPreparationFails() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository, preparationService);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setId("task-1");
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-1");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+        Drama drama = readyDrama("drama-1", "urban");
+        drama.setAiTitle(null);
+        drama.setAiSummary(null);
+        drama.setAiCoverUrl(null);
+        drama.setAiVideoCoverUrl(null);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(Optional.of(pending));
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(preparationService.prepareForDistribution(drama)).thenReturn(drama);
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1"))
+                .hasMessageContaining("AI 剧名、AI 简介、AI 封面或视频封面生成失败");
+
+        assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.FAILED);
+        assertThat(pending.getFailureReason()).contains("AI 素材生成失败");
+        assertThat(pending.getFinishedAt()).isNotNull();
+        verify(taskRepository).save(pending);
     }
 
     @Test
@@ -177,7 +321,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void skipsReadyDramaWithoutAiSummary() {
+    void generatesTaskForReadyDramaBeforeAiSummaryExists() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -191,9 +335,18 @@ class DistributionServiceTest {
                 any(Sort.class)
         )).thenReturn(List.of(drama));
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThat(service.generateTasksForOwner("owner-1")).isEmpty();
-        verify(taskRepository, never()).save(any(DistributionTask.class));
+        List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
+
+        assertThat(generated).hasSize(1);
+        assertThat(generated.getFirst().getDramaId()).isEqualTo("drama-1");
+        verify(taskRepository).save(any(DistributionTask.class));
     }
 
     @Test
@@ -368,6 +521,41 @@ class DistributionServiceTest {
                 "drama-1",
                 NON_BLOCKING_GENERATION_STATUSES
         );
+    }
+
+    @Test
+    void aiPreparationFailureBlocksAutomaticRegenerationUntilManualRetry() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = readyDrama("drama-1", "urban");
+        DistributionTask failed = new DistributionTask();
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setFailureReason("AI 素材生成失败：OpenAI 配置无效");
+
+        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+                any(DramaStatus.class),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
+                "media-1",
+                "drama-1",
+                NON_BLOCKING_GENERATION_STATUSES
+        )).thenReturn(false);
+        when(taskRepository.findFirstByMediaAccountIdAndDramaIdAndStatusOrderByCreatedAtDesc(
+                "media-1",
+                "drama-1",
+                DistributionTaskStatus.FAILED
+        )).thenReturn(Optional.of(failed));
+
+        assertThat(service.generateTasksForOwner("owner-1")).isEmpty();
+        verify(taskRepository, never()).save(any(DistributionTask.class));
     }
 
     @Test
@@ -685,6 +873,130 @@ class DistributionServiceTest {
         assertThat(released.getFailureReason()).isNull();
         assertThat(released.getPlatformPublishId()).isNull();
         assertThat(released.getFinishedAt()).isNull();
+    }
+
+    @Test
+    void desktopForceStopCancelsRunningTaskForCurrentOwner() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.UPLOADING);
+        task.setProgress(75);
+        task.setLockedByDeviceId("device-1");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(taskRepository.save(task)).thenReturn(task);
+
+        DistributionTask stopped = service.forceStopTaskForOwner("owner-1", "task-1");
+
+        assertThat(stopped.getStatus()).isEqualTo(DistributionTaskStatus.CANCELLED);
+        assertThat(stopped.getProgress()).isEqualTo(75);
+        assertThat(stopped.getLockedByDeviceId()).isNull();
+        assertThat(stopped.getFailureReason()).isEqualTo("用户强制停止任务");
+        assertThat(stopped.getFinishedAt()).isNotNull();
+        verify(taskRepository).save(task);
+    }
+
+    @Test
+    void desktopForceStopCancelsPendingTaskForCurrentOwner() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.PENDING);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(taskRepository.save(task)).thenReturn(task);
+
+        DistributionTask stopped = service.forceStopTaskForOwner("owner-1", "task-1");
+
+        assertThat(stopped.getStatus()).isEqualTo(DistributionTaskStatus.CANCELLED);
+        assertThat(stopped.getLockedByDeviceId()).isNull();
+        assertThat(stopped.getFailureReason()).isEqualTo("用户强制停止任务");
+        assertThat(stopped.getFinishedAt()).isNotNull();
+        verify(taskRepository).save(task);
+    }
+
+
+    @Test
+    void desktopForceStopRejectsTaskOutsideCurrentOwner() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-2");
+        task.setStatus(DistributionTaskStatus.DOWNLOADING);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+
+        assertThatThrownBy(() -> service.forceStopTaskForOwner("owner-1", "task-1"))
+                .hasMessageContaining("任务不存在");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void desktopForceStopRejectsFinishedTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setStatus(DistributionTaskStatus.SUCCEEDED);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+
+        assertThatThrownBy(() -> service.forceStopTaskForOwner("owner-1", "task-1"))
+                .hasMessageContaining("只有待执行或执行中的任务可以强制停止");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void desktopForceStopReturnsAlreadyCancelledTask() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-1");
+        task.setStatus(DistributionTaskStatus.CANCELLED);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+
+        DistributionTask stopped = service.forceStopTaskForOwner("owner-1", "task-1");
+
+        assertThat(stopped).isSameAs(task);
+        verify(taskRepository, never()).save(any(DistributionTask.class));
     }
 
     private static MediaAccount activeMedia(String id, String ownerAccountId, String categoryId) {

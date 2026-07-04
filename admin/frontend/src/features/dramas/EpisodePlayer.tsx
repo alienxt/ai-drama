@@ -32,6 +32,12 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
     video.removeAttribute('src');
     video.load();
 
+    if (activeSource.source !== 'BAIDU') {
+      video.src = activeSource.playUrl;
+      void video.play().catch(() => undefined);
+      return;
+    }
+
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = activeSource.playUrl;
       return;
@@ -57,7 +63,7 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
       if (data.fatal) {
         setPlaybackError(`百度 m3u8 加载失败：${message}`);
       }
-      console.warn('Baidu HLS playback error', data);
+      console.warn('HLS playback error', data);
     });
     hls.attachMedia(video);
     return () => {
@@ -133,7 +139,7 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
           <span className="episode-player-meta-actions">
             {activeSource ? (
               <Tag color={activeSource.downloaded ? 'green' : 'blue'}>
-                {activeSource.downloaded ? '本地播放' : '百度云播放'}
+                {activeSource.downloaded ? '本地播放' : activeSource.source === 'HONGGUO' ? '红果播放' : '百度云播放'}
               </Tag>
             ) : null}
             {activeEpisode ? (
@@ -183,7 +189,7 @@ export function EpisodePlayer({ dramaId }: EpisodePlayerProps) {
                   </Typography.Text>
                   <span className="episode-row-actions">
                     <Tag color={episode.downloaded ? 'green' : 'blue'}>
-                      {episode.downloaded ? '已下载' : '百度云'}
+                      {episode.downloaded ? '已下载' : episode.playSource === 'HONGGUO' ? '红果' : '百度云'}
                     </Tag>
                     {episode.downloaded ? null : <CloudOutlined className="episode-cloud-icon" />}
                     <Tooltip title="下载到本地">

@@ -58,3 +58,9 @@ desktop/dist/
 # Local tooling/output
 .playwright-cli/
 output/
+
+# Local API captures and one-off media samples
+hg-api-*.json
+hg-new-play-*.json
+ai-cover-dramas-*.tsv
+preview-*.jpg

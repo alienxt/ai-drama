@@ -38,9 +38,13 @@ export type Drama = {
   totalMinutes?: number;
   costAmountWan?: number;
   categoryIds: string[];
+  source?: 'BAIDU_PAN' | 'HONGGUO_52API';
   sourcePath?: string;
+  providerName?: string;
+  providerDramaId?: string;
+  publishedAt?: string;
   status: 'DRAFT' | 'READY' | 'DISABLED';
-  episodes: { episodeNo: number; title?: string; sourcePath: string; size: number }[];
+  episodes: { episodeNo: number; title?: string; sourcePath: string; providerVideoId?: string; size: number }[];
   createdAt?: string;
   updatedAt?: string;
 };
@@ -51,15 +55,50 @@ export type AdminEpisode = {
   sourcePath: string;
   size: number;
   downloaded: boolean;
-  playSource: 'LOCAL' | 'BAIDU';
+  playSource: 'LOCAL' | 'BAIDU' | 'HONGGUO';
   localUrl?: string;
 };
 
 export type EpisodePlaySource = {
   episodeNo: number;
-  source: 'LOCAL' | 'BAIDU';
+  source: 'LOCAL' | 'BAIDU' | 'HONGGUO';
   downloaded: boolean;
   playUrl: string;
+};
+
+export type HongguoCandidate = {
+  id: string;
+  providerDramaId: string;
+  title: string;
+  summary?: string;
+  coverUrl?: string;
+  duration?: string;
+  score?: string;
+  category?: string;
+  copyright?: string;
+  episodeCount?: number;
+  playCount?: number;
+  categories?: string[];
+  calendarDate?: string;
+  calendarPage?: number;
+  publishedAt?: string;
+  status: 'NEW' | 'IMPORTED' | 'SKIPPED';
+  importedDramaId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type HongguoCalendarSyncResponse = {
+  date: string;
+  page: number;
+  fetched: number;
+  filtered: number;
+  created: number;
+  updated: number;
+};
+
+export type HongguoImportCandidateResponse = {
+  drama: Drama;
 };
 
 export type BaiduScanStatus = {

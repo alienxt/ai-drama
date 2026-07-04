@@ -26,8 +26,12 @@ public class Drama {
     private Integer totalMinutes;
     private Integer costAmountWan;
     private List<String> categoryIds = new ArrayList<>();
-    private String source = "BAIDU_PAN";
+    private String source = DramaSources.BAIDU_PAN;
     private String sourcePath;
+    private String providerName;
+    private String providerDramaId;
+    private Instant publishedAt;
+    private Instant sourceSyncedAt;
     private DramaStatus status = DramaStatus.DRAFT;
     private List<DramaEpisode> episodes = new ArrayList<>();
     @CreatedDate
@@ -72,10 +76,18 @@ public class Drama {
     public void setCostAmountWan(Integer costAmountWan) { this.costAmountWan = costAmountWan == null ? 0 : Math.max(costAmountWan, 0); }
     public List<String> getCategoryIds() { return categoryIds; }
     public void setCategoryIds(List<String> categoryIds) { this.categoryIds = categoryIds; }
-    public String getSource() { return source; }
+    public String getSource() { return DramaSources.normalize(source); }
     public void setSource(String source) { this.source = source; }
     public String getSourcePath() { return sourcePath; }
     public void setSourcePath(String sourcePath) { this.sourcePath = sourcePath; }
+    public String getProviderName() { return providerName; }
+    public void setProviderName(String providerName) { this.providerName = providerName; }
+    public String getProviderDramaId() { return providerDramaId; }
+    public void setProviderDramaId(String providerDramaId) { this.providerDramaId = providerDramaId; }
+    public Instant getPublishedAt() { return publishedAt; }
+    public void setPublishedAt(Instant publishedAt) { this.publishedAt = publishedAt; }
+    public Instant getSourceSyncedAt() { return sourceSyncedAt; }
+    public void setSourceSyncedAt(Instant sourceSyncedAt) { this.sourceSyncedAt = sourceSyncedAt; }
     public DramaStatus getStatus() { return status; }
     public void setStatus(DramaStatus status) { this.status = status; }
     public List<DramaEpisode> getEpisodes() { return episodes; }

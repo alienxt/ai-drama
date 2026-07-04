@@ -1,4 +1,4 @@
-import { ApiOutlined, CheckCircleOutlined, DisconnectOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
+import { ApiOutlined, CheckCircleOutlined, DisconnectOutlined, KeyOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -32,8 +32,10 @@ function AccountManagementPage({
   const [filters, setFilters] = useState<Record<string, unknown>>({ roles });
   const [open, setOpen] = useState(false);
   const [bindingAccount, setBindingAccount] = useState<Account | null>(null);
+  const [passwordAccount, setPasswordAccount] = useState<Account | null>(null);
   const [form] = Form.useForm();
   const [deviceForm] = Form.useForm<{ deviceId: string }>();
+  const [passwordForm] = Form.useForm<{ password: string; confirmPassword: string }>();
   const isDesktopUserPage = roles.includes('DESKTOP_USER');
 
   async function create(values: { username: string; password: string; roles: string[] }) {
@@ -68,6 +70,19 @@ function AccountManagementPage({
     await apiDelete(`/admin/accounts/${account.id}/device-binding`);
     appMessage.success('绑定设备已解绑');
     setVersion((value) => value + 1);
+  }
+
+  function showPasswordReset(account: Account) {
+    setPasswordAccount(account);
+    passwordForm.resetFields();
+  }
+
+  async function resetPassword(values: { password: string }) {
+    if (!passwordAccount) return;
+    await apiPatch(`/admin/accounts/${passwordAccount.id}/password`, { password: values.password });
+    appMessage.success('密码已更新');
+    setPasswordAccount(null);
+    passwordForm.resetFields();
   }
 
   function renderDevice(value?: string) {
@@ -149,6 +164,15 @@ function AccountManagementPage({
                     </Popconfirm>
                   </>
                 ) : null}
+                <Tooltip title="修改密码">
+                  <Button
+                    className="table-action"
+                    size="small"
+                    type="text"
+                    icon={<KeyOutlined />}
+                    onClick={() => showPasswordReset(record)}
+                  />
+                </Tooltip>
                 <Tooltip title="禁用">
                   <Button
                     className="table-action"
@@ -185,6 +209,44 @@ function AccountManagementPage({
           </Form.Item>
           <Form.Item name="roles" label="角色" rules={[{ required: true }]}>
             <Select mode="multiple" options={roleOptions} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={`修改密码：${passwordAccount?.username ?? ''}`}
+        open={!!passwordAccount}
+        onCancel={() => setPasswordAccount(null)}
+        onOk={() => passwordForm.submit()}
+        destroyOnClose
+      >
+        <Form form={passwordForm} layout="vertical" onFinish={resetPassword}>
+          <Form.Item
+            name="password"
+            label="新密码"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 8, message: '密码至少 8 位' },
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            name="confirmPassword"
+            label="确认新密码"
+            dependencies={['password']}
+            rules={[
+              { required: true, message: '请再次输入新密码' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('password') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('两次输入的密码不一致'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>

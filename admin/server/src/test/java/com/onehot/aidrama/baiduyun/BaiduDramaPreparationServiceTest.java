@@ -34,7 +34,7 @@ class BaiduDramaPreparationServiceTest {
         covered.setAiSummary("AI简介...");
         covered.setAiCoverUrl("/uploads/ai-covers/new.jpg");
         covered.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
-        when(aiService.generateTitle("drama-1")).thenReturn(titled);
+        when(aiService.generateTitleForDistribution("drama-1")).thenReturn(titled);
         when(aiService.generateCover("drama-1")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -42,7 +42,7 @@ class BaiduDramaPreparationServiceTest {
 
         assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
         assertThat(prepared.isAiCoverGenerating()).isFalse();
-        verify(aiService).generateTitle("drama-1");
+        verify(aiService).generateTitleForDistribution("drama-1");
         verify(aiService).generateCover("drama-1");
         verify(repository).save(org.mockito.ArgumentMatchers.argThat(saved -> saved.getStatus() == DramaStatus.READY));
     }
@@ -57,7 +57,7 @@ class BaiduDramaPreparationServiceTest {
         Drama titled = drama("drama-1");
         titled.setAiTitle("新剧名");
         titled.setAiSummary("AI简介...");
-        when(aiService.generateTitle("drama-1")).thenReturn(titled);
+        when(aiService.generateTitleForDistribution("drama-1")).thenReturn(titled);
         when(aiService.generateCover("drama-1")).thenThrow(new IllegalStateException("image failed"));
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -94,17 +94,17 @@ class BaiduDramaPreparationServiceTest {
         covered.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         when(repository.findAll()).thenReturn(List.of(noCover, ready, pending));
         when(repository.findById("pending")).thenReturn(Optional.of(pending));
-        when(aiService.generateTitle("pending")).thenReturn(titled);
+        when(aiService.generateTitleForDistribution("pending")).thenReturn(titled);
         when(aiService.generateCover("pending")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Optional<Drama> prepared = service.prepareNextPendingDrama();
 
         assertThat(prepared).contains(covered);
-        verify(aiService).generateTitle("pending");
+        verify(aiService).generateTitleForDistribution("pending");
         verify(aiService).generateCover("pending");
-        verify(aiService, never()).generateTitle("no-cover");
-        verify(aiService, never()).generateTitle("ready");
+        verify(aiService, never()).generateTitleForDistribution("no-cover");
+        verify(aiService, never()).generateTitleForDistribution("ready");
     }
 
     @Test
@@ -128,7 +128,7 @@ class BaiduDramaPreparationServiceTest {
         Drama prepared = service.prepareForDistribution(drama);
 
         assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
-        verify(aiService, never()).generateTitle("drama-1");
+        verify(aiService, never()).generateTitleForDistribution("drama-1");
         verify(aiService, never()).generateSummary("drama-1");
         verify(aiService).generateCover("drama-1");
     }
@@ -158,7 +158,7 @@ class BaiduDramaPreparationServiceTest {
         Drama prepared = service.prepareForDistribution(drama);
 
         assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
-        verify(aiService, never()).generateTitle("drama-1");
+        verify(aiService, never()).generateTitleForDistribution("drama-1");
         verify(aiService).generateSummary("drama-1");
         verify(aiService).generateCover("drama-1");
     }
@@ -178,7 +178,7 @@ class BaiduDramaPreparationServiceTest {
         Optional<Drama> prepared = service.prepareNextPendingDrama();
 
         assertThat(prepared).isEmpty();
-        verify(aiService, never()).generateTitle("cooling-down");
+        verify(aiService, never()).generateTitleForDistribution("cooling-down");
         verify(aiService, never()).generateCover("cooling-down");
     }
 

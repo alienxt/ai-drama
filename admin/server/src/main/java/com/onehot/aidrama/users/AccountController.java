@@ -4,6 +4,8 @@ import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.TraceIdFilter;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.slf4j.MDC;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -39,6 +41,11 @@ public class AccountController {
         return ApiResponse.ok(service.setEnabled(id, request.enabled()), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @PatchMapping("/{id}/password")
+    ApiResponse<AccountDto> resetPassword(@PathVariable String id, @Valid @RequestBody ResetPasswordRequest request) {
+        return ApiResponse.ok(service.resetPassword(id, request.password()), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
     @PatchMapping("/{id}/device-binding")
     ApiResponse<AccountDto> bindDevice(@PathVariable String id, @RequestBody DeviceBindingRequest request) {
         return ApiResponse.ok(service.bindDevice(id, request.deviceId()), MDC.get(TraceIdFilter.TRACE_ID));
@@ -50,6 +57,13 @@ public class AccountController {
     }
 
     public record EnabledRequest(boolean enabled) {
+    }
+
+    public record ResetPasswordRequest(
+            @NotBlank(message = "密码不能为空")
+            @Size(min = 8, message = "密码至少 8 位")
+            String password
+    ) {
     }
 
     public record DeviceBindingRequest(String deviceId) {

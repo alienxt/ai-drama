@@ -99,4 +99,23 @@ class AccountServiceDeviceBindingTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("只有桌面端用户可以绑定设备");
     }
+
+    @Test
+    void adminCanResetAccountPassword() {
+        AccountRepository repository = mock(AccountRepository.class);
+        PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
+        AccountService service = new AccountService(repository, passwordEncoder, mock(MongoTemplate.class));
+        Account account = new Account();
+        account.setUsername("test");
+        when(repository.findById("account-1")).thenReturn(Optional.of(account));
+        when(passwordEncoder.encode("new-password")).thenReturn("encoded-new-password");
+        when(repository.save(account)).thenReturn(account);
+
+        AccountDto result = service.resetPassword("account-1", "new-password");
+
+        assertThat(account.getPasswordHash()).isEqualTo("encoded-new-password");
+        assertThat(result.username()).isEqualTo("test");
+        verify(passwordEncoder).encode("new-password");
+        verify(repository).save(account);
+    }
 }

@@ -56,7 +56,19 @@ public class DistributionDtos {
     public record TaskStatusCount(DistributionTaskStatus status, long count) {
     }
 
-    public record ClaimRequest(String deviceId) {
+    public record ClaimRequest(String deviceId, Boolean asyncPreparation) {
+        public boolean useAsyncPreparation() {
+            return Boolean.TRUE.equals(asyncPreparation);
+        }
+    }
+
+    public record PreparationResponse(
+            boolean prepared,
+            boolean preparing,
+            boolean failed,
+            String message,
+            int retryAfterSeconds
+    ) {
     }
 
     public record ProgressRequest(DistributionTaskStatus status, int progress, String message) {

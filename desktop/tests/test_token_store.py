@@ -41,5 +41,7 @@ def test_api_client_hides_base_url_for_network_errors(tmp_path, monkeypatch):
     with pytest.raises(ApiError) as error:
         client.get("/ping")
 
-    assert str(error.value) == "无法连接服务，请稍后重试。"
-    assert "example.invalid" not in str(error.value)
+    assert "无法连接服务" in str(error.value)
+    assert "example.invalid" in str(error.value)
+    assert "https://example.invalid/api/ping" not in str(error.value)
+    assert "网络诊断" in str(error.value)

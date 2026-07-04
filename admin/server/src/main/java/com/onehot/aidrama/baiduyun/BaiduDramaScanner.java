@@ -6,6 +6,7 @@ import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaDurationEstimator;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
+import com.onehot.aidrama.dramas.DramaSources;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.system.SystemTaskService;
 import com.onehot.aidrama.system.SystemTaskType;
@@ -145,6 +146,10 @@ public class BaiduDramaScanner {
         Set<String> foundIds = new HashSet<>();
         for (Drama drama : dramaRepository.findAllById(requestedIds)) {
             foundIds.add(drama.getId());
+            if (!isBaiduDrama(drama)) {
+                LOGGER.info("Skip Baidu asset sync for non-Baidu drama: dramaId={}, source={}", drama.getId(), drama.getSource());
+                continue;
+            }
             try {
                 synced.add(syncImportedDrama(drama));
             } catch (BaiduPanException | IllegalArgumentException exception) {
@@ -162,6 +167,19 @@ public class BaiduDramaScanner {
                 .toList();
         List<ClientAssetSyncPlan> plans = new ArrayList<>();
         for (Drama drama : dramaRepository.findAllById(requestedIds)) {
+            if (!isBaiduDrama(drama)) {
+                plans.add(new ClientAssetSyncPlan(
+                        drama.getId(),
+                        drama.getTitle(),
+                        drama.getSourcePath(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        "红果来源不需要同步百度封面和简介"
+                ));
+                continue;
+            }
             try {
                 plans.add(clientAssetSyncPlan(drama));
             } catch (BaiduPanException | IllegalArgumentException exception) {
@@ -246,7 +264,8 @@ public class BaiduDramaScanner {
     }
 
     private boolean needsAssetRepair(Drama drama) {
-        return hasSourcePath(drama)
+        return isBaiduDrama(drama)
+                && hasSourcePath(drama)
                 && (looksLikeBaiduError(drama.getSummary()) || isRemoteBaiduCover(drama.getCoverUrl()) || drama.getCoverUrl() == null);
     }
 
@@ -303,7 +322,7 @@ public class BaiduDramaScanner {
                 setDramaSummary(drama, planned.summary());
             }
         }
-        drama.setSource("BAIDU_PAN");
+        drama.setSource(DramaSources.BAIDU_PAN);
         drama.setSourcePath(planned.sourcePath());
         if (newDrama && drama.getStatus() != DramaStatus.DISABLED) {
             drama.setStatus(DramaStatus.DRAFT);
@@ -449,6 +468,10 @@ public class BaiduDramaScanner {
 
     private boolean hasSourcePath(Drama drama) {
         return drama.getSourcePath() != null && !drama.getSourcePath().isBlank();
+    }
+
+    private boolean isBaiduDrama(Drama drama) {
+        return drama != null && DramaSources.BAIDU_PAN.equals(DramaSources.normalize(drama.getSource()));
     }
 
     private boolean isBlank(String value) {

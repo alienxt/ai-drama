@@ -8,6 +8,8 @@ public class DramaEpisode {
     private String sourcePath;
     private Long fsId;
     private long size;
+    private String providerVideoId;
+    private String downloadUrl;
     private Instant downloadUrlExpiresAt;
 
     public int getEpisodeNo() { return episodeNo; }
@@ -20,7 +22,10 @@ public class DramaEpisode {
     public void setFsId(Long fsId) { this.fsId = fsId; }
     public long getSize() { return size; }
     public void setSize(long size) { this.size = size; }
+    public String getProviderVideoId() { return providerVideoId; }
+    public void setProviderVideoId(String providerVideoId) { this.providerVideoId = providerVideoId; }
+    public String getDownloadUrl() { return downloadUrl; }
+    public void setDownloadUrl(String downloadUrl) { this.downloadUrl = downloadUrl; }
     public Instant getDownloadUrlExpiresAt() { return downloadUrlExpiresAt; }
     public void setDownloadUrlExpiresAt(Instant downloadUrlExpiresAt) { this.downloadUrlExpiresAt = downloadUrlExpiresAt; }
 }
-

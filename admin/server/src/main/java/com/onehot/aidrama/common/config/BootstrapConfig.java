@@ -72,6 +72,7 @@ public class BootstrapConfig {
         return args -> {
             accountService.bootstrapAdmin(username, password);
             bootstrapBaiduConfig(configService);
+            bootstrapHongguoConfig(configService);
             bootstrapOpenAiConfig(configService);
             bootstrapSystemTaskConfig(configService);
             bootstrapCategories(categoryRepository);
@@ -81,6 +82,7 @@ public class BootstrapConfig {
 
     private void bootstrapSystemTaskConfig(SystemConfigService configService) {
         configService.putIfAbsent("system.taskTimeoutMs", "1800000", false);
+        configService.putIfAbsent("drama.prepareOnDemandOnly", "true", false);
     }
 
     private void bootstrapBaiduConfig(SystemConfigService configService) throws Exception {
@@ -105,6 +107,14 @@ public class BootstrapConfig {
         configService.putIfAbsent("baidu.proxyPort", "", false);
         configService.putIfAbsent("baidu.proxyUsername", "", false);
         configService.putIfAbsent("baidu.proxyPassword", "", true);
+    }
+
+    private void bootstrapHongguoConfig(SystemConfigService configService) {
+        configService.putIfAbsent("hongguo.baseUrl", "https://www.52api.cn/api", false);
+        configService.putIfAbsent("hongguo.apiKey", "", true);
+        configService.putIfAbsent("hongguo.secretKey", "", true);
+        configService.putIfAbsent("hongguo.connectTimeoutSeconds", "30", false);
+        configService.putIfAbsent("hongguo.readTimeoutSeconds", "120", false);
     }
 
     private void bootstrapOpenAiConfig(SystemConfigService configService) {

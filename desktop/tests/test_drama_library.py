@@ -72,6 +72,12 @@ def test_downloading_task_can_be_retried():
     assert DesktopWindow.is_task_retryable({"status": "PENDING"}) is False
 
 
+def test_pending_task_can_be_force_stopped_to_cancel_queueing():
+    assert DesktopWindow.is_task_force_stoppable({"status": "PENDING"}) is True
+    assert DesktopWindow.is_task_force_stoppable({"status": "DOWNLOADING"}) is True
+    assert DesktopWindow.is_task_force_stoppable({"status": "SUCCEEDED"}) is False
+
+
 def test_current_running_task_is_not_safe_to_retry():
     window = DesktopWindow.__new__(DesktopWindow)
     window.current_task_id = "task-1"

@@ -29,6 +29,8 @@ EPISODE_DOWNLOAD_RETRIES = 3
 EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
+TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
+TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
@@ -66,11 +68,11 @@ class TaskRunner:
         )
 
     def run_once(self) -> str:
-        task = self.api.post("/desktop/tasks/claim", {"deviceId": self.device_id})
+        task = self.api.post("/desktop/tasks/claim", self._claim_payload())
         return self._execute_task(task)
 
     def publish_once(self) -> str:
-        task = self.api.post("/desktop/tasks/publish-next", {"deviceId": self.device_id})
+        task = self.api.post("/desktop/tasks/publish-next", self._claim_payload())
         return self._execute_task(task)
 
     def execute_task(self, task: dict | None) -> str:
@@ -83,6 +85,7 @@ class TaskRunner:
         task_id = task["id"]
         self._notify("任务已领取", task_id, task)
         try:
+            self._wait_for_task_preparation(task)
             self._progress(task_id, "DOWNLOADING", 10)
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
             drama_title = self._drama_title(download_plan, task)
@@ -104,17 +107,20 @@ class TaskRunner:
                 summary=publish_summary,
                 metadata=metadata,
             )
-            self.api.put(
+            result_task = self.api.put(
                 f"/desktop/tasks/{task_id}/result",
                 {"success": True, "platformPublishId": publish_id, "failureReason": None},
             )
+            if self._is_cancelled_result(result_task):
+                self._notify("任务已停止，可重新分发", task_id, task)
+                return "cancelled"
             self._notify("任务完成", task_id)
             return "succeeded"
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
                 if is_playlet_ready_for_review_message(failure_reason):
-                    self.api.put(
+                    result_task = self.api.put(
                         f"/desktop/tasks/{task_id}/result",
                         {
                             "success": True,
@@ -122,12 +128,18 @@ class TaskRunner:
                             "failureReason": None,
                         },
                     )
+                    if self._is_cancelled_result(result_task):
+                        self._notify("任务已停止，可重新分发", task_id, task)
+                        return "cancelled"
                     self._notify("视频已全部上传，等待确认提审", task_id, task)
                     return "ready-for-review"
-                self.api.put(
+                result_task = self.api.put(
                     f"/desktop/tasks/{task_id}/result",
                     {"success": False, "platformPublishId": None, "failureReason": failure_reason},
                 )
+                if self._is_cancelled_result(result_task):
+                    self._notify("任务已停止，可重新分发", task_id, task)
+                    return "cancelled"
                 self._notify(f"上传失败：{failure_reason}", task_id, task)
                 return "failed"
             if isinstance(exception, TaskPaused):
@@ -139,19 +151,55 @@ class TaskRunner:
                 self._notify("任务已跳过，已放回池里", task_id, task)
                 return "skipped"
             if isinstance(exception, TaskCancelled):
-                self.api.put(f"/desktop/tasks/{task_id}/progress", {"status": "CANCELLED", "progress": 0})
+                self.api.post(f"/desktop/tasks/{task_id}/force-stop")
                 self._notify("任务已停止，可重新分发", task_id, task)
                 return "cancelled"
-            self.api.put(
+            result_task = self.api.put(
                 f"/desktop/tasks/{task_id}/result",
                 {"success": False, "platformPublishId": None, "failureReason": str(exception)},
             )
+            if self._is_cancelled_result(result_task):
+                self._notify("任务已停止，可重新分发", task_id, task)
+                return "cancelled"
             self._notify(f"任务失败：{exception}", task_id, task)
             return "failed"
+
+    def _claim_payload(self) -> dict[str, Any]:
+        return {"deviceId": self.device_id, "asyncPreparation": True}
+
+    def _wait_for_task_preparation(self, task: dict) -> None:
+        task_id = str(task["id"])
+        self._notify("准备AI素材", task_id, task)
+        deadline = time.monotonic() + TASK_PREPARATION_TIMEOUT_SECONDS
+        last_message = ""
+        while True:
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            response = self.api.post(f"/desktop/tasks/{task_id}/prepare")
+            if response.get("prepared"):
+                self._notify("AI素材准备完成", task_id, task)
+                return
+            if response.get("failed"):
+                message = str(response.get("message") or "AI 素材准备失败，请稍后重试。")
+                raise RuntimeError(message)
+            message = str(response.get("message") or "AI 素材准备中，请稍候")
+            if message != last_message:
+                self._notify(message, task_id, task)
+                last_message = message
+            if time.monotonic() >= deadline:
+                raise RuntimeError("AI 素材准备超时，请稍后刷新任务状态后重试。")
+            try:
+                retry_after = float(response.get("retryAfterSeconds") or TASK_PREPARATION_POLL_INTERVAL_SECONDS)
+            except (TypeError, ValueError):
+                retry_after = TASK_PREPARATION_POLL_INTERVAL_SECONDS
+            time.sleep(max(1.0, min(retry_after, 10.0)))
 
     def _progress(self, task_id: str, status: str, progress: int) -> None:
         self._notify(status, task_id)
         self.api.put(f"/desktop/tasks/{task_id}/progress", {"status": status, "progress": progress})
+
+    @staticmethod
+    def _is_cancelled_result(task: Any) -> bool:
+        return isinstance(task, dict) and task.get("status") == "CANCELLED"
 
     def _publisher_for(self, task: dict) -> PlatformPublisher:
         media_account_id = task.get("mediaAccountId")

@@ -18,8 +18,12 @@ class FakeApi:
         self.calls.append(("POST", path, payload))
         if path == "/desktop/tasks/publish-next":
             return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1"}
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
         if path.endswith("/pause") or path.endswith("/skip"):
             return {"id": "task-1", "status": "PENDING"}
+        if path.endswith("/force-stop"):
+            return {"id": "task-1", "status": "CANCELLED"}
         if path.endswith("/result"):
             return {"ok": True}
         return {}
@@ -133,7 +137,8 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     result = runner.publish_once()
 
     assert result == "succeeded"
-    assert ("POST", "/desktop/tasks/publish-next", {"deviceId": "device-1"}) in api.calls
+    assert ("POST", "/desktop/tasks/publish-next", {"deviceId": "device-1", "asyncPreparation": True}) in api.calls
+    assert ("POST", "/desktop/tasks/task-1/prepare", None) in api.calls
     assert ("GET", "/desktop/dramas/drama-1/download-plan", None) in api.calls
     assert publisher.title == "神医归来"
     assert len(publisher.files) == 2
@@ -142,6 +147,50 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
+
+
+def test_publish_once_waits_for_async_preparation_before_download(tmp_path, monkeypatch):
+    api = FakeApi()
+    prepare_calls = []
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1"}
+        if path == "/desktop/tasks/task-1/prepare":
+            prepare_calls.append(path)
+            if len(prepare_calls) == 1:
+                return {
+                    "prepared": False,
+                    "preparing": True,
+                    "failed": False,
+                    "message": "AI 素材准备中，请稍候",
+                    "retryAfterSeconds": 1,
+                }
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        if path.endswith("/result"):
+            return {"ok": True}
+        return {}
+
+    api.post = post
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", lambda *args, **kwargs: [tmp_path / "001.mp4"])
+    (tmp_path / "001.mp4").write_text("video")
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert len(prepare_calls) == 2
+    assert ("AI 素材准备中，请稍候", "task-1") in progress_events
+    assert ("AI素材准备完成", "task-1") in progress_events
 
 
 def test_publish_once_notifies_claimed_media_account(tmp_path, monkeypatch):
@@ -472,9 +521,9 @@ def test_publish_once_marks_task_cancelled_when_download_is_stopped(tmp_path, mo
 
     assert runner.publish_once() == "cancelled"
     assert (
-        "PUT",
-        "/desktop/tasks/task-1/progress",
-        {"status": "CANCELLED", "progress": 0},
+        "POST",
+        "/desktop/tasks/task-1/force-stop",
+        None,
     ) in api.calls
 
 

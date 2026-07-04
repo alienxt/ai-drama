@@ -1,4 +1,4 @@
-import { ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SyncOutlined } from '@ant-design/icons';
+import { CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SyncOutlined } from '@ant-design/icons';
 import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCalendarSyncResponse, HongguoCandidate, HongguoImportCandidateResponse } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -19,6 +19,12 @@ type ClientSyncProgress = {
   status: 'pending' | 'running' | 'success' | 'failed';
   detail: string;
 };
+
+function todayInputValue() {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
 
 export function DramasPage() {
   const [version, setVersion] = useState(0);
@@ -35,6 +41,13 @@ export function DramasPage() {
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
   const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
+  const [hongguoOpen, setHongguoOpen] = useState(false);
+  const [hongguoDate, setHongguoDate] = useState(todayInputValue());
+  const [hongguoPage, setHongguoPage] = useState(1);
+  const [hongguoCandidates, setHongguoCandidates] = useState<HongguoCandidate[]>([]);
+  const [loadingHongguoCandidates, setLoadingHongguoCandidates] = useState(false);
+  const [syncingHongguo, setSyncingHongguo] = useState(false);
+  const [importingHongguoId, setImportingHongguoId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
@@ -49,6 +62,48 @@ export function DramasPage() {
     await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
     appMessage.success('已开始后台扫描，扫描成功后会更新上次扫描时间并继续生成 AI 剧名、AI 简介和封面');
     setVersion((value) => value + 1);
+  }
+
+  async function openHongguoCalendar() {
+    setHongguoOpen(true);
+    await loadHongguoCandidates(hongguoDate);
+  }
+
+  async function loadHongguoCandidates(date = hongguoDate) {
+    setLoadingHongguoCandidates(true);
+    try {
+      const query = date ? `?date=${encodeURIComponent(date)}` : '';
+      const rows = await apiGet<HongguoCandidate[]>(`/admin/hongguo/calendar-candidates${query}`);
+      setHongguoCandidates(rows);
+    } finally {
+      setLoadingHongguoCandidates(false);
+    }
+  }
+
+  async function syncHongguoCalendar() {
+    setSyncingHongguo(true);
+    try {
+      const result = await apiPost<HongguoCalendarSyncResponse>('/admin/hongguo/calendar-sync', {
+        date: hongguoDate,
+        page: hongguoPage,
+      });
+      appMessage.success(`红果新剧日历已同步：获取 ${result.fetched} 部，过滤真人/未知 ${result.filtered} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
+      await loadHongguoCandidates(hongguoDate);
+    } finally {
+      setSyncingHongguo(false);
+    }
+  }
+
+  async function importHongguoCandidate(candidate: HongguoCandidate) {
+    setImportingHongguoId(candidate.id);
+    try {
+      await apiPost<HongguoImportCandidateResponse>(`/admin/hongguo/candidates/${candidate.id}/import`, {});
+      appMessage.success('已导入短剧目录并加入可分发池，客户端领取时才会生成 AI 素材和下载剧集视频');
+      setVersion((value) => value + 1);
+      await loadHongguoCandidates(hongguoDate);
+    } finally {
+      setImportingHongguoId(null);
+    }
   }
 
   async function backfillTotalMinutes() {
@@ -288,6 +343,7 @@ export function DramasPage() {
         <>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditor()}>新增短剧</Button>
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
+          <Button icon={<CalendarOutlined />} onClick={openHongguoCalendar}>红果新剧</Button>
           <Button
             icon={<ClockCircleOutlined />}
             disabled={!hasSelectedDramas}
@@ -628,6 +684,91 @@ export function DramasPage() {
               </div>
             ))}
           </div>
+        </Space>
+      </Modal>
+      <Modal
+        title="红果新剧日历"
+        open={hongguoOpen}
+        onCancel={() => setHongguoOpen(false)}
+        footer={[
+          <Button key="refresh" onClick={() => loadHongguoCandidates()} loading={loadingHongguoCandidates}>刷新</Button>,
+          <Button key="close" type="primary" onClick={() => setHongguoOpen(false)}>关闭</Button>,
+        ]}
+        width={980}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={16} className="hongguo-calendar">
+          <Space wrap>
+            <Input
+              type="date"
+              value={hongguoDate}
+              onChange={(event) => setHongguoDate(event.target.value)}
+              onBlur={() => loadHongguoCandidates(hongguoDate)}
+              className="hongguo-date-input"
+            />
+            <InputNumber
+              min={1}
+              precision={0}
+              value={hongguoPage}
+              onChange={(value) => setHongguoPage(Number(value || 1))}
+            />
+            <Button
+              type="primary"
+              icon={<CalendarOutlined />}
+              loading={syncingHongguo}
+              onClick={syncHongguoCalendar}
+            >
+              同步新剧日历
+            </Button>
+          </Space>
+          <Alert
+            type="info"
+            showIcon
+            message="同步日历只保留明确标记为动漫、动画、漫画或漫剧的候选；导入单部后只保存目录，客户端下载剧集时才取链。"
+          />
+          <Spin spinning={loadingHongguoCandidates}>
+            {hongguoCandidates.length ? (
+              <div className="hongguo-candidate-list">
+                {hongguoCandidates.map((candidate) => (
+                  <div key={candidate.id} className="hongguo-candidate-row">
+                    <div className="hongguo-candidate-cover">
+                      {candidate.coverUrl ? <Image src={candidate.coverUrl} alt={candidate.title} /> : <span>无封面</span>}
+                    </div>
+                    <div className="hongguo-candidate-main">
+                      <div className="hongguo-candidate-title">
+                        <strong>{candidate.title}</strong>
+                        <Tag color={candidate.status === 'IMPORTED' ? 'green' : 'blue'}>
+                          {candidate.status === 'IMPORTED' ? '已导入' : '候选'}
+                        </Tag>
+                      </div>
+                      <Typography.Paragraph className="hongguo-candidate-summary" ellipsis={{ rows: 2, tooltip: candidate.summary }}>
+                        {candidate.summary || '-'}
+                      </Typography.Paragraph>
+                      <Space wrap size={[4, 4]}>
+                        {candidate.category ? <Tag>{candidate.category}</Tag> : null}
+                        {candidate.categories?.map((category) => <Tag key={category}>{category}</Tag>)}
+                        <Tag>{candidate.episodeCount || 0} 集</Tag>
+                        {candidate.duration ? <Tag>{candidate.duration}</Tag> : null}
+                        {candidate.score ? <Tag>{candidate.score} 分</Tag> : null}
+                      </Space>
+                    </div>
+                    <div className="hongguo-candidate-actions">
+                      <Button
+                        type="primary"
+                        disabled={candidate.status === 'IMPORTED'}
+                        loading={importingHongguoId === candidate.id}
+                        onClick={() => importHongguoCandidate(candidate)}
+                      >
+                        导入
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Alert type="warning" showIcon message="当前日期还没有候选短剧" />
+            )}
+          </Spin>
         </Space>
       </Modal>
       <Modal

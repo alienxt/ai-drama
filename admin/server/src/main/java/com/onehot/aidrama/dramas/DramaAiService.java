@@ -71,8 +71,16 @@ public class DramaAiService {
     }
 
     public Drama generateTitle(String id) {
+        return generateTitle(id, false);
+    }
+
+    public Drama generateTitleForDistribution(String id) {
+        return generateTitle(id, true);
+    }
+
+    private Drama generateTitle(String id, boolean allowActiveDistributionTask) {
         Drama drama = get(id);
-        if (taskRepository.existsActiveByDramaId(id)) {
+        if (!allowActiveDistributionTask && taskRepository.existsActiveByDramaId(id)) {
             throw new BusinessException("DRAMA_ALREADY_DISTRIBUTED", "这部剧已经分发过，不能重新生成 AI 剧名", HttpStatus.CONFLICT);
         }
         String systemPrompt = config("openai.prompts.dramaTitle", DEFAULT_TITLE_PROMPT);

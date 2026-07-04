@@ -54,7 +54,7 @@ public class DistributionTaskController {
             @RequestBody DistributionDtos.ClaimRequest request
     ) {
         return ApiResponse.ok(
-                service.claimForOwner(principal.accountId(), request.deviceId()).orElse(null),
+                service.claimForOwner(principal.accountId(), request.deviceId(), request.useAsyncPreparation()).orElse(null),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
@@ -65,7 +65,7 @@ public class DistributionTaskController {
             @RequestBody DistributionDtos.ClaimRequest request
     ) {
         return ApiResponse.ok(
-                service.prepareAndClaimForOwner(principal.accountId(), request.deviceId()).orElse(null),
+                service.prepareAndClaimForOwner(principal.accountId(), request.deviceId(), request.useAsyncPreparation()).orElse(null),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
@@ -90,7 +90,18 @@ public class DistributionTaskController {
             @RequestBody DistributionDtos.ClaimRequest request
     ) {
         return ApiResponse.ok(
-                service.retryAndClaimForOwner(principal.accountId(), id, request.deviceId()),
+                service.retryAndClaimForOwner(principal.accountId(), id, request.deviceId(), request.useAsyncPreparation()),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @PostMapping("/api/desktop/tasks/{id}/prepare")
+    ApiResponse<DistributionDtos.PreparationResponse> prepareDesktopTask(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @PathVariable String id
+    ) {
+        return ApiResponse.ok(
+                service.prepareTaskDramaForOwner(principal.accountId(), id),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
@@ -119,6 +130,17 @@ public class DistributionTaskController {
         );
     }
 
+    @PostMapping("/api/desktop/tasks/{id}/force-stop")
+    ApiResponse<DistributionTask> forceStopDesktopTask(
+            @AuthenticationPrincipal JwtPrincipal principal,
+            @PathVariable String id
+    ) {
+        return ApiResponse.ok(
+                service.forceStopTaskForOwner(principal.accountId(), id),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @PostMapping("/api/desktop/dramas/{dramaId}/prioritize")
     ApiResponse<DistributionTask> prioritize(
             @AuthenticationPrincipal JwtPrincipal principal,
@@ -133,6 +155,9 @@ public class DistributionTaskController {
     @PutMapping("/api/desktop/tasks/{id}/progress")
     ApiResponse<DistributionTask> progress(@PathVariable String id, @RequestBody DistributionDtos.ProgressRequest request) {
         DistributionTask task = get(id);
+        if (task.getStatus() == DistributionTaskStatus.CANCELLED) {
+            return ApiResponse.ok(task, MDC.get(TraceIdFilter.TRACE_ID));
+        }
         task.setStatus(request.status());
         task.setProgress(request.progress());
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
@@ -141,6 +166,9 @@ public class DistributionTaskController {
     @PutMapping("/api/desktop/tasks/{id}/result")
     ApiResponse<DistributionTask> result(@PathVariable String id, @RequestBody DistributionDtos.ResultRequest request) {
         DistributionTask task = get(id);
+        if (task.getStatus() == DistributionTaskStatus.CANCELLED) {
+            return ApiResponse.ok(task, MDC.get(TraceIdFilter.TRACE_ID));
+        }
         task.setStatus(request.success() ? DistributionTaskStatus.SUCCEEDED : DistributionTaskStatus.FAILED);
         task.setProgress(request.success() ? 100 : task.getProgress());
         task.setPlatformPublishId(request.platformPublishId());

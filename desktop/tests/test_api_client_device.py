@@ -1,6 +1,7 @@
 import pytest
+import httpx
 
-from aidrama_desktop.api.client import ApiClient, ApiError
+from aidrama_desktop.api.client import ApiClient, ApiError, connection_error_message
 
 
 class Store:
@@ -158,3 +159,14 @@ def test_check_update_sends_platform_and_current_version(monkeypatch):
             {"Authorization": "Bearer token-1"},
         )
     ]
+
+
+def test_connection_error_message_keeps_useful_reason():
+    error = httpx.ConnectError("nodename nor servname provided")
+
+    message = connection_error_message("https://ad.ai-drama.uk/api", error)
+
+    assert "无法连接服务" in message
+    assert "ad.ai-drama.uk" in message
+    assert "域名解析失败" in message
+    assert "网络诊断" in message
