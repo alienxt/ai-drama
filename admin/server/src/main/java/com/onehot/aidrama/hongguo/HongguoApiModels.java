@@ -1,17 +1,16 @@
 package com.onehot.aidrama.hongguo;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 
 public class HongguoApiModels {
     private HongguoApiModels() {
     }
 
-    public record CalendarPage(LocalDate date, int page, List<CalendarItem> items) {
+    public record MangaSearchPage(String keyword, int page, List<MangaSearchItem> items) {
     }
 
-    public record CalendarItem(
+    public record MangaSearchItem(
             String providerDramaId,
             String title,
             String summary,

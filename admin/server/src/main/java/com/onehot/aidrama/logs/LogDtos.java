@@ -1,5 +1,7 @@
 package com.onehot.aidrama.logs;
 
+import com.onehot.aidrama.hongguo.HongguoApiDebugLog;
+
 import java.time.Instant;
 
 public class LogDtos {
@@ -73,6 +75,36 @@ public class LogDtos {
                     log.getUsername(),
                     log.getClientIp(),
                     log.getUserAgent(),
+                    log.getCreatedAt()
+            );
+        }
+    }
+
+    public record HongguoApiDebugLogResponse(
+            String id,
+            String traceId,
+            String method,
+            String endpoint,
+            String requestUrl,
+            String requestBody,
+            int status,
+            String responseBody,
+            String errorMessage,
+            long durationMs,
+            Instant createdAt
+    ) {
+        static HongguoApiDebugLogResponse from(HongguoApiDebugLog log) {
+            return new HongguoApiDebugLogResponse(
+                    log.getId(),
+                    log.getTraceId(),
+                    log.getMethod(),
+                    log.getEndpoint(),
+                    log.getRequestUrl(),
+                    log.getRequestBody(),
+                    log.getStatus(),
+                    log.getResponseBody(),
+                    log.getErrorMessage(),
+                    log.getDurationMs(),
                     log.getCreatedAt()
             );
         }

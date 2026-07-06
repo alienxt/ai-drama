@@ -28,6 +28,7 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 EPISODE_DOWNLOAD_RETRIES = 3
 EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
+NON_RETRYABLE_DOWNLOAD_ERROR_CODES = {"HONGGUO_VIDEO_EMPTY"}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
@@ -37,6 +38,26 @@ BAIDU_DOWNLOAD_HEADERS = {
 }
 FILENAME_EDGE_CHARS = " ._-—–·，,。.!！?？、:：;；《》<>【】[]()（）"
 INVALID_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+class DownloadHttpError(RuntimeError):
+    def __init__(
+        self,
+        episode_no: int,
+        status_code: int,
+        reason: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ):
+        self.episode_no = episode_no
+        self.status_code = status_code
+        self.reason = reason
+        self.error_code = error_code
+        self.error_message = error_message
+        message = error_message or f"HTTP {status_code}: {reason}"
+        if error_code:
+            message = f"{message}（{error_code}）"
+        super().__init__(f"第 {episode_no} 集下载失败：{message}")
 
 
 @dataclass
@@ -650,7 +671,11 @@ def download_episode_attempt(
 ) -> None:
     url = resolve_download_url(str(episode["downloadUrl"]), base_url)
     request = urllib.request.Request(url, headers=episode_download_headers(headers))
-    with urllib.request.urlopen(request) as response, target.open("wb") as output:
+    try:
+        response_context = urllib.request.urlopen(request)
+    except urllib.error.HTTPError as exception:
+        raise download_http_error(exception, episode_number(episode, index)) from exception
+    with response_context as response, target.open("wb") as output:
         total_bytes = _content_length(response) or episode_size(episode)
         downloaded = 0
         while True:
@@ -730,6 +755,10 @@ def cleanup_part_file(part_file: Path) -> None:
 
 
 def is_retryable_download_error(exception: BaseException) -> bool:
+    if isinstance(exception, DownloadHttpError):
+        if exception.error_code in NON_RETRYABLE_DOWNLOAD_ERROR_CODES:
+            return False
+        return exception.status_code in RETRYABLE_HTTP_STATUS_CODES
     if isinstance(exception, urllib.error.HTTPError):
         return exception.code in RETRYABLE_HTTP_STATUS_CODES
     if isinstance(exception, urllib.error.URLError):
@@ -737,6 +766,40 @@ def is_retryable_download_error(exception: BaseException) -> bool:
     if isinstance(exception, TimeoutError):
         return True
     return False
+
+
+def download_http_error(exception: urllib.error.HTTPError, episode_no: int) -> DownloadHttpError:
+    body = _read_http_error_body(exception)
+    error_code: str | None = None
+    error_message: str | None = None
+    if body:
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                error_code = str(error.get("code") or "") or None
+                error_message = str(error.get("message") or "") or None
+    reason = str(getattr(exception, "reason", None) or getattr(exception, "msg", None) or "")
+    return DownloadHttpError(
+        episode_no=episode_no,
+        status_code=exception.code,
+        reason=reason or "HTTP Error",
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+def _read_http_error_body(exception: urllib.error.HTTPError) -> str:
+    try:
+        raw = exception.read(64 * 1024)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not raw:
+        return ""
+    return raw.decode("utf-8", errors="replace")
 
 
 def sleep_before_retry(

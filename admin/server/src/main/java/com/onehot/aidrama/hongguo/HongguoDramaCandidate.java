@@ -29,6 +29,8 @@ public class HongguoDramaCandidate {
     private List<String> categories = new ArrayList<>();
     private String calendarDate;
     private Integer calendarPage;
+    private String searchKeyword;
+    private Integer searchPage;
     private Instant publishedAt;
     private HongguoCandidateStatus status = HongguoCandidateStatus.NEW;
     private String importedDramaId;
@@ -67,6 +69,10 @@ public class HongguoDramaCandidate {
     public void setCalendarDate(String calendarDate) { this.calendarDate = calendarDate; }
     public Integer getCalendarPage() { return calendarPage; }
     public void setCalendarPage(Integer calendarPage) { this.calendarPage = calendarPage; }
+    public String getSearchKeyword() { return searchKeyword; }
+    public void setSearchKeyword(String searchKeyword) { this.searchKeyword = searchKeyword; }
+    public Integer getSearchPage() { return searchPage; }
+    public void setSearchPage(Integer searchPage) { this.searchPage = searchPage; }
     public Instant getPublishedAt() { return publishedAt; }
     public void setPublishedAt(Instant publishedAt) { this.publishedAt = publishedAt; }
     public HongguoCandidateStatus getStatus() { return status == null ? HongguoCandidateStatus.NEW : status; }

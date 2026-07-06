@@ -2,22 +2,27 @@ package com.onehot.aidrama.hongguo;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onehot.aidrama.common.TraceIdFilter;
 import com.onehot.aidrama.configs.SystemConfigService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -32,45 +37,66 @@ import java.util.Map;
 @Service
 public class HongguoApiClient {
     public static final String DEFAULT_BASE_URL = "https://www.52api.cn/api";
+    private static final Logger log = LoggerFactory.getLogger(HongguoApiClient.class);
     private static final ZoneId CHINA_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final SystemConfigService configService;
     private final RestClient.Builder restClientBuilder;
+    private final HongguoApiDebugLogRepository debugLogRepository;
 
-    public HongguoApiClient(SystemConfigService configService, RestClient.Builder restClientBuilder) {
+    public HongguoApiClient(
+            SystemConfigService configService,
+            RestClient.Builder restClientBuilder,
+            HongguoApiDebugLogRepository debugLogRepository
+    ) {
         this.configService = configService;
         this.restClientBuilder = restClientBuilder;
+        this.debugLogRepository = debugLogRepository;
     }
 
-    public HongguoApiModels.CalendarPage fetchCalendar(LocalDate date, int page) {
-        LocalDate effectiveDate = date == null ? LocalDate.now(CHINA_ZONE) : date;
+    public HongguoApiModels.MangaSearchPage searchMangaDramas(String keyword, int page) {
+        String effectiveKeyword = keyword == null || keyword.isBlank() ? "漫剧" : keyword.trim();
+        int effectivePage = Math.max(page, 1);
+        JsonNode data = get("/hg_new", Map.of(
+                "type", "mj_search",
+                "keyword", effectiveKeyword,
+                "page", String.valueOf(effectivePage)
+        ));
+        return new HongguoApiModels.MangaSearchPage(effectiveKeyword, effectivePage, parseMangaSearchItems(data));
+    }
+
+    public HongguoApiModels.MangaSearchPage fetchNewDramas(int page) {
         int effectivePage = Math.max(page, 1);
         JsonNode data = get("/hg_new_play", Map.of(
                 "type", "detail",
-                "date", effectiveDate.toString(),
+                "date", "",
                 "page", String.valueOf(effectivePage)
         ));
-        List<HongguoApiModels.CalendarItem> items = new ArrayList<>();
-        for (JsonNode item : data.path("lists")) {
-            items.add(new HongguoApiModels.CalendarItem(
-                    text(item, "id"),
-                    firstText(item, "name", "title"),
-                    text(item, "desc"),
-                    text(item, "cover"),
-                    text(item, "duration"),
-                    text(item, "score"),
-                    text(item, "category"),
-                    text(item, "copyright"),
-                    intValue(item, "episode_num", null),
-                    longValue(item, "play_num", null),
-                    parseInstant(text(item, "publish_time")),
-                    textList(item.path("categories")),
+        return new HongguoApiModels.MangaSearchPage("红果新剧", effectivePage, parseMangaSearchItems(data));
+    }
+
+    List<HongguoApiModels.MangaSearchItem> parseMangaSearchItems(JsonNode data) {
+        List<HongguoApiModels.MangaSearchItem> items = new ArrayList<>();
+        for (JsonNode item : records(data, "lists", "list", "items", "records")) {
+            items.add(new HongguoApiModels.MangaSearchItem(
+                    firstText(item, "id", "book_id", "album_id", "drama_id"),
+                    firstText(item, "name", "title", "book_name", "album_name", "video_name"),
+                    firstText(item, "desc", "intro", "summary", "description", "abstract", "brief"),
+                    firstText(item, "cover", "cover_url", "poster", "thumb", "image"),
+                    firstText(item, "duration", "duration_text"),
+                    firstText(item, "score", "rate", "rating"),
+                    firstText(item, "category", "type", "genre"),
+                    firstText(item, "copyright", "source"),
+                    firstInteger(item, "episode_num", "episode_count", "total_episode", "total_episodes", "chapter_num"),
+                    firstLong(item, "play_num", "followed_num", "follow_count", "hot", "heat"),
+                    parseInstant(firstText(item, "create_time", "publish_time", "online_time", "release_time", "update_time")),
+                    mergedTexts(textList(item.path("categories")), recTagTexts(item.path("sub_title_list"))),
                     recTagTexts(item.path("rec_tags"))
             ));
         }
-        return new HongguoApiModels.CalendarPage(effectiveDate, effectivePage, items);
+        return items;
     }
 
     public HongguoApiModels.DramaDetail fetchDetail(String providerDramaId, String keyword) {
@@ -81,29 +107,29 @@ public class HongguoApiClient {
         ));
         List<HongguoApiModels.DetailEpisode> episodes = new ArrayList<>();
         int sequence = 1;
-        for (JsonNode item : data.path("lists")) {
-            String providerVideoId = text(item, "video_id");
+        for (JsonNode item : records(data, "lists", "list", "items", "records", "episodes", "video_list")) {
+            String providerVideoId = firstText(item, "video_id", "id", "item_id", "episode_id");
             if (providerVideoId == null || providerVideoId.isBlank()) {
                 continue;
             }
-            int episodeNo = intValue(item, "index", sequence);
+            int episodeNo = firstInteger(item, sequence, "index", "episode_no", "episode", "sort", "seq");
             episodes.add(new HongguoApiModels.DetailEpisode(
                     Math.max(episodeNo, sequence),
-                    text(item, "title"),
+                    firstText(item, "title", "name"),
                     providerVideoId,
-                    intValue(item, "duration_num", null)
+                    firstInteger(item, "duration_num", "duration_seconds", "duration_sec")
             ));
             sequence++;
         }
         return new HongguoApiModels.DramaDetail(
                 providerDramaId,
-                text(data, "title"),
-                text(data, "intro"),
-                text(data, "cover"),
-                intValue(data, "episode_num", episodes.size()),
-                intValue(data, "duration_num", null),
-                longValue(data, "play_num", null),
-                parseInstant(text(data, "create_time")),
+                firstText(data, "title", "name", "book_name", "album_name"),
+                firstText(data, "intro", "desc", "summary", "description", "abstract", "brief"),
+                firstText(data, "cover", "cover_url", "poster", "thumb", "image"),
+                firstInteger(data, episodes.size(), "episode_num", "episode_count", "total_episode", "total_episodes", "chapter_num"),
+                firstInteger(data, "duration_num", "duration_seconds", "duration_sec"),
+                firstLong(data, "play_num", "followed_num", "follow_count", "hot", "heat"),
+                parseInstant(firstText(data, "create_time", "publish_time", "online_time", "release_time", "update_time")),
                 episodes
         );
     }
@@ -116,20 +142,20 @@ public class HongguoApiClient {
                 "keyword", keyword == null ? "" : keyword
         ));
         List<HongguoApiModels.VideoVariant> variants = new ArrayList<>();
-        for (JsonNode item : data.path("video_lists")) {
-            String url = text(item, "url");
-            String decryptKey = text(item, "decrypt_key");
+        for (JsonNode item : records(data, "video_lists", "lists", "list", "items", "records")) {
+            String url = firstText(item, "url", "video_url", "play_url");
+            String decryptKey = firstText(item, "decrypt_key", "decryptKey", "key");
             if (url == null || url.isBlank() || decryptKey == null || decryptKey.isBlank()) {
                 continue;
             }
             variants.add(new HongguoApiModels.VideoVariant(
                     url,
                     decryptKey,
-                    text(item, "definition"),
-                    text(item, "duration"),
-                    text(item, "size"),
-                    intValue(item, "width", null),
-                    intValue(item, "height", null)
+                    firstText(item, "definition", "quality", "resolution"),
+                    firstText(item, "duration", "duration_text"),
+                    firstText(item, "size", "file_size"),
+                    firstInteger(item, "width"),
+                    firstInteger(item, "height")
             ));
         }
         variants.sort(Comparator.comparingInt(HongguoApiClient::videoPixels).reversed());
@@ -152,6 +178,8 @@ public class HongguoApiClient {
     private JsonNode get(String path, Map<String, String> params) {
         String apiKey = apiKey();
         Map<String, String> requestParams = withKey(params, apiKey);
+        String requestUrl = debugUrl(path, requestParams);
+        long startedAt = System.nanoTime();
         try {
             JsonNode response = client()
                     .get()
@@ -163,8 +191,22 @@ public class HongguoApiClient {
                     .headers(headers -> signHeaders(headers, apiKey))
                     .retrieve()
                     .body(JsonNode.class);
+            writeDebugLog("GET", path, requestUrl, null, responseStatus(response), jsonText(response), null, startedAt);
             return successData(response);
+        } catch (RestClientResponseException exception) {
+            writeDebugLog(
+                    "GET",
+                    path,
+                    requestUrl,
+                    null,
+                    exception.getStatusCode().value(),
+                    exception.getResponseBodyAsString(),
+                    exception.getMessage(),
+                    startedAt
+            );
+            throw new HongguoApiException("调用红果接口失败：" + path, exception);
         } catch (RestClientException exception) {
+            writeDebugLog("GET", path, requestUrl, null, -1, null, exception.getMessage(), startedAt);
             throw new HongguoApiException("调用红果接口失败：" + path, exception);
         }
     }
@@ -172,6 +214,9 @@ public class HongguoApiClient {
     private JsonNode postForm(String path, Map<String, String> params, MultiValueMap<String, String> body) {
         String apiKey = apiKey();
         Map<String, String> requestParams = withKey(params, apiKey);
+        String requestUrl = debugUrl(path, requestParams);
+        String requestBody = jsonText(body);
+        long startedAt = System.nanoTime();
         try {
             JsonNode response = client()
                     .post()
@@ -185,8 +230,22 @@ public class HongguoApiClient {
                     .body(body)
                     .retrieve()
                     .body(JsonNode.class);
+            writeDebugLog("POST", path, requestUrl, requestBody, responseStatus(response), jsonText(response), null, startedAt);
             return successData(response);
+        } catch (RestClientResponseException exception) {
+            writeDebugLog(
+                    "POST",
+                    path,
+                    requestUrl,
+                    requestBody,
+                    exception.getStatusCode().value(),
+                    exception.getResponseBodyAsString(),
+                    exception.getMessage(),
+                    startedAt
+            );
+            throw new HongguoApiException("调用红果解密接口失败", exception);
         } catch (RestClientException exception) {
+            writeDebugLog("POST", path, requestUrl, requestBody, -1, null, exception.getMessage(), startedAt);
             throw new HongguoApiException("调用红果解密接口失败", exception);
         }
     }
@@ -199,6 +258,83 @@ public class HongguoApiClient {
                 .baseUrl(config("hongguo.baseUrl", DEFAULT_BASE_URL))
                 .requestFactory(requestFactory)
                 .build();
+    }
+
+    private void writeDebugLog(
+            String method,
+            String endpoint,
+            String requestUrl,
+            String requestBody,
+            int status,
+            String responseBody,
+            String errorMessage,
+            long startedAt
+    ) {
+        try {
+            HongguoApiDebugLog entry = new HongguoApiDebugLog();
+            entry.setTraceId(MDC.get(TraceIdFilter.TRACE_ID));
+            entry.setMethod(method);
+            entry.setEndpoint(endpoint);
+            entry.setRequestUrl(requestUrl);
+            entry.setRequestBody(requestBody);
+            entry.setStatus(status);
+            entry.setResponseBody(responseBody);
+            entry.setErrorMessage(errorMessage);
+            entry.setDurationMs(Math.max(0, (System.nanoTime() - startedAt) / 1_000_000));
+            entry.setCreatedAt(Instant.now());
+            debugLogRepository.save(entry);
+        } catch (Exception exception) {
+            log.warn("failed to write Hongguo API debug log", exception);
+        }
+    }
+
+    private String debugUrl(String path, Map<String, String> requestParams) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromUriString(config("hongguo.baseUrl", DEFAULT_BASE_URL))
+                .path(path);
+        maskSensitive(requestParams).forEach(builder::queryParam);
+        return builder.build().toUriString();
+    }
+
+    private int responseStatus(JsonNode response) {
+        if (response == null || response.isMissingNode() || response.isNull()) {
+            return -1;
+        }
+        return response.path("code").asInt(-1);
+    }
+
+    private String jsonText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return MAPPER.writeValueAsString(value);
+        } catch (Exception exception) {
+            return String.valueOf(value);
+        }
+    }
+
+    private Map<String, String> maskSensitive(Map<String, String> values) {
+        Map<String, String> masked = new LinkedHashMap<>();
+        if (values == null) {
+            return masked;
+        }
+        values.forEach((key, value) -> masked.put(key, isSecretKey(key) ? mask(value) : value));
+        return masked;
+    }
+
+    private boolean isSecretKey(String key) {
+        return key != null && ("key".equalsIgnoreCase(key) || key.toLowerCase().contains("sign"));
+    }
+
+    private String mask(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() <= 8) {
+            return "***";
+        }
+        return trimmed.substring(0, 4) + "***" + trimmed.substring(trimmed.length() - 4);
     }
 
     private JsonNode successData(JsonNode response) {
@@ -296,6 +432,50 @@ public class HongguoApiClient {
         return null;
     }
 
+    private Integer firstInteger(JsonNode node, String... fields) {
+        return firstInteger(node, null, fields);
+    }
+
+    private Integer firstInteger(JsonNode node, Integer defaultValue, String... fields) {
+        for (String field : fields) {
+            Integer value = intValue(node, field, null);
+            if (value != null) {
+                return value;
+            }
+        }
+        return defaultValue;
+    }
+
+    private Long firstLong(JsonNode node, String... fields) {
+        for (String field : fields) {
+            Long value = longValue(node, field, null);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private List<JsonNode> records(JsonNode data, String... fields) {
+        if (data == null || data.isMissingNode() || data.isNull()) {
+            return List.of();
+        }
+        if (data.isArray()) {
+            List<JsonNode> values = new ArrayList<>();
+            data.forEach(values::add);
+            return values;
+        }
+        for (String field : fields) {
+            JsonNode value = data.path(field);
+            if (value.isArray()) {
+                List<JsonNode> values = new ArrayList<>();
+                value.forEach(values::add);
+                return values;
+            }
+        }
+        return List.of();
+    }
+
     private String text(JsonNode node, String field) {
         JsonNode value = node.path(field);
         if (value.isMissingNode() || value.isNull()) {
@@ -363,11 +543,29 @@ public class HongguoApiClient {
         return values;
     }
 
+    private List<String> mergedTexts(List<String> first, List<String> second) {
+        List<String> values = new ArrayList<>();
+        if (first != null) {
+            values.addAll(first);
+        }
+        if (second != null) {
+            values.addAll(second);
+        }
+        return values;
+    }
+
     private Instant parseInstant(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }
         String trimmed = value.trim();
+        if (trimmed.matches("\\d+")) {
+            try {
+                long timestamp = Long.parseLong(trimmed);
+                return trimmed.length() > 10 ? Instant.ofEpochMilli(timestamp) : Instant.ofEpochSecond(timestamp);
+            } catch (RuntimeException ignored) {
+            }
+        }
         try {
             return Instant.parse(trimmed);
         } catch (RuntimeException ignored) {

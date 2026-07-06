@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -24,19 +23,49 @@ public class HongguoDramaController {
         this.service = service;
     }
 
+    @GetMapping("/manga-candidates")
+    ApiResponse<List<HongguoDramaCandidate>> mangaCandidates(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer page
+    ) {
+        return ApiResponse.ok(service.listMangaCandidates(keyword, page), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping("/manga-sync")
+    ApiResponse<HongguoDtos.MangaSearchResponse> syncManga(@RequestBody(required = false) HongguoDtos.MangaSearchRequest request) {
+        String keyword = request == null ? null : request.keyword();
+        int page = request == null || request.page() == null ? 1 : request.page();
+        return ApiResponse.ok(
+                HongguoDtos.MangaSearchResponse.from(service.syncMangaSearch(keyword, page)),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @GetMapping("/new-candidates")
+    ApiResponse<List<HongguoDramaCandidate>> newCandidates(@RequestParam(required = false) Integer page) {
+        return ApiResponse.ok(service.listNewDramas(page), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping("/new-sync")
+    ApiResponse<HongguoDtos.MangaSearchResponse> syncNew(@RequestBody(required = false) HongguoDtos.NewDramaRequest request) {
+        int page = request == null || request.page() == null ? 1 : request.page();
+        return ApiResponse.ok(
+                HongguoDtos.MangaSearchResponse.from(service.syncNewDramas(page)),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @GetMapping("/calendar-candidates")
-    ApiResponse<List<HongguoDramaCandidate>> calendarCandidates(@RequestParam(required = false) LocalDate date) {
-        return ApiResponse.ok(service.listCandidates(date), MDC.get(TraceIdFilter.TRACE_ID));
+    ApiResponse<List<HongguoDramaCandidate>> calendarCandidates(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Integer page
+    ) {
+        return mangaCandidates(keyword, page);
     }
 
     @PostMapping("/calendar-sync")
-    ApiResponse<HongguoDtos.CalendarSyncResponse> syncCalendar(@RequestBody(required = false) HongguoDtos.CalendarSyncRequest request) {
-        LocalDate date = request == null ? null : request.date();
-        int page = request == null || request.page() == null ? 1 : request.page();
-        return ApiResponse.ok(
-                HongguoDtos.CalendarSyncResponse.from(service.syncCalendar(date, page)),
-                MDC.get(TraceIdFilter.TRACE_ID)
-        );
+    ApiResponse<HongguoDtos.MangaSearchResponse> syncCalendar(@RequestBody(required = false) HongguoDtos.MangaSearchRequest request) {
+        return syncManga(request);
     }
 
     @PostMapping("/candidates/{id}/import")

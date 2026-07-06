@@ -1,52 +1,41 @@
 package com.onehot.aidrama.hongguo;
 
+import com.onehot.aidrama.common.error.BusinessException;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaSources;
 import com.onehot.aidrama.dramas.DramaStatus;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 
 import java.net.URI;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class HongguoDramaServiceTest {
     @Test
-    void syncCalendarFiltersLiveActionCandidatesBeforeSaving() {
+    void syncMangaSearchFetchesDetailsForAllSearchPageCandidates() {
         HongguoApiClient apiClient = mock(HongguoApiClient.class);
         HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
         HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
         Instant publishedAt = Instant.parse("2026-07-03T00:00:00Z");
-        HongguoApiModels.CalendarItem liveAction = new HongguoApiModels.CalendarItem(
-                "live-1",
-                "真人都市短剧",
-                "霸总甜宠故事",
-                "https://example.com/live.jpg",
-                "80集",
-                "8.0",
-                "都市",
-                "红果短剧",
-                80,
-                1000L,
-                publishedAt,
-                List.of("都市", "情感"),
-                List.of("300万热度")
-        );
-        HongguoApiModels.CalendarItem animation = new HongguoApiModels.CalendarItem(
+        HongguoApiModels.MangaSearchItem first = new HongguoApiModels.MangaSearchItem(
                 "anime-1",
-                "热血动漫短剧",
+                "热血漫剧",
                 "玄幻动画故事",
                 "https://example.com/anime.jpg",
                 "80集",
@@ -55,24 +44,170 @@ class HongguoDramaServiceTest {
                 "红果短剧",
                 80,
                 2000L,
-                publishedAt,
+                null,
                 List.of("动漫", "玄幻"),
                 List.of("动漫热播")
         );
-        when(apiClient.fetchCalendar(LocalDate.of(2026, 7, 3), 1))
-                .thenReturn(new HongguoApiModels.CalendarPage(LocalDate.of(2026, 7, 3), 1, List.of(liveAction, animation)));
+        HongguoApiModels.MangaSearchItem second = new HongguoApiModels.MangaSearchItem(
+                "anime-2",
+                "动态漫第二部",
+                "修仙动画故事",
+                "https://example.com/anime2.jpg",
+                "80集",
+                "8.3",
+                "动漫",
+                "红果短剧",
+                80,
+                1000L,
+                null,
+                List.of("动漫", "修仙"),
+                List.of("动漫热播")
+        );
+        when(apiClient.searchMangaDramas("漫剧", 1))
+                .thenReturn(new HongguoApiModels.MangaSearchPage("漫剧", 1, List.of(first, second)));
         when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "anime-1"))
                 .thenReturn(Optional.empty());
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "anime-2"))
+                .thenReturn(Optional.empty());
+        when(apiClient.fetchDetail("anime-1", "热血漫剧")).thenReturn(new HongguoApiModels.DramaDetail(
+                "anime-1",
+                "热血漫剧详情",
+                "详情简介",
+                "https://example.com/detail-cover.jpg",
+                80,
+                4800,
+                3000L,
+                publishedAt,
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-1", 60))
+        ));
+        Instant secondPublishedAt = Instant.parse("2026-07-04T00:00:00Z");
+        when(apiClient.fetchDetail("anime-2", "动态漫第二部")).thenReturn(new HongguoApiModels.DramaDetail(
+                "anime-2",
+                "动态漫第二部详情",
+                "第二部详情简介",
+                "https://example.com/detail-cover-2.jpg",
+                80,
+                4800,
+                2000L,
+                secondPublishedAt,
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-2", 60))
+        ));
         when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        HongguoDramaService.CalendarSyncResult result = service.syncCalendar(LocalDate.of(2026, 7, 3), 1);
+        HongguoDramaService.MangaSearchResult result = service.syncMangaSearch("漫剧", 1);
 
         assertThat(result.fetched()).isEqualTo(2);
-        assertThat(result.filtered()).isEqualTo(1);
-        assertThat(result.created()).isEqualTo(1);
+        assertThat(result.detailed()).isEqualTo(2);
+        assertThat(result.skipped()).isZero();
+        assertThat(result.created()).isEqualTo(2);
         assertThat(result.updated()).isZero();
-        verify(candidateRepository, never()).findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "live-1");
-        verify(candidateRepository).save(any(HongguoDramaCandidate.class));
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository, times(2)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getTitle)
+                .containsExactly("热血漫剧详情", "动态漫第二部详情");
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getPublishedAt)
+                .containsExactly(publishedAt, secondPublishedAt);
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getSearchKeyword)
+                .containsExactly("漫剧", "漫剧");
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getSearchPage)
+                .containsExactly(1, 1);
+    }
+
+    @Test
+    void syncNewDramasFetchesDetailsForAllCurrentPageCandidates() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
+        HongguoApiModels.MangaSearchItem first = new HongguoApiModels.MangaSearchItem(
+                "new-1",
+                "红果新剧第一部",
+                "新剧简介",
+                "https://example.com/new-1.jpg",
+                "60集",
+                "8.2",
+                "都市",
+                "红果短剧",
+                60,
+                1200L,
+                null,
+                List.of("都市"),
+                List.of()
+        );
+        HongguoApiModels.MangaSearchItem second = new HongguoApiModels.MangaSearchItem(
+                "new-2",
+                "红果新剧第二部",
+                "第二部简介",
+                "https://example.com/new-2.jpg",
+                "80集",
+                "8.6",
+                "玄幻",
+                "红果短剧",
+                80,
+                2400L,
+                null,
+                List.of("玄幻"),
+                List.of()
+        );
+        when(apiClient.fetchNewDramas(2))
+                .thenReturn(new HongguoApiModels.MangaSearchPage("红果新剧", 2, List.of(first, second)));
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "new-1"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "new-2"))
+                .thenReturn(Optional.empty());
+        Instant firstPublishedAt = Instant.parse("2026-07-05T00:00:00Z");
+        Instant secondPublishedAt = Instant.parse("2026-07-06T00:00:00Z");
+        when(apiClient.fetchDetail("new-1", "红果新剧第一部")).thenReturn(new HongguoApiModels.DramaDetail(
+                "new-1",
+                "红果新剧第一部详情",
+                "新剧详情简介",
+                "https://example.com/detail-new-1.jpg",
+                60,
+                3600,
+                1500L,
+                firstPublishedAt,
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-1", 60))
+        ));
+        when(apiClient.fetchDetail("new-2", "红果新剧第二部")).thenReturn(new HongguoApiModels.DramaDetail(
+                "new-2",
+                "红果新剧第二部详情",
+                "第二部详情简介",
+                "https://example.com/detail-new-2.jpg",
+                80,
+                4800,
+                3000L,
+                secondPublishedAt,
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-2", 60))
+        ));
+        when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.MangaSearchResult result = service.syncNewDramas(2);
+
+        assertThat(result.keyword()).isEqualTo("红果新剧");
+        assertThat(result.page()).isEqualTo(2);
+        assertThat(result.fetched()).isEqualTo(2);
+        assertThat(result.detailed()).isEqualTo(2);
+        assertThat(result.skipped()).isZero();
+        assertThat(result.created()).isEqualTo(2);
+        assertThat(result.updated()).isZero();
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository, times(2)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getTitle)
+                .containsExactly("红果新剧第一部详情", "红果新剧第二部详情");
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getPublishedAt)
+                .containsExactly(firstPublishedAt, secondPublishedAt);
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getCalendarDate)
+                .containsExactly(HongguoDramaService.NEW_DRAMA_SCOPE, HongguoDramaService.NEW_DRAMA_SCOPE);
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getCalendarPage)
+                .containsExactly(2, 2);
     }
 
     @Test
@@ -163,6 +298,27 @@ class HongguoDramaServiceTest {
         assertThat(episode.getDownloadUrl()).isEqualTo("https://cache.example.com/001.mp4");
         assertThat(episode.getDownloadUrlExpiresAt()).isEqualTo(expiresAt);
         verify(dramaRepository).save(drama);
+    }
+
+    @Test
+    void createDownloadUriTreatsEmptyVideoListAsNonRetryableDependencyFailure() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                mock(HongguoDramaCandidateRepository.class),
+                dramaRepository
+        );
+        Drama drama = hongguoDrama();
+        DramaEpisode episode = drama.getEpisodes().getFirst();
+        when(apiClient.fetchVideoVariants("hg-1", "红果剧", "video-1")).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.createDownloadUri(drama, episode))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.code()).isEqualTo("HONGGUO_VIDEO_EMPTY");
+                    assertThat(exception.status()).isEqualTo(HttpStatus.FAILED_DEPENDENCY);
+                });
+        verify(dramaRepository, never()).save(any());
     }
 
     private HongguoDramaCandidate candidate(String id) {

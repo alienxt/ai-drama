@@ -50,6 +50,7 @@ const navItems: NavItem[] = [
   { key: '/download-invites', icon: <KeyOutlined />, label: '下载邀请码', group: '系统管理', description: '管理落地页安装包下载的邀请码与使用次数' },
   { key: '/configs', icon: <SettingOutlined />, label: '系统配置', group: '系统管理', description: '维护云盘、分发节奏与安全配置' },
   { key: '/system-tasks', icon: <FieldTimeOutlined />, label: '系统任务', group: '系统管理', description: '查看百度网盘扫描等后台任务结果与数据' },
+  { key: '/hongguo-api-debug-logs', icon: <ProfileOutlined />, label: '红果接口日志', group: '系统管理', description: '查看 52api 请求 URL、请求体与返回内容' },
   { key: '/request-logs', icon: <FileSearchOutlined />, label: '请求日志', group: '系统管理', description: '查看后台与桌面端 API 请求记录' },
   { key: '/exception-logs', icon: <WarningOutlined />, label: '异常日志', group: '系统管理', description: '查看接口异常、错误码与堆栈摘要' },
 ];

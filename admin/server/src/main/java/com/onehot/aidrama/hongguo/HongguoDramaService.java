@@ -21,12 +21,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -34,25 +30,9 @@ import java.util.function.Supplier;
 @Service
 public class HongguoDramaService {
     public static final String PROVIDER = "52API_HONGGUO";
-    private static final ZoneId CHINA_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final DateTimeFormatter CALENDAR_DATE_FORMATTER = DateTimeFormatter.BASIC_ISO_DATE;
     private static final Duration DOWNLOAD_URL_CACHE_SKEW = Duration.ofMinutes(2);
-    private static final List<String> NON_LIVE_ACTION_KEYWORDS = List.of(
-            "动漫",
-            "动画",
-            "漫画",
-            "漫剧",
-            "动态漫",
-            "有声漫",
-            "二次元",
-            "国漫",
-            "番剧",
-            "卡通",
-            "短漫",
-            "沙雕动画",
-            "ai动画",
-            "ai漫"
-    );
+    public static final String DEFAULT_MANGA_KEYWORD = "漫剧";
+    public static final String NEW_DRAMA_SCOPE = "HONGGUO_NEW_DRAMA";
 
     private final HongguoApiClient apiClient;
     private final HongguoDramaCandidateRepository candidateRepository;
@@ -69,26 +49,26 @@ public class HongguoDramaService {
         this.dramaRepository = dramaRepository;
     }
 
-    public CalendarSyncResult syncCalendar(LocalDate date, int page) {
-        LocalDate effectiveDate = date == null ? LocalDate.now(CHINA_ZONE) : date;
-        HongguoApiModels.CalendarPage calendarPage = callApi(() -> apiClient.fetchCalendar(effectiveDate, page));
+    public MangaSearchResult syncMangaSearch(String keyword, int page) {
+        String effectiveKeyword = normalizeKeyword(keyword);
+        int effectivePage = Math.max(page, 1);
+        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.searchMangaDramas(effectiveKeyword, effectivePage));
         int created = 0;
         int updated = 0;
-        int filtered = 0;
-        String calendarDate = calendarDate(effectiveDate);
-        for (HongguoApiModels.CalendarItem item : calendarPage.items()) {
+        int detailed = 0;
+        int skipped = 0;
+        for (HongguoApiModels.MangaSearchItem item : searchPage.items()) {
             if (!hasText(item.providerDramaId())) {
-                continue;
-            }
-            if (!isNonLiveActionCalendarItem(item)) {
-                filtered++;
+                skipped++;
                 continue;
             }
             HongguoDramaCandidate candidate = candidateRepository
                     .findByProviderAndProviderDramaId(PROVIDER, item.providerDramaId())
                     .orElseGet(HongguoDramaCandidate::new);
             boolean isNew = candidate.getId() == null;
-            applyCandidate(candidate, item, calendarDate, calendarPage.page());
+            HongguoApiModels.DramaDetail detail = callApi(() -> apiClient.fetchDetail(item.providerDramaId(), firstText(item.title(), effectiveKeyword)));
+            detailed++;
+            applyMangaCandidate(candidate, item, detail, effectiveKeyword, searchPage.page());
             candidateRepository.save(candidate);
             if (isNew) {
                 created++;
@@ -96,21 +76,73 @@ public class HongguoDramaService {
                 updated++;
             }
         }
-        return new CalendarSyncResult(
-                effectiveDate,
-                calendarPage.page(),
-                calendarPage.items().size(),
-                filtered,
+        return new MangaSearchResult(
+                effectiveKeyword,
+                searchPage.page(),
+                searchPage.items().size(),
+                detailed,
+                skipped,
                 created,
                 updated
         );
     }
 
-    public List<HongguoDramaCandidate> listCandidates(LocalDate date) {
-        if (date == null) {
-            return candidateRepository.findTop50ByProviderOrderByCreatedAtDesc(PROVIDER);
+    public MangaSearchResult syncNewDramas(int page) {
+        int effectivePage = Math.max(page, 1);
+        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.fetchNewDramas(effectivePage));
+        int created = 0;
+        int updated = 0;
+        int detailed = 0;
+        int skipped = 0;
+        for (HongguoApiModels.MangaSearchItem item : searchPage.items()) {
+            if (!hasText(item.providerDramaId())) {
+                skipped++;
+                continue;
+            }
+            HongguoDramaCandidate candidate = candidateRepository
+                    .findByProviderAndProviderDramaId(PROVIDER, item.providerDramaId())
+                    .orElseGet(HongguoDramaCandidate::new);
+            boolean isNew = candidate.getId() == null;
+            HongguoApiModels.DramaDetail detail = callApi(() -> apiClient.fetchDetail(item.providerDramaId(), firstText(item.title(), searchPage.keyword())));
+            detailed++;
+            applyNewDramaCandidate(candidate, item, detail, searchPage.page());
+            candidateRepository.save(candidate);
+            if (isNew) {
+                created++;
+            } else {
+                updated++;
+            }
         }
-        return candidateRepository.findByProviderAndCalendarDateOrderByPublishedAtDesc(PROVIDER, calendarDate(date));
+        return new MangaSearchResult(
+                searchPage.keyword(),
+                searchPage.page(),
+                searchPage.items().size(),
+                detailed,
+                skipped,
+                created,
+                updated
+        );
+    }
+
+    public List<HongguoDramaCandidate> listMangaCandidates(String keyword, Integer page) {
+        int effectivePage = page == null ? 1 : Math.max(page, 1);
+        if (hasText(keyword)) {
+            return candidateRepository.findByProviderAndSearchKeywordAndSearchPageOrderByPublishedAtDescCreatedAtDesc(
+                    PROVIDER,
+                    keyword.trim(),
+                    effectivePage
+            );
+        }
+        return candidateRepository.findTop50ByProviderOrderByPublishedAtDescCreatedAtDesc(PROVIDER);
+    }
+
+    public List<HongguoDramaCandidate> listNewDramas(Integer page) {
+        int effectivePage = page == null ? 1 : Math.max(page, 1);
+        return candidateRepository.findByProviderAndCalendarDateAndCalendarPageOrderByPublishedAtDescCreatedAtDesc(
+                PROVIDER,
+                NEW_DRAMA_SCOPE,
+                effectivePage
+        );
     }
 
     public Drama importCandidate(String candidateId) {
@@ -173,7 +205,7 @@ public class HongguoDramaService {
                 episode.getProviderVideoId()
         ));
         if (variants.isEmpty()) {
-            throw new BusinessException("HONGGUO_VIDEO_EMPTY", "红果播放接口没有返回可下载视频", HttpStatus.BAD_GATEWAY);
+            throw new BusinessException("HONGGUO_VIDEO_EMPTY", "红果播放接口没有返回可下载视频", HttpStatus.FAILED_DEPENDENCY);
         }
         HongguoApiModels.VideoVariant variant = variants.getFirst();
         HongguoApiModels.DecryptedUrl decryptedUrl = callApi(() -> apiClient.decrypt(variant.url(), variant.decryptKey()));
@@ -210,27 +242,47 @@ public class HongguoDramaService {
         }
     }
 
-    private void applyCandidate(
+    private void applyMangaCandidate(
             HongguoDramaCandidate candidate,
-            HongguoApiModels.CalendarItem item,
-            String calendarDate,
-            int calendarPage
+            HongguoApiModels.MangaSearchItem item,
+            HongguoApiModels.DramaDetail detail,
+            String searchKeyword,
+            int searchPage
+    ) {
+        applyCandidateFields(candidate, item, detail);
+        candidate.setSearchKeyword(searchKeyword);
+        candidate.setSearchPage(searchPage);
+    }
+
+    private void applyNewDramaCandidate(
+            HongguoDramaCandidate candidate,
+            HongguoApiModels.MangaSearchItem item,
+            HongguoApiModels.DramaDetail detail,
+            int page
+    ) {
+        applyCandidateFields(candidate, item, detail);
+        candidate.setCalendarDate(NEW_DRAMA_SCOPE);
+        candidate.setCalendarPage(page);
+    }
+
+    private void applyCandidateFields(
+            HongguoDramaCandidate candidate,
+            HongguoApiModels.MangaSearchItem item,
+            HongguoApiModels.DramaDetail detail
     ) {
         candidate.setProvider(PROVIDER);
         candidate.setProviderDramaId(item.providerDramaId());
-        candidate.setTitle(item.title());
-        candidate.setSummary(item.summary());
-        candidate.setCoverUrl(item.coverUrl());
+        candidate.setTitle(firstText(detail == null ? null : detail.title(), item.title()));
+        candidate.setSummary(firstText(detail == null ? null : detail.summary(), item.summary()));
+        candidate.setCoverUrl(firstText(detail == null ? null : detail.coverUrl(), item.coverUrl()));
         candidate.setDuration(item.duration());
         candidate.setScore(item.score());
         candidate.setCategory(item.category());
         candidate.setCopyright(item.copyright());
-        candidate.setEpisodeCount(item.episodeCount());
-        candidate.setPlayCount(item.playCount());
-        candidate.setPublishedAt(item.publishedAt());
+        candidate.setEpisodeCount(firstInteger(detail == null ? null : detail.episodeCount(), item.episodeCount()));
+        candidate.setPlayCount(firstLong(detail == null ? null : detail.playCount(), item.playCount()));
+        candidate.setPublishedAt(firstInstant(detail == null ? null : detail.publishedAt(), item.publishedAt()));
         candidate.setCategories(item.categories());
-        candidate.setCalendarDate(calendarDate);
-        candidate.setCalendarPage(calendarPage);
     }
 
     private <T> T callApi(Supplier<T> supplier) {
@@ -241,28 +293,8 @@ public class HongguoDramaService {
         }
     }
 
-    private boolean isNonLiveActionCalendarItem(HongguoApiModels.CalendarItem item) {
-        return containsNonLiveActionKeyword(item.title())
-                || containsNonLiveActionKeyword(item.summary())
-                || containsNonLiveActionKeyword(item.category())
-                || containsNonLiveActionKeyword(item.copyright())
-                || containsNonLiveActionKeyword(item.categories())
-                || containsNonLiveActionKeyword(item.recTags());
-    }
-
-    private boolean containsNonLiveActionKeyword(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return false;
-        }
-        return values.stream().anyMatch(this::containsNonLiveActionKeyword);
-    }
-
-    private boolean containsNonLiveActionKeyword(String value) {
-        if (!hasText(value)) {
-            return false;
-        }
-        String normalized = value.toLowerCase(Locale.ROOT);
-        return NON_LIVE_ACTION_KEYWORDS.stream().anyMatch(normalized::contains);
+    private String normalizeKeyword(String keyword) {
+        return hasText(keyword) ? keyword.trim() : DEFAULT_MANGA_KEYWORD;
     }
 
     private DramaEpisode episodeFrom(String providerDramaId, HongguoApiModels.DetailEpisode detailEpisode) {
@@ -364,6 +396,24 @@ public class HongguoDramaService {
         return null;
     }
 
+    private Integer firstInteger(Integer... values) {
+        for (Integer value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Long firstLong(Long... values) {
+        for (Long value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     private static String sourcePath(String providerDramaId) {
         return "52api://hongguo/" + providerDramaId;
     }
@@ -372,14 +422,10 @@ public class HongguoDramaService {
         return sourcePath(providerDramaId) + "/video/" + providerVideoId;
     }
 
-    private String calendarDate(LocalDate date) {
-        return date.format(CALENDAR_DATE_FORMATTER);
-    }
-
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
 
-    public record CalendarSyncResult(LocalDate date, int page, int fetched, int filtered, int created, int updated) {
+    public record MangaSearchResult(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated) {
     }
 }

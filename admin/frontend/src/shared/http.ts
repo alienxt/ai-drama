@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, type AxiosRequestConfig } from 'axios';
 import { appMessage } from './appMessage';
 import type { PageResult } from './types';
 
@@ -94,8 +94,8 @@ export async function apiGetPage<T>(
   return response.data.data;
 }
 
-export async function apiPost<T>(url: string, payload?: unknown): Promise<T> {
-  const response = await http.post<ApiResponse<T>>(url, payload);
+export async function apiPost<T>(url: string, payload?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  const response = await http.post<ApiResponse<T>>(url, payload, config);
   return response.data.data;
 }
 

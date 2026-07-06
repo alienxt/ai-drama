@@ -1,4 +1,4 @@
-import { Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Modal, Space, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -6,7 +6,7 @@ import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { formatDateTime } from '../../shared/format';
 import { apiGetPage } from '../../shared/http';
-import type { ExceptionLog, RequestLog } from '../../shared/types';
+import type { ExceptionLog, HongguoApiDebugLog, RequestLog } from '../../shared/types';
 
 const methodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((method) => ({
   value: method,
@@ -72,6 +72,17 @@ function TraceId({ value }: { value?: string }) {
       </Typography.Text>
     </Tooltip>
   );
+}
+
+function prettyText(value?: string) {
+  if (!value) {
+    return '-';
+  }
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
 
 function RequestCell({ record }: { record: { source?: string; method?: string; path?: string; query?: string } }) {
@@ -211,6 +222,116 @@ export function ExceptionLogsPage() {
           },
         ]}
       />
+    </DataPage>
+  );
+}
+
+export function HongguoApiDebugLogsPage() {
+  const [filters, setFilters] = useState<Record<string, unknown>>({});
+  const [viewing, setViewing] = useState<HongguoApiDebugLog | null>(null);
+
+  return (
+    <DataPage title="红果接口日志" extra={<LogToolbar onSearch={setFilters} />}>
+      <AdminTable<HongguoApiDebugLog>
+        rowKey="id"
+        className="log-table hongguo-api-log-table"
+        tableLayout="fixed"
+        scroll={{ x: 1500 }}
+        reloadKey={JSON.stringify(filters)}
+        loadPage={(page, size) => apiGetPage<HongguoApiDebugLog>('/admin/hongguo-api-debug-logs', page, size, cleanFilters(filters))}
+        columns={[
+          {
+            title: '时间',
+            dataIndex: 'createdAt',
+            width: 168,
+            render: (value: string) => formatDateTime(value),
+          },
+          {
+            title: 'Trace ID',
+            dataIndex: 'traceId',
+            width: 160,
+            render: (value?: string) => <TraceId value={value} />,
+          },
+          {
+            title: '方法',
+            dataIndex: 'method',
+            width: 82,
+            render: (method: string) => <Tag className="log-method-tag">{method}</Tag>,
+          },
+          {
+            title: '接口',
+            dataIndex: 'endpoint',
+            width: 120,
+            render: (value?: string) => <CompactText value={value} className="mono-id" />,
+          },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            width: 82,
+            render: (status: number) => <Tag color={statusColor(status)}>{status}</Tag>,
+          },
+          {
+            title: '耗时',
+            dataIndex: 'durationMs',
+            width: 100,
+            render: (value: number) => `${value} ms`,
+          },
+          {
+            title: '请求 URL',
+            dataIndex: 'requestUrl',
+            width: 420,
+            render: (value?: string) => <CompactText value={value} className="mono-id log-request-path" />,
+          },
+          {
+            title: '错误',
+            dataIndex: 'errorMessage',
+            width: 240,
+            render: (value?: string) => <CompactText value={value} className="log-error-code" />,
+          },
+          {
+            title: '详情',
+            width: 90,
+            fixed: 'right',
+            render: (_, record) => <Button size="small" onClick={() => setViewing(record)}>查看</Button>,
+          },
+        ]}
+      />
+      <Modal
+        title="红果接口日志详情"
+        open={!!viewing}
+        onCancel={() => setViewing(null)}
+        footer={<Button type="primary" onClick={() => setViewing(null)}>关闭</Button>}
+        width={960}
+      >
+        <Space direction="vertical" size={16} className="hongguo-api-log-detail">
+          <div>
+            <Typography.Text strong>请求 URL</Typography.Text>
+            <Typography.Paragraph copyable className="mono-id log-detail-block">
+              {viewing?.requestUrl || '-'}
+            </Typography.Paragraph>
+          </div>
+          <div>
+            <Typography.Text strong>请求体</Typography.Text>
+            <Typography.Paragraph copyable className="mono-id log-detail-block">
+              {prettyText(viewing?.requestBody)}
+            </Typography.Paragraph>
+          </div>
+          <div>
+            <Typography.Text strong>返回内容</Typography.Text>
+            <Typography.Paragraph copyable className="mono-id log-detail-block">
+              {prettyText(viewing?.responseBody)}
+            </Typography.Paragraph>
+          </div>
+          {viewing?.errorMessage ? (
+            <div>
+              <Typography.Text strong>错误信息</Typography.Text>
+              <Typography.Paragraph copyable className="mono-id log-detail-block">
+                {viewing.errorMessage}
+              </Typography.Paragraph>
+            </div>
+          ) : null}
+        </Space>
+      </Modal>
     </DataPage>
   );
 }

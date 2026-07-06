@@ -81,6 +81,8 @@ export type HongguoCandidate = {
   categories?: string[];
   calendarDate?: string;
   calendarPage?: number;
+  searchKeyword?: string;
+  searchPage?: number;
   publishedAt?: string;
   status: 'NEW' | 'IMPORTED' | 'SKIPPED';
   importedDramaId?: string;
@@ -88,11 +90,12 @@ export type HongguoCandidate = {
   updatedAt?: string;
 };
 
-export type HongguoCalendarSyncResponse = {
-  date: string;
+export type HongguoMangaSyncResponse = {
+  keyword: string;
   page: number;
   fetched: number;
-  filtered: number;
+  detailed: number;
+  skipped: number;
   created: number;
   updated: number;
 };
@@ -315,5 +318,19 @@ export type ExceptionLog = {
   username?: string;
   clientIp?: string;
   userAgent?: string;
+  createdAt?: string;
+};
+
+export type HongguoApiDebugLog = {
+  id: string;
+  traceId?: string;
+  method: 'GET' | 'POST';
+  endpoint: string;
+  requestUrl?: string;
+  requestBody?: string;
+  status: number;
+  responseBody?: string;
+  errorMessage?: string;
+  durationMs: number;
   createdAt?: string;
 };

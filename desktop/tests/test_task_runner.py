@@ -1,8 +1,11 @@
+import io
 import json
 import threading
 import time
 import urllib.error
 from pathlib import Path
+
+import pytest
 
 from aidrama_desktop.tasks.runner import TaskRunner, download_episodes, episode_video_filename
 
@@ -791,6 +794,92 @@ def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatc
     assert episode_file.read_bytes() == b"video"
     assert not (tmp_path / "drama-1" / "重试短剧-第1集.mp4.part").exists()
     assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
+
+
+def test_download_episodes_retries_plain_bad_gateway(tmp_path, monkeypatch):
+    attempts = 0
+
+    class FakeResponse:
+        headers = {"Content-Length": "5"}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"video"
+
+    def fake_urlopen(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"bad"))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "网关重试",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "size": 5, "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    files = download_episodes(
+        download_plan,
+        tmp_path / "drama-1",
+        "http://server/api",
+        episode_retry_count=2,
+        retry_delay_seconds=0,
+    )
+
+    assert attempts == 2
+    assert files == [tmp_path / "drama-1" / "网关重试-第1集.mp4"]
+
+
+def test_download_episodes_does_not_retry_hongguo_empty_video(tmp_path, monkeypatch):
+    attempts = 0
+
+    def fake_urlopen(request):
+        nonlocal attempts
+        attempts += 1
+        body = json.dumps(
+            {
+                "success": False,
+                "data": None,
+                "error": {"code": "HONGGUO_VIDEO_EMPTY", "message": "红果播放接口没有返回可下载视频"},
+            }
+        ).encode("utf-8")
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(body))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "红果缺集",
+        "episodes": [
+            {"episodeNo": 25, "sourcePath": "52api://video/25", "size": 0, "downloadUrl": "/files/25.mp4"},
+        ],
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        download_episodes(
+            download_plan,
+            tmp_path / "drama-1",
+            "http://server/api",
+            episode_retry_count=3,
+            retry_delay_seconds=0,
+        )
+
+    assert attempts == 1
+    assert "第 25 集下载失败" in str(error.value)
+    assert "红果播放接口没有返回可下载视频" in str(error.value)
+    assert "HONGGUO_VIDEO_EMPTY" in str(error.value)
 
 
 def test_download_resources_use_baidu_download_headers(tmp_path, monkeypatch):

@@ -2,22 +2,24 @@ package com.onehot.aidrama.hongguo;
 
 import com.onehot.aidrama.dramas.Drama;
 
-import java.time.LocalDate;
-
 public class HongguoDtos {
     private HongguoDtos() {
     }
 
-    public record CalendarSyncRequest(LocalDate date, Integer page) {
+    public record MangaSearchRequest(String keyword, Integer page) {
     }
 
-    public record CalendarSyncResponse(LocalDate date, int page, int fetched, int filtered, int created, int updated) {
-        static CalendarSyncResponse from(HongguoDramaService.CalendarSyncResult result) {
-            return new CalendarSyncResponse(
-                    result.date(),
+    public record NewDramaRequest(Integer page) {
+    }
+
+    public record MangaSearchResponse(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated) {
+        static MangaSearchResponse from(HongguoDramaService.MangaSearchResult result) {
+            return new MangaSearchResponse(
+                    result.keyword(),
                     result.page(),
                     result.fetched(),
-                    result.filtered(),
+                    result.detailed(),
+                    result.skipped(),
                     result.created(),
                     result.updated()
             );

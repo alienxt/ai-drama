@@ -13,7 +13,7 @@ import { AiTasksPage } from '../features/ai-tasks/AiTasksPage';
 import { DesktopVersionsPage } from '../features/versions/DesktopVersionsPage';
 import { ContractTemplatesPage } from '../features/contracts/ContractTemplatesPage';
 import { DownloadInvitesPage } from '../features/download-invites/DownloadInvitesPage';
-import { ExceptionLogsPage, RequestLogsPage } from '../features/logs/LogsPage';
+import { ExceptionLogsPage, HongguoApiDebugLogsPage, RequestLogsPage } from '../features/logs/LogsPage';
 import { SystemTasksPage } from '../features/system-tasks/SystemTasksPage';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -43,6 +43,7 @@ const router = createBrowserRouter([
       { path: 'desktop-versions', element: <DesktopVersionsPage /> },
       { path: 'download-invites', element: <DownloadInvitesPage /> },
       { path: 'system-tasks', element: <SystemTasksPage /> },
+      { path: 'hongguo-api-debug-logs', element: <HongguoApiDebugLogsPage /> },
       { path: 'request-logs', element: <RequestLogsPage /> },
       { path: 'exception-logs', element: <ExceptionLogsPage /> },
     ],

@@ -3,6 +3,7 @@ package com.onehot.aidrama.logs;
 import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.TraceIdFilter;
+import com.onehot.aidrama.hongguo.HongguoApiDebugLog;
 import org.slf4j.MDC;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -66,5 +67,25 @@ public class LogController {
                 .createdBetween(from, to)
                 .page(mongoTemplate, ExceptionLog.class, pageable)
                 .map(LogDtos.ExceptionLogResponse::from)), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @GetMapping("/hongguo-api-debug-logs")
+    ApiResponse<PageResult<LogDtos.HongguoApiDebugLogResponse>> hongguoApiDebugLogs(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String method,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(required = false) String traceId,
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to,
+            Pageable pageable
+    ) {
+        return ApiResponse.ok(PageResult.from(new LogQuery()
+                .keyword(keyword)
+                .method(method)
+                .status(status)
+                .traceId(traceId)
+                .createdBetween(from, to)
+                .page(mongoTemplate, HongguoApiDebugLog.class, pageable)
+                .map(LogDtos.HongguoApiDebugLogResponse::from)), MDC.get(TraceIdFilter.TRACE_ID));
     }
 }

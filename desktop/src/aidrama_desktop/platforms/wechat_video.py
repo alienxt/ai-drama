@@ -12,6 +12,7 @@ from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPau
 
 PLAYLET_SUMMARY_MAX_CHARS = 100
 PLAYLET_SUMMARY_ELLIPSIS = "......"
+PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS = 30 * 60
 
 
 class WeChatVideoPublisher(PlatformPublisher):
@@ -1159,7 +1160,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         files: list[Path],
         timeout_error,
         *,
-        max_wait_seconds: int = 20 * 60,
+        max_wait_seconds: int = PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS,
         check_interval_ms: int = 10_000,
     ) -> None:
         last_state: dict[str, Any] = {}
@@ -1192,7 +1193,8 @@ class WeChatVideoPublisher(PlatformPublisher):
         total = last_state.get("total") or expected_count
         names = "、".join(str(name) for name in last_state.get("failedNames") or [] if name)
         detail = f"，失败文件：{names}" if names else ""
-        raise RuntimeError(f"视频号剧集视频上传超过 20 分钟仍未完成：{uploaded or 0}/{total}{detail}")
+        wait_minutes = max(1, (max_wait_seconds + 59) // 60)
+        raise RuntimeError(f"视频号剧集视频上传超过 {wait_minutes} 分钟仍未完成：{uploaded or 0}/{total}{detail}")
 
     def _playlet_episode_upload_state(self, page, payload: dict[str, Any], timeout_error) -> dict[str, Any]:
         best_state: dict[str, Any] = {}

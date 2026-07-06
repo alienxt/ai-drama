@@ -7,7 +7,11 @@ import pytest
 from aidrama_desktop.browser.chrome import ChromeController
 from aidrama_desktop.platforms.base import PlatformPublishPaused
 from aidrama_desktop.platforms.registry import get_publisher
-from aidrama_desktop.platforms.wechat_video import WeChatVideoPublisher, remote_debugging_port_for_profile
+from aidrama_desktop.platforms.wechat_video import (
+    PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS,
+    WeChatVideoPublisher,
+    remote_debugging_port_for_profile,
+)
 
 
 def test_chrome_profile_can_be_scoped_to_media_account(tmp_path: Path):
@@ -1023,7 +1027,7 @@ def test_wechat_video_publisher_times_out_after_waiting_for_playlet_episode_uplo
         def wait_for_timeout(self, timeout):
             waits.append(timeout)
 
-    with pytest.raises(RuntimeError, match="超过 20 分钟仍未完成：36/49"):
+    with pytest.raises(RuntimeError, match="超过 1 分钟仍未完成：36/49"):
         publisher._wait_for_playlet_episode_uploads(
             FakePage(),
             49,
@@ -1034,6 +1038,13 @@ def test_wechat_video_publisher_times_out_after_waiting_for_playlet_episode_uplo
         )
 
     assert waits == [10_000, 10_000]
+
+
+def test_wechat_video_publisher_waits_30_minutes_by_default_for_playlet_episode_uploads():
+    kwdefaults = WeChatVideoPublisher._wait_for_playlet_episode_uploads.__kwdefaults__ or {}
+
+    assert kwdefaults["max_wait_seconds"] == PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS
+    assert PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS == 30 * 60
 
 
 def test_wechat_video_publisher_does_not_treat_video_requirement_text_as_upload_error():

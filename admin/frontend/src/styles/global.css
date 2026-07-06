@@ -839,6 +839,22 @@ body {
   color: #172033;
 }
 
+.hongguo-api-log-detail {
+  width: 100%;
+}
+
+.log-detail-block {
+  max-height: 260px;
+  margin-top: 8px;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
 .episode-player {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
@@ -1200,7 +1216,7 @@ body {
   width: 100%;
 }
 
-.hongguo-date-input {
+.hongguo-keyword-input {
   width: 170px;
 }
 
