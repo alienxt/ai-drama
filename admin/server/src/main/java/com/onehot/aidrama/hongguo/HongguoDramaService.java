@@ -8,6 +8,7 @@ import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
 import com.onehot.aidrama.dramas.DramaSources;
 import com.onehot.aidrama.dramas.DramaStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -19,6 +20,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashSet;
@@ -31,6 +33,7 @@ import java.util.function.Supplier;
 public class HongguoDramaService {
     public static final String PROVIDER = "52API_HONGGUO";
     private static final Duration DOWNLOAD_URL_CACHE_SKEW = Duration.ofMinutes(2);
+    public static final Duration NEW_DRAMA_LOOKBACK = Duration.ofHours(3);
     public static final String DEFAULT_MANGA_KEYWORD = "漫剧";
     public static final String NEW_DRAMA_SCOPE = "HONGGUO_NEW_DRAMA";
 
@@ -38,15 +41,27 @@ public class HongguoDramaService {
     private final HongguoDramaCandidateRepository candidateRepository;
     private final DramaRepository dramaRepository;
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
+    private final Clock clock;
 
+    @Autowired
     public HongguoDramaService(
             HongguoApiClient apiClient,
             HongguoDramaCandidateRepository candidateRepository,
             DramaRepository dramaRepository
     ) {
+        this(apiClient, candidateRepository, dramaRepository, Clock.systemUTC());
+    }
+
+    HongguoDramaService(
+            HongguoApiClient apiClient,
+            HongguoDramaCandidateRepository candidateRepository,
+            DramaRepository dramaRepository,
+            Clock clock
+    ) {
         this.apiClient = apiClient;
         this.candidateRepository = candidateRepository;
         this.dramaRepository = dramaRepository;
+        this.clock = clock;
     }
 
     public MangaSearchResult syncMangaSearch(String keyword, int page) {
@@ -89,7 +104,8 @@ public class HongguoDramaService {
 
     public MangaSearchResult syncNewDramas(int page) {
         int effectivePage = Math.max(page, 1);
-        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.fetchNewDramas(effectivePage));
+        Instant since = Instant.now(clock).minus(NEW_DRAMA_LOOKBACK);
+        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.fetchNewDramas(effectivePage, since));
         int created = 0;
         int updated = 0;
         int detailed = 0;

@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import urllib.error
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,13 @@ class FakeProcessor:
 class LowBitrateProcessor(FakeProcessor):
     def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
         return source.name == "001.mp4"
+
+
+class FailingTranscodeProcessor(LowBitrateProcessor):
+    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("partial")
+        raise RuntimeError("Conversion failed!")
 
 
 class FakePublisher:
@@ -293,10 +301,75 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
     assert runner.publish_once() == "succeeded"
 
     processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    assert ("PUT", "/desktop/tasks/task-1/progress", {"status": "PROCESSING", "progress": 70}) in api.calls
     assert publisher.files == [processed_file, tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
     assert processor.calls == [(tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_file, None)]
     assert publisher.metadata["episodes"][0]["file"] == processed_file
     assert publisher.metadata["episodes"][1]["file"] == tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
+
+
+def test_publish_once_cleans_failed_transcode_cache_for_retry(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FailingTranscodeProcessor()
+    publisher = FakePublisher()
+    source_file = tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("broken-video")
+        return [source_file]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "failed"
+
+    processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    result_calls = [call for call in api.calls if call[0] == "PUT" and call[1] == "/desktop/tasks/task-1/result"]
+    assert result_calls
+    assert "没有可上传的剧集" in result_calls[-1][2]["failureReason"]
+    assert not source_file.exists()
+    assert not processed_file.exists()
+
+
+def test_publish_once_skips_failed_transcode_episode_and_uploads_remaining(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FailingTranscodeProcessor()
+    publisher = FakePublisher()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.files == [tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
+    assert publisher.metadata["episodeCount"] == 1
+    assert publisher.metadata["skippedEpisodeCount"] == 1
+    assert publisher.metadata["skippedEpisodeNumbers"] == [1]
+    assert publisher.metadata["episodes"] == [
+        {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
+    ]
 
 
 def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch):
@@ -398,6 +471,8 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
         document.add_paragraph(
             "{{contractType}} {{agreementNumber}} {{dramaTitle}} {{episodeCount}} {{episodeMinutes}} {{price}} {{halfPrice}}"
         )
+        document.add_paragraph("签署日期：{{date}}")
+        document.add_paragraph("授权开始日期：{{startDate}}")
         document.save(template)
         templates[f"wechat_video:{contract_type}"] = template
 
@@ -414,6 +489,13 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
         return [image]
 
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 7)
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.date", FixedDate)
     runner = TaskRunner(
         api=api,
         processor=FakeProcessor(),
@@ -442,9 +524,81 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
     purchase_number = Document(publisher.metadata["purchaseContractDocx"]).paragraphs[0].text.split()[1]
     cost_number = Document(publisher.metadata["costContractDocx"]).paragraphs[0].text.split()[1]
     rights_number = Document(publisher.metadata["rightsStatementDocx"]).paragraphs[0].text.split()[1]
+    purchase_paragraphs = Document(publisher.metadata["purchaseContractDocx"]).paragraphs
     assert purchase_number.startswith("HZ-")
+    assert purchase_number.startswith("HZ-2026-07-")
     assert cost_number == purchase_number
     assert rights_number == purchase_number
+    assert purchase_paragraphs[1].text == "签署日期：2026\u00a0年\u00a007\u00a0月\u00a006\u00a0日"
+    assert "2026\u00a0年\u00a005\u00a0月\u00a0" in purchase_paragraphs[2].text or (
+        "2026\u00a0年\u00a006\u00a0月\u00a0" in purchase_paragraphs[2].text
+    )
+
+
+def test_publish_once_generates_contracts_with_successful_episode_count(tmp_path, monkeypatch):
+    from docx import Document
+
+    api = FakeApi()
+    publisher = FakePublisher()
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "跳集短剧",
+        "summary": "简介",
+        "totalMinutes": 30,
+        "costAmountWan": 3,
+        "episodes": [
+            {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
+            {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
+            {"episodeNo": 3, "downloadUrl": "/files/3.mp4"},
+        ],
+    }
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return download_plan
+
+    api.get = get
+    templates = {}
+    for contract_type in ("cost", "purchase", "rights"):
+        template = tmp_path / f"{contract_type}.docx"
+        document = Document()
+        document.add_paragraph("{{episodeCount}} {{episodeMinutes}}")
+        document.save(template)
+        templates[f"wechat_video:{contract_type}"] = template
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in (download_plan["episodes"][0], download_plan["episodes"][2]):
+            target = target_dir / f"跳集短剧-第{episode['episodeNo']}集.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    def fake_image_converter(docx_path: Path, image_dir: Path, image_stem: str | None = None):
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image = image_dir / f"{image_stem or docx_path.stem}.png"
+        image.write_bytes(b"png")
+        return [image]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        contract_templates=templates,
+        contracts_dir=tmp_path / "contracts",
+        contract_image_converter=fake_image_converter,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.metadata["episodeCount"] == 2
+    assert publisher.metadata["totalMinutes"] == 20
+    assert publisher.metadata["skippedEpisodeNumbers"] == [2]
+    assert Document(publisher.metadata["costContractDocx"]).paragraphs[0].text == "2 20"
 
 
 def test_publish_once_uses_media_account_specific_publisher(tmp_path, monkeypatch):
@@ -880,6 +1034,99 @@ def test_download_episodes_does_not_retry_hongguo_empty_video(tmp_path, monkeypa
     assert "第 25 集下载失败" in str(error.value)
     assert "红果播放接口没有返回可下载视频" in str(error.value)
     assert "HONGGUO_VIDEO_EMPTY" in str(error.value)
+
+
+def test_download_episodes_skips_allowed_failures(tmp_path, monkeypatch):
+    skipped = []
+
+    class FakeResponse:
+        headers = {"Content-Length": "5"}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"video"
+
+    def fake_urlopen(request):
+        if request.full_url.endswith("/2.mp4"):
+            body = json.dumps(
+                {
+                    "success": False,
+                    "error": {"code": "HONGGUO_VIDEO_EMPTY", "message": "红果播放接口没有返回可下载视频"},
+                }
+            ).encode("utf-8")
+            raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(body))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "允许跳集",
+        "episodes": [
+            {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
+            {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
+            {"episodeNo": 3, "downloadUrl": "/files/3.mp4"},
+            {"episodeNo": 4, "downloadUrl": "/files/4.mp4"},
+        ],
+    }
+
+    files = download_episodes(
+        download_plan,
+        tmp_path / "drama-1",
+        "http://server/api",
+        max_concurrent_downloads=1,
+        episode_retry_count=1,
+        retry_delay_seconds=0,
+        max_skipped_episodes=3,
+        skip_callback=lambda index, total, episode, exception: skipped.append((index, str(exception))),
+    )
+
+    assert [file.name for file in files] == ["允许跳集-第1集.mp4", "允许跳集-第3集.mp4", "允许跳集-第4集.mp4"]
+    assert skipped == [(2, "第 2 集下载失败：红果播放接口没有返回可下载视频（HONGGUO_VIDEO_EMPTY）")]
+
+
+def test_download_episodes_fails_when_skipped_failures_exceed_limit(tmp_path, monkeypatch):
+    def fake_urlopen(request):
+        body = json.dumps(
+            {
+                "success": False,
+                "error": {"code": "HONGGUO_VIDEO_EMPTY", "message": "红果播放接口没有返回可下载视频"},
+            }
+        ).encode("utf-8")
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(body))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "超过跳集",
+        "episodes": [
+            {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
+            {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
+            {"episodeNo": 3, "downloadUrl": "/files/3.mp4"},
+            {"episodeNo": 4, "downloadUrl": "/files/4.mp4"},
+        ],
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        download_episodes(
+            download_plan,
+            tmp_path / "drama-1",
+            "http://server/api",
+            max_concurrent_downloads=1,
+            episode_retry_count=1,
+            retry_delay_seconds=0,
+            max_skipped_episodes=3,
+        )
+
+    assert "剧集下载失败超过 3 集" in str(error.value)
 
 
 def test_download_resources_use_baidu_download_headers(tmp_path, monkeypatch):

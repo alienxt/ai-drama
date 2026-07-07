@@ -5,15 +5,18 @@ import httpx
 
 from aidrama_desktop.api.diagnostics import diagnose_server, write_diagnostic_report
 
+API_BASE_URL = "http://ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com/api"
+API_HOST = "ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com"
+
 
 def test_diagnose_server_treats_http_forbidden_as_reachable(monkeypatch):
     requested_urls = []
 
     def fake_getaddrinfo(host, port, type):
-        assert host == "ad.ai-drama.uk"
-        assert port == 443
+        assert host == API_HOST
+        assert port == 80
         assert type == socket.SOCK_STREAM
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.21.37.225", port))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("54.169.163.229", port))]
 
     class FakeConnection:
         def __enter__(self):
@@ -23,7 +26,7 @@ def test_diagnose_server_treats_http_forbidden_as_reachable(monkeypatch):
             return False
 
     def fake_create_connection(target, timeout):
-        assert target == ("104.21.37.225", 443)
+        assert target == ("54.169.163.229", 80)
         assert timeout > 0
         return FakeConnection()
 
@@ -50,7 +53,7 @@ def test_diagnose_server_treats_http_forbidden_as_reachable(monkeypatch):
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.socket.create_connection", fake_create_connection)
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.httpx.Client", Client)
 
-    report = diagnose_server("https://ad.ai-drama.uk/api")
+    report = diagnose_server(API_BASE_URL)
 
     assert report.healthy is True
     assert "服务地址可以连通" in report.conclusion
@@ -78,7 +81,7 @@ def test_diagnose_server_identifies_dns_failure(monkeypatch):
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.socket.getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.httpx.Client", Client)
 
-    report = diagnose_server("https://ad.ai-drama.uk/api")
+    report = diagnose_server(API_BASE_URL)
 
     assert report.healthy is False
     assert "无法解析服务域名" in report.conclusion
@@ -105,7 +108,7 @@ def test_write_diagnostic_report_saves_text(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.socket.getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr("aidrama_desktop.api.diagnostics.httpx.Client", Client)
 
-    report = diagnose_server("https://ad.ai-drama.uk/api")
+    report = diagnose_server(API_BASE_URL)
     report_path = write_diagnostic_report(report, tmp_path / "work")
 
     assert report_path.name == "network-diagnostics.txt"

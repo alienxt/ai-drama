@@ -39,6 +39,7 @@ public class HongguoApiClient {
     public static final String DEFAULT_BASE_URL = "https://www.52api.cn/api";
     private static final Logger log = LoggerFactory.getLogger(HongguoApiClient.class);
     private static final ZoneId CHINA_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -67,14 +68,22 @@ public class HongguoApiClient {
         return new HongguoApiModels.MangaSearchPage(effectiveKeyword, effectivePage, parseMangaSearchItems(data));
     }
 
-    public HongguoApiModels.MangaSearchPage fetchNewDramas(int page) {
+    public HongguoApiModels.MangaSearchPage fetchNewDramas(int page, Instant since) {
         int effectivePage = Math.max(page, 1);
         JsonNode data = get("/hg_new_play", Map.of(
                 "type", "detail",
-                "date", "",
+                "date", formatChinaDate(since),
                 "page", String.valueOf(effectivePage)
         ));
         return new HongguoApiModels.MangaSearchPage("红果新剧", effectivePage, parseMangaSearchItems(data));
+    }
+
+    static String formatChinaDate(Instant instant) {
+        return DATE_FORMATTER.format(LocalDateTime.ofInstant(instant, CHINA_ZONE));
+    }
+
+    static String formatChinaDateTime(Instant instant) {
+        return DATE_TIME_FORMATTER.format(LocalDateTime.ofInstant(instant, CHINA_ZONE));
     }
 
     List<HongguoApiModels.MangaSearchItem> parseMangaSearchItems(JsonNode data) {

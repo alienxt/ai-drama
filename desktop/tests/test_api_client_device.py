@@ -164,9 +164,9 @@ def test_check_update_sends_platform_and_current_version(monkeypatch):
 def test_connection_error_message_keeps_useful_reason():
     error = httpx.ConnectError("nodename nor servname provided")
 
-    message = connection_error_message("https://ad.ai-drama.uk/api", error)
+    message = connection_error_message("http://ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com/api", error)
 
     assert "无法连接服务" in message
-    assert "ad.ai-drama.uk" in message
+    assert "ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com" in message
     assert "域名解析失败" in message
     assert "网络诊断" in message

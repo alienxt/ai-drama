@@ -2,7 +2,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from aidrama_desktop.video.ffmpeg import FfmpegProcessor
+import pytest
+
+from aidrama_desktop.video.ffmpeg import FfmpegError, FfmpegProcessor
 
 
 def test_ffmpeg_processor_reads_video_bitrate(monkeypatch, tmp_path):
@@ -104,3 +106,31 @@ def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_
     assert "[picv]" in ffmpeg_command
     assert ffmpeg_command[ffmpeg_command.index("-c:v:1") + 1] == "mjpeg"
     assert ffmpeg_command[ffmpeg_command.index("-disposition:v:1") + 1] == "attached_pic"
+
+
+def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        assert capture_output is True
+        assert text is True
+        Path(command[-1]).write_text("partial")
+        raise subprocess.CalledProcessError(
+            1,
+            command,
+            output="",
+            stderr="Invalid data found when processing input\nConversion failed!",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    with pytest.raises(FfmpegError) as error:
+        processor.transcode_for_wechat_video(source, target)
+
+    assert "FFmpeg 转码退出码 1" in str(error.value)
+    assert "Conversion failed!" in str(error.value)
+    assert not target.exists()

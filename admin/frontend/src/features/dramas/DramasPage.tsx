@@ -793,7 +793,7 @@ export function DramasPage() {
             type="info"
             showIcon
             message={isHongguoNewMode
-              ? '走 hg_new_play 的新剧接口；只按页码拉取，不过滤真人/漫剧。每次同步会对当前页所有候选查一次详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
+              ? '走 hg_new_play 的新剧接口；默认 date 取当前时间往前 3 小时所在日期，接口只支持按日期取新剧，不过滤真人/漫剧。每次同步会对当前页候选查详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
               : '走 hg_new 的 mj_search 搜索漫剧；数字为页码。每次搜索会对当前页所有候选查一次详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'}
           />
           <Spin spinning={loadingHongguoCandidates}>

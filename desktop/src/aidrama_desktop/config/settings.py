@@ -8,7 +8,7 @@ from platformdirs import user_config_dir, user_data_dir
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-API_BASE_URL = "https://ad.ai-drama.uk/api"
+API_BASE_URL = "http://ai-drama-admin-1807108618.ap-southeast-1.elb.amazonaws.com/api"
 
 
 def default_device_id() -> str:

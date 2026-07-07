@@ -11,7 +11,9 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 
 import java.net.URI;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -122,7 +124,14 @@ class HongguoDramaServiceTest {
         HongguoApiClient apiClient = mock(HongguoApiClient.class);
         HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
-        HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
+        Instant now = Instant.parse("2026-07-07T10:00:00Z");
+        Instant since = now.minus(HongguoDramaService.NEW_DRAMA_LOOKBACK);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                candidateRepository,
+                dramaRepository,
+                Clock.fixed(now, ZoneOffset.UTC)
+        );
         HongguoApiModels.MangaSearchItem first = new HongguoApiModels.MangaSearchItem(
                 "new-1",
                 "红果新剧第一部",
@@ -134,7 +143,7 @@ class HongguoDramaServiceTest {
                 "红果短剧",
                 60,
                 1200L,
-                null,
+                since.plusSeconds(600),
                 List.of("都市"),
                 List.of()
         );
@@ -149,11 +158,11 @@ class HongguoDramaServiceTest {
                 "红果短剧",
                 80,
                 2400L,
-                null,
+                since.plusSeconds(1200),
                 List.of("玄幻"),
                 List.of()
         );
-        when(apiClient.fetchNewDramas(2))
+        when(apiClient.fetchNewDramas(2, since))
                 .thenReturn(new HongguoApiModels.MangaSearchPage("红果新剧", 2, List.of(first, second)));
         when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "new-1"))
                 .thenReturn(Optional.empty());
@@ -208,6 +217,121 @@ class HongguoDramaServiceTest {
         assertThat(captor.getAllValues())
                 .extracting(HongguoDramaCandidate::getCalendarPage)
                 .containsExactly(2, 2);
+        verify(apiClient).fetchNewDramas(2, since);
+    }
+
+    @Test
+    void syncNewDramasKeepsCandidatesReturnedByApiRegardlessOfPublishedAt() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        Instant now = Instant.parse("2026-07-07T10:00:00Z");
+        Instant since = now.minus(HongguoDramaService.NEW_DRAMA_LOOKBACK);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                candidateRepository,
+                dramaRepository,
+                Clock.fixed(now, ZoneOffset.UTC)
+        );
+        HongguoApiModels.MangaSearchItem recent = new HongguoApiModels.MangaSearchItem(
+                "recent",
+                "近三小时新剧",
+                "简介",
+                "https://example.com/recent.jpg",
+                "60集",
+                "8.2",
+                "都市",
+                "红果短剧",
+                60,
+                1200L,
+                since.plusSeconds(60),
+                List.of("都市"),
+                List.of()
+        );
+        HongguoApiModels.MangaSearchItem old = new HongguoApiModels.MangaSearchItem(
+                "old",
+                "三小时前旧剧",
+                "简介",
+                "https://example.com/old.jpg",
+                "60集",
+                "8.2",
+                "都市",
+                "红果短剧",
+                60,
+                1200L,
+                since.minusSeconds(1),
+                List.of("都市"),
+                List.of()
+        );
+        HongguoApiModels.MangaSearchItem unknownTime = new HongguoApiModels.MangaSearchItem(
+                "unknown",
+                "列表未带发布时间",
+                "简介",
+                "https://example.com/unknown.jpg",
+                "60集",
+                "8.2",
+                "都市",
+                "红果短剧",
+                60,
+                1200L,
+                null,
+                List.of("都市"),
+                List.of()
+        );
+        when(apiClient.fetchNewDramas(1, since))
+                .thenReturn(new HongguoApiModels.MangaSearchPage("红果新剧", 1, List.of(recent, old, unknownTime)));
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "recent"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "old"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "unknown"))
+                .thenReturn(Optional.empty());
+        when(apiClient.fetchDetail("recent", "近三小时新剧")).thenReturn(new HongguoApiModels.DramaDetail(
+                "recent",
+                "近三小时新剧详情",
+                "详情简介",
+                "https://example.com/recent-detail.jpg",
+                60,
+                3600,
+                1500L,
+                since.plusSeconds(120),
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-1", 60))
+        ));
+        when(apiClient.fetchDetail("old", "三小时前旧剧")).thenReturn(new HongguoApiModels.DramaDetail(
+                "old",
+                "三小时前旧剧详情",
+                "详情简介",
+                "https://example.com/old-detail.jpg",
+                60,
+                3600,
+                1500L,
+                since.minusSeconds(60),
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-3", 60))
+        ));
+        when(apiClient.fetchDetail("unknown", "列表未带发布时间")).thenReturn(new HongguoApiModels.DramaDetail(
+                "unknown",
+                "列表未带发布时间详情",
+                "详情简介",
+                "https://example.com/unknown-detail.jpg",
+                60,
+                3600,
+                1500L,
+                since.minusSeconds(120),
+                List.of(new HongguoApiModels.DetailEpisode(1, "第 1 集", "video-2", 60))
+        ));
+        when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.MangaSearchResult result = service.syncNewDramas(1);
+
+        assertThat(result.fetched()).isEqualTo(3);
+        assertThat(result.detailed()).isEqualTo(3);
+        assertThat(result.skipped()).isZero();
+        assertThat(result.created()).isEqualTo(3);
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository, times(3)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getProviderDramaId)
+                .containsExactly("recent", "old", "unknown");
     }
 
     @Test

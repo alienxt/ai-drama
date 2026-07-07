@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import threading
 import time
@@ -9,7 +10,7 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from aidrama_desktop import __version__
 from aidrama_desktop.api.client import ApiClient
 from aidrama_desktop.contracts import (
     ContractRenderInput,
+    generate_contract_start_date,
     generate_agreement_number,
     render_contract_material_bundle,
 )
@@ -32,6 +34,7 @@ NON_RETRYABLE_DOWNLOAD_ERROR_CODES = {"HONGGUO_VIDEO_EMPTY"}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
+MAX_SKIPPED_EPISODE_FAILURES = 3
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
@@ -61,6 +64,13 @@ class DownloadHttpError(RuntimeError):
 
 
 @dataclass
+class EpisodeMediaFile:
+    episode: dict[str, Any]
+    episode_index: int
+    file: Path
+
+
+@dataclass
 class TaskRunner:
     api: ApiClient
     processor: FfmpegProcessor
@@ -75,6 +85,7 @@ class TaskRunner:
     pause_checker: Callable[[], bool] | None = None
     skip_checker: Callable[[], bool] | None = None
     download_concurrency: int = 6
+    max_skipped_episode_failures: int = MAX_SKIPPED_EPISODE_FAILURES
     contract_templates: dict[str, Path | str | None] | None = None
     contracts_dir: Path | None = None
     contract_platform: str = "WECHAT_VIDEO"
@@ -112,18 +123,27 @@ class TaskRunner:
             drama_title = self._drama_title(download_plan, task)
             task_with_title = {**task, "dramaTitle": drama_title}
             self._notify(f"当前短剧：{drama_title}", task_id, task_with_title)
-            contract_metadata = self._prepare_contract_materials(download_plan, task_id, drama_title)
-            source_files = self._download(download_plan, task_id, drama_title)
+            source_items = self._download(download_plan, task_id, drama_title)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
-            upload_files = self._prepare_media_files_for_upload(source_files, task_id, drama_title)
+            self._progress(task_id, "PROCESSING", 70)
+            upload_items = self._prepare_media_files_for_upload(
+                source_items,
+                task_id,
+                drama_title,
+                original_episode_count=len(download_plan.get("episodes") or []),
+            )
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            if not upload_items:
+                raise RuntimeError("没有可上传的剧集，整部剧分发失败。")
+            effective_download_plan = self._effective_download_plan(download_plan, upload_items)
+            contract_metadata = self._prepare_contract_materials(effective_download_plan, task_id, drama_title)
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
-            metadata = self._publish_metadata(download_plan, upload_files)
+            metadata = self._publish_metadata(effective_download_plan, upload_items)
             metadata.update(contract_metadata)
-            publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
+            publish_summary = effective_download_plan.get("aiSummary") or effective_download_plan.get("summary")
             publish_id = self._publisher_for(task).publish(
-                upload_files,
+                [item.file for item in upload_items],
                 title=drama_title,
                 summary=publish_summary,
                 metadata=metadata,
@@ -233,11 +253,20 @@ class TaskRunner:
             return {}
         self._notify(f"生成合同材料：{drama_title}", task_id)
         output_dir = (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
-        sign_date = date.today().isoformat()
+        sign_date = (date.today() - timedelta(days=1)).isoformat()
+        start_date = generate_contract_start_date(sign_date)
         agreement_number = generate_agreement_number(sign_date)
 
         def data_factory(contract_type: str, label: str) -> ContractRenderInput:
-            return self._contract_render_input(download_plan, drama_title, contract_type, label, agreement_number, sign_date)
+            return self._contract_render_input(
+                download_plan,
+                drama_title,
+                contract_type,
+                label,
+                agreement_number,
+                sign_date,
+                start_date,
+            )
 
         bundle = render_contract_material_bundle(
             self.contract_templates,
@@ -257,6 +286,7 @@ class TaskRunner:
         label: str,
         agreement_number: str,
         sign_date: str,
+        start_date: str,
     ) -> ContractRenderInput:
         episodes = download_plan.get("episodes") or []
         episode_count = self._int_value(download_plan.get("episodeCount"), len(episodes))
@@ -271,6 +301,7 @@ class TaskRunner:
             buyer=self.contract_buyer or "甲方公司",
             seller=self.contract_seller or "乙方公司",
             sign_date=sign_date,
+            start_date=start_date,
             agreement_number=agreement_number,
         )
 
@@ -289,7 +320,7 @@ class TaskRunner:
     def _drama_title(download_plan: dict, task: dict) -> str:
         return str(download_plan.get("title") or task["dramaId"])
 
-    def _download(self, download_plan: dict, task_id: str, drama_title: str) -> list[Path]:
+    def _download(self, download_plan: dict, task_id: str, drama_title: str) -> list[EpisodeMediaFile]:
         target_dir = self.input_dir() / download_plan["dramaId"]
         progress_lock = threading.Lock()
         downloaded_by_episode: dict[int, int] = {}
@@ -330,50 +361,85 @@ class TaskRunner:
                 except Exception:
                     pass
 
-        return download_episodes(
-            download_plan,
-            target_dir,
-            self.api.base_url,
-            headers=self.api.download_headers(),
-            progress_callback=report_progress,
-            should_stop=self.cancel_checker,
-            should_pause=self.pause_checker,
-            should_skip=self.skip_checker,
-            max_concurrent_downloads=self.download_concurrency,
-        )
+        def report_skipped(index: int, total: int, episode: dict, exception: BaseException) -> None:
+            episode_no = episode_number(episode, index)
+            self._notify(
+                f"跳过：{drama_title} 第 {episode_no} 集下载失败（最多允许 {self.max_skipped_episode_failures} 集）：{exception}",
+                task_id,
+            )
 
-    def _prepare_media_files_for_upload(self, source_files: list[Path], task_id: str, drama_title: str) -> list[Path]:
+        kwargs: dict[str, Any] = {
+            "headers": self.api.download_headers(),
+            "progress_callback": report_progress,
+            "should_stop": self.cancel_checker,
+            "should_pause": self.pause_checker,
+            "should_skip": self.skip_checker,
+            "max_concurrent_downloads": self.download_concurrency,
+        }
+        download_parameters = inspect.signature(download_episodes).parameters
+        if "max_skipped_episodes" in download_parameters:
+            kwargs["max_skipped_episodes"] = self.max_skipped_episode_failures
+            kwargs["skip_callback"] = report_skipped
+        source_files = download_episodes(download_plan, target_dir, self.api.base_url, **kwargs)
+        media_items = self._episode_media_files_from_paths(download_plan, source_files)
+        skipped_count = len(download_plan.get("episodes") or []) - len(media_items)
+        if skipped_count > 0:
+            self._notify(f"已跳过 {skipped_count} 集下载失败剧集，继续处理 {len(media_items)} 集", task_id)
+        return media_items
+
+    def _prepare_media_files_for_upload(
+        self,
+        source_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+        original_episode_count: int,
+    ) -> list[EpisodeMediaFile]:
         needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
         if not callable(needs_transcode):
-            return source_files
-        cover_file = self._cover_file_for_sources(source_files)
-        upload_files: list[Path] = []
+            return source_items
+        cover_file = self._cover_file_for_sources([item.file for item in source_items])
+        upload_items: list[EpisodeMediaFile] = []
         processed_count = 0
-        for index, source_file in enumerate(source_files, start=1):
+        skipped_count = max(original_episode_count - len(source_items), 0)
+        for item in source_items:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            source_file = item.file
+            episode_no = episode_number(item.episode, item.episode_index)
             source_needs_transcode = bool(needs_transcode(source_file))
             should_add_cover_frame = cover_file is not None
             if not source_needs_transcode and not should_add_cover_frame:
-                upload_files.append(source_file)
+                upload_items.append(item)
                 continue
             processed_count += 1
             target = self.output_dir() / source_file.parent.name / source_file.name
             signature = self._processed_media_signature(source_file, cover_file)
             if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not needs_transcode(target):
-                upload_files.append(target)
+                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target))
                 continue
             action = "提升码率并添加封面帧" if should_add_cover_frame else "提升码率"
-            self._notify(f"转码：{drama_title} 第 {index}/{len(source_files)} 集（{action}）", task_id)
+            self._notify(f"转码：{drama_title} 第 {episode_no} 集（{action}）", task_id)
             try:
                 processed_file = self.processor.transcode_for_wechat_video(source_file, target, cover_path=cover_file)
                 self._write_processed_media_signature(processed_file, signature)
-                upload_files.append(processed_file)
+                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file))
             except Exception as exception:  # noqa: BLE001
-                raise RuntimeError(f"第 {index} 集视频转码失败，请确认 FFmpeg 可用：{exception}") from exception
+                self._cleanup_failed_media_file(target)
+                self._cleanup_failed_media_file(self._processed_media_signature_path(target))
+                self._cleanup_failed_media_file(source_file)
+                skipped_count += 1
+                message = (
+                    f"第 {episode_no} 集视频转码失败，已跳过该集并清理本地缓存；"
+                    f"已跳过 {skipped_count}/{self.max_skipped_episode_failures} 集：{exception}"
+                )
+                if skipped_count > self.max_skipped_episode_failures:
+                    raise RuntimeError(
+                        f"剧集失败超过 {self.max_skipped_episode_failures} 集，整部剧分发失败。最后错误：{message}"
+                    ) from exception
+                self._notify(f"跳过：{drama_title} {message}", task_id)
         if processed_count:
             label = "视频码率和封面帧处理完成" if cover_file else "视频码率处理完成"
             self._notify(f"{label}：{drama_title}（{processed_count} 集）", task_id)
-        return upload_files
+        return upload_items
 
     @staticmethod
     def _is_ready_upload_file(target: Path) -> bool:
@@ -450,7 +516,70 @@ class TaskRunner:
         signature_file.parent.mkdir(parents=True, exist_ok=True)
         signature_file.write_text(json.dumps(signature, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _publish_metadata(self, download_plan: dict, processed_files: list[Path]) -> dict[str, Any]:
+    @staticmethod
+    def _cleanup_failed_media_file(path: Path) -> None:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _episode_media_files_from_paths(download_plan: dict, source_files: list[Path]) -> list[EpisodeMediaFile]:
+        episodes = download_plan.get("episodes") or []
+        by_filename: dict[str, tuple[dict[str, Any], int]] = {}
+        for index, episode in enumerate(episodes, start=1):
+            by_filename[episode_video_filename(download_plan, episode, index)] = (episode, index)
+            by_filename[legacy_episode_video_filename(episode, index)] = (episode, index)
+
+        items: list[EpisodeMediaFile] = []
+        used_indexes: set[int] = set()
+        for position, source_file in enumerate(source_files):
+            matched = by_filename.get(source_file.name)
+            if matched is None and len(source_files) == len(episodes) and position < len(episodes):
+                matched = (episodes[position], position + 1)
+            if matched is None:
+                continue
+            episode, episode_index = matched
+            if episode_index in used_indexes:
+                continue
+            used_indexes.add(episode_index)
+            items.append(EpisodeMediaFile(episode, episode_index, source_file))
+        return sorted(items, key=lambda item: item.episode_index)
+
+    @classmethod
+    def _effective_download_plan(cls, download_plan: dict, media_items: list[EpisodeMediaFile]) -> dict:
+        original_episodes = download_plan.get("episodes") or []
+        effective_count = len(media_items)
+        original_count = len(original_episodes)
+        skipped_episode_numbers = [
+            episode_number(episode, index)
+            for index, episode in enumerate(original_episodes, start=1)
+            if index not in {item.episode_index for item in media_items}
+        ]
+        effective_plan = {
+            **download_plan,
+            "episodes": [item.episode for item in media_items],
+            "episodeCount": effective_count,
+            "totalMinutes": cls._scaled_total_minutes(download_plan, original_count, effective_count),
+            "originalEpisodeCount": cls._int_value(download_plan.get("episodeCount"), original_count),
+            "skippedEpisodeCount": len(skipped_episode_numbers),
+            "skippedEpisodeNumbers": skipped_episode_numbers,
+        }
+        return effective_plan
+
+    @classmethod
+    def _scaled_total_minutes(cls, download_plan: dict, original_count: int, effective_count: int) -> int:
+        original_total_minutes = cls._int_value(download_plan.get("totalMinutes"), 0)
+        if effective_count <= 0:
+            return 0
+        if original_total_minutes <= 0:
+            return effective_count
+        if original_count <= 0 or original_count == effective_count:
+            return original_total_minutes
+        return max(effective_count, round(original_total_minutes * effective_count / original_count))
+
+    def _publish_metadata(self, download_plan: dict, media_items: list[EpisodeMediaFile]) -> dict[str, Any]:
         episodes = download_plan.get("episodes") or []
         cover_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian.jpg"
         video_cover_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover.jpg"
@@ -478,14 +607,16 @@ class TaskRunner:
             "monetizationLabel": "IAA广告变现",
             "freeEpisodeCount": self._free_episode_count(download_plan, len(episodes)),
             "episodeCount": len(episodes),
+            "originalEpisodeCount": download_plan.get("originalEpisodeCount"),
+            "skippedEpisodeCount": download_plan.get("skippedEpisodeCount") or 0,
+            "skippedEpisodeNumbers": download_plan.get("skippedEpisodeNumbers") or [],
             "episodes": [
                 {
-                    "episodeNo": episode.get("episodeNo"),
-                    "title": episode.get("title"),
-                    "file": processed_files[index],
+                    "episodeNo": item.episode.get("episodeNo"),
+                    "title": item.episode.get("title"),
+                    "file": item.file,
                 }
-                for index, episode in enumerate(episodes)
-                if index < len(processed_files)
+                for item in media_items
             ],
         }
 
@@ -534,6 +665,8 @@ def download_episodes(
     max_concurrent_downloads: int = 6,
     episode_retry_count: int = EPISODE_DOWNLOAD_RETRIES,
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
+    max_skipped_episodes: int = 0,
+    skip_callback: Callable[[int, int, dict, BaseException], None] | None = None,
 ) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
     cover_file = download_cover(
@@ -562,6 +695,7 @@ def download_episodes(
 
     worker_count = max(1, min(max_concurrent_downloads, total))
     files: list[Path | None] = [None] * total
+    skipped_indexes: set[int] = set()
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(
@@ -584,7 +718,23 @@ def download_episodes(
         }
         for future in as_completed(futures):
             index = futures[future]
-            files[index - 1] = future.result()
+            try:
+                files[index - 1] = future.result()
+            except TaskInterrupted:
+                raise
+            except Exception as exception:  # noqa: BLE001
+                if max_skipped_episodes <= 0:
+                    raise
+                episode = episodes[index - 1]
+                if skip_callback:
+                    skip_callback(index, total, episode, exception)
+                files[index - 1] = None
+                skipped_indexes.add(index)
+                if len(skipped_indexes) > max_skipped_episodes:
+                    raise RuntimeError(
+                        f"剧集下载失败超过 {max_skipped_episodes} 集，整部剧分发失败。"
+                        f"最近失败：{exception}"
+                    ) from exception
     return [file for file in files if file is not None]
 
 

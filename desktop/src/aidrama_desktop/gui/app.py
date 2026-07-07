@@ -61,6 +61,7 @@ from aidrama_desktop.contracts import (
     contract_template_key,
     copy_contract_template,
     generate_agreement_number,
+    generate_contract_start_date,
     required_contract_party_fields,
     required_contract_template_types,
     render_contract_docx,
@@ -826,7 +827,7 @@ class DesktopWindow(QMainWindow):
         self.contract_date_input = QDateEdit()
         self.contract_date_input.setCalendarPopup(True)
         self.contract_date_input.setDisplayFormat("yyyy-MM-dd")
-        self.contract_date_input.setDate(QDate.currentDate())
+        self.contract_date_input.setDate(QDate.currentDate().addDays(-1))
         self._add_contract_form_field(form, 0, 0, "剧名", self.contract_drama_input, column_span=2)
         self._add_contract_form_field(form, 0, 2, "剧集", self.contract_episode_input)
         self._add_contract_form_field(form, 0, 3, "总时长（分钟）", self.contract_episode_minutes_input)
@@ -977,7 +978,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
         self.task_history_table.setColumnWidth(1, 130)
         self.task_history_table.setColumnWidth(2, 92)
-        self.task_history_table.setColumnWidth(3, 300)
+        self.task_history_table.setColumnWidth(3, 380)
         self.task_history_table.setColumnWidth(5, 150)
         self.task_history_table.setColumnWidth(6, 150)
         self.task_history_table.setColumnWidth(7, 142)
@@ -1342,7 +1343,8 @@ class DesktopWindow(QMainWindow):
         layout = QHBoxLayout(wrapper)
         layout.setContentsMargins(8, 0, 8, 0)
         layout.setSpacing(2)
-        for index, label in enumerate(self.task_history_chain_labels(task)):
+        labels = self.task_history_chain_labels(task)
+        for index, label in enumerate(labels):
             state = self.task_history_chain_state(task, index)
             badge = QLabel(label)
             badge.setAlignment(Qt.AlignCenter)
@@ -1350,7 +1352,7 @@ class DesktopWindow(QMainWindow):
             badge.setMaximumWidth(60)
             badge.setStyleSheet(self.task_history_chain_style(state))
             layout.addWidget(badge)
-            if index < 4:
+            if index < len(labels) - 1:
                 arrow = QLabel("-")
                 arrow.setObjectName("mutedText")
                 arrow.setFixedWidth(8)
@@ -1360,7 +1362,7 @@ class DesktopWindow(QMainWindow):
         return wrapper
 
     def task_history_chain_labels(self, task: dict[str, Any]) -> list[str]:
-        labels = ["排队", "领取", "下载", "上传", "完成"]
+        labels = ["排队", "领取", "下载", "处理", "上传", "完成"]
         status = str(task.get("status") or "")
         if status == "FAILED":
             labels[self.task_history_problem_step(task)] += "失败"
@@ -1434,9 +1436,9 @@ class DesktopWindow(QMainWindow):
             "PENDING": 0,
             "CLAIMED": 1,
             "DOWNLOADING": 2,
-            "PROCESSING": 2,
-            "UPLOADING": 3,
-            "SUCCEEDED": 4,
+            "PROCESSING": 3,
+            "UPLOADING": 4,
+            "SUCCEEDED": 5,
         }
         return status_steps.get(status, self.task_history_problem_step(task))
 
@@ -1446,6 +1448,8 @@ class DesktopWindow(QMainWindow):
         except (TypeError, ValueError):
             progress = 0
         if progress >= 75:
+            return 4
+        if progress >= 70:
             return 3
         if progress >= 10:
             return 2
@@ -2721,6 +2725,7 @@ class DesktopWindow(QMainWindow):
         if not drama_title:
             drama_title = self.contract_drama_input.currentText().strip()
         sign_date = self.contract_date_input.date().toString("yyyy-MM-dd")
+        agreement = agreement_number or generate_agreement_number(sign_date)
         return ContractRenderInput(
             contract_type=self.contract_type_name(contract_type),
             drama_title=drama_title or "未命名短剧",
@@ -2730,7 +2735,8 @@ class DesktopWindow(QMainWindow):
             buyer=self.contract_party_value(self.current_contract_platform(), "buyer"),
             seller=self.contract_party_value(self.current_contract_platform(), "seller"),
             sign_date=sign_date,
-            agreement_number=agreement_number or generate_agreement_number(sign_date),
+            start_date=generate_contract_start_date(sign_date, f"{contract_type}:{drama_title}:{agreement}"),
+            agreement_number=agreement,
         )
 
     def generate_contract(self) -> list[Path] | None:

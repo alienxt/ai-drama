@@ -11,6 +11,10 @@ WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
 WECHAT_VIDEO_COVER_FRAME_VERSION = "wechat-video-cover-frame-v5"
 
 
+class FfmpegError(RuntimeError):
+    pass
+
+
 @dataclass
 class FfmpegProcessor:
     ffmpeg_path: str
@@ -18,7 +22,18 @@ class FfmpegProcessor:
     def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         command = self._transcode_with_cover_command(source, target, cover_path) if cover_path else self._transcode_command(source, target)
-        subprocess.run(command, check=True)
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except FileNotFoundError as exception:
+            self._cleanup_failed_target(target)
+            raise FfmpegError(f"找不到 FFmpeg 可执行文件：{self.ffmpeg_path}") from exception
+        except subprocess.CalledProcessError as exception:
+            self._cleanup_failed_target(target)
+            detail = self._process_output_tail(exception.stdout, exception.stderr)
+            raise FfmpegError(f"FFmpeg 转码退出码 {exception.returncode}：{detail}") from exception
+        except OSError as exception:
+            self._cleanup_failed_target(target)
+            raise FfmpegError(f"FFmpeg 无法启动：{exception}") from exception
         return target
 
     def _transcode_command(self, source: Path, target: Path) -> list[str]:
@@ -182,3 +197,20 @@ class FfmpegProcessor:
         if not parsed:
             return None
         return parsed if parsed % 2 == 0 else parsed - 1
+
+    @staticmethod
+    def _process_output_tail(stdout: str | None, stderr: str | None, max_lines: int = 8, max_chars: int = 1000) -> str:
+        text = "\n".join(part for part in (stderr, stdout) if part)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return "没有返回错误详情"
+        tail = "\n".join(lines[-max_lines:])
+        return tail[-max_chars:]
+
+    @staticmethod
+    def _cleanup_failed_target(target: Path) -> None:
+        try:
+            if target.exists():
+                target.unlink()
+        except OSError:
+            pass

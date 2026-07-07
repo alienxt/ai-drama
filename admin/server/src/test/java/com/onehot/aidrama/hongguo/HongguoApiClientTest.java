@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HongguoApiClientTest {
@@ -36,5 +38,17 @@ class HongguoApiClientTest {
         assertThat(item.episodeCount()).isEqualTo(87);
         assertThat(item.playCount()).isEqualTo(143830L);
         assertThat(item.publishedAt()).isNotNull();
+    }
+
+    @Test
+    void formatChinaDateUsesShanghaiDate() {
+        assertThat(HongguoApiClient.formatChinaDate(Instant.parse("2026-07-06T17:30:00Z")))
+                .isEqualTo("2026-07-07");
+    }
+
+    @Test
+    void formatChinaDateTimeUsesShanghaiTime() {
+        assertThat(HongguoApiClient.formatChinaDateTime(Instant.parse("2026-07-07T07:00:00Z")))
+                .isEqualTo("2026-07-07 15:00:00");
     }
 }

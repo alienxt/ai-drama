@@ -19,6 +19,7 @@ from aidrama_desktop.contracts.generator import (
     format_contract_date_short,
     format_half_price,
     generate_agreement_number,
+    generate_contract_start_date,
     merge_pngs_vertically,
     replace_double_date_footer_text,
     normalize_contract_docx_for_rendering,
@@ -36,6 +37,7 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
     doc.add_paragraph("合同剧名：{{dramaTitle}}")
     doc.add_paragraph("协议编号：{{agreementNumber}}")
     doc.add_paragraph("签署日期：{{date}}")
+    doc.add_paragraph("授权开始日期：{{startDate}}")
     doc.add_paragraph("半价：{{halfPrice}}")
     table = doc.add_table(rows=1, cols=2)
     table.cell(0, 0).text = "集数"
@@ -54,6 +56,7 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
             buyer="甲方",
             seller="乙方",
             sign_date="2026-06-15",
+            start_date="2026-05-10",
             agreement_number="HZ-2026-06-123456",
         ),
     )
@@ -62,7 +65,8 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
     assert rendered.paragraphs[0].text == "合同剧名：神医归来"
     assert rendered.paragraphs[1].text == "协议编号：HZ-2026-06-123456"
     assert rendered.paragraphs[2].text == "签署日期：2026\u00a0年\u00a006\u00a0月\u00a015\u00a0日"
-    assert rendered.paragraphs[3].text == "半价：2500"
+    assert rendered.paragraphs[3].text == "授权开始日期：2026\u00a0年\u00a005\u00a0月\u00a010\u00a0日"
+    assert rendered.paragraphs[4].text == "半价：2500"
     assert rendered.tables[0].cell(0, 1).text == "80 集，共 80 分钟"
 
 
@@ -76,6 +80,17 @@ def test_generate_agreement_number_uses_sign_month_and_six_digit_suffix():
     number = generate_agreement_number("2026-06-15")
 
     assert re.fullmatch(r"HZ-2026-06-\d{6}", number)
+
+
+def test_generate_contract_start_date_uses_30_to_40_days_before_sign_date():
+    start_dates = {
+        generate_contract_start_date("2026-06-15", f"seed-{index}")
+        for index in range(20)
+    }
+
+    assert start_dates
+    for start_date in start_dates:
+        assert "2026-05-06" <= start_date <= "2026-05-16"
 
 
 def test_format_contract_date_supports_chinese_date_input():

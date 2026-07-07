@@ -89,7 +89,7 @@ export function TasksPage() {
               <Tag color={distributionTaskStatusColors[status]}>{distributionTaskStatusLabel(status)}</Tag>
             ),
           },
-          { title: '执行链路', dataIndex: 'progress', width: 340, render: (_: number, record) => <TaskExecutionChain task={record} /> },
+          { title: '执行链路', dataIndex: 'progress', width: 420, render: (_: number, record) => <TaskExecutionChain task={record} /> },
           { title: '失败原因', dataIndex: 'failureReason', width: 260, render: renderTaskCellText },
           { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
           { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
@@ -174,7 +174,7 @@ function TaskExecutionChain({ task }: { task: DistributionTask }) {
 }
 
 function taskChainLabels(task: DistributionTask) {
-  const labels = ['排队', '领取', '下载', '上传', '完成'];
+  const labels = ['排队', '领取', '下载', '处理', '上传', '完成'];
   if (task.status === 'FAILED') {
     labels[taskChainProblemStep(task)] += '失败';
   } else if (task.status === 'CANCELLED') {
@@ -248,9 +248,9 @@ function taskChainActiveStep(task: DistributionTask) {
     PENDING: 0,
     CLAIMED: 1,
     DOWNLOADING: 2,
-    PROCESSING: 2,
-    UPLOADING: 3,
-    SUCCEEDED: 4,
+    PROCESSING: 3,
+    UPLOADING: 4,
+    SUCCEEDED: 5,
     FAILED: taskChainProblemStep(task),
     CANCELLED: taskChainProblemStep(task),
   };
@@ -260,6 +260,9 @@ function taskChainActiveStep(task: DistributionTask) {
 function taskChainProblemStep(task: DistributionTask) {
   const progress = Number(task.progress || 0);
   if (progress >= 75) {
+    return 4;
+  }
+  if (progress >= 70) {
     return 3;
   }
   if (progress >= 10) {

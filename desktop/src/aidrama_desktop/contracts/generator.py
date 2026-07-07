@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
@@ -106,10 +106,15 @@ class ContractRenderInput:
     buyer: str
     seller: str
     sign_date: str = ""
+    start_date: str = ""
     episode_minutes: str = ""
     agreement_number: str = ""
 
     def placeholders(self) -> dict[str, str]:
+        start_date = self.start_date or generate_contract_start_date(
+            self.sign_date,
+            f"{self.contract_type}:{self.drama_title}:{self.agreement_number}",
+        )
         return {
             "contractType": self.contract_type,
             "agreementNumber": self.agreement_number,
@@ -121,6 +126,7 @@ class ContractRenderInput:
             "buyer": self.buyer,
             "seller": self.seller,
             "date": format_contract_date_no_wrap(self.sign_date),
+            "startDate": format_contract_date_no_wrap(start_date),
         }
 
 
@@ -265,6 +271,16 @@ def format_half_price(value: str = "") -> str:
 def generate_agreement_number(value: str = "") -> str:
     parsed = parse_contract_date(value) or date.today()
     return f"HZ-{parsed.year:04d}-{parsed.month:02d}-{secrets.randbelow(1_000_000):06d}"
+
+
+def generate_contract_start_date(value: str = "", seed: str | None = None) -> str:
+    parsed = parse_contract_date(value) or date.today()
+    if seed is None:
+        offset_days = 30 + secrets.randbelow(11)
+    else:
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        offset_days = 30 + digest[0] % 11
+    return (parsed - timedelta(days=offset_days)).isoformat()
 
 
 def format_contract_date_short(value: str = "") -> str:
