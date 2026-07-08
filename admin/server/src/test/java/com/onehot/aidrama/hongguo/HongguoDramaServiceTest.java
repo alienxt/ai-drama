@@ -339,7 +339,14 @@ class HongguoDramaServiceTest {
         HongguoApiClient apiClient = mock(HongguoApiClient.class);
         HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
-        HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
+        HongguoCoverStorage coverStorage = mock(HongguoCoverStorage.class);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                candidateRepository,
+                dramaRepository,
+                coverStorage,
+                Clock.systemUTC()
+        );
         HongguoDramaCandidate candidate = candidate("candidate-1");
         when(candidateRepository.findById("candidate-1")).thenReturn(Optional.of(candidate));
         when(apiClient.fetchDetail("hg-1", "红果剧")).thenReturn(new HongguoApiModels.DramaDetail(
@@ -356,6 +363,7 @@ class HongguoDramaServiceTest {
                         new HongguoApiModels.DetailEpisode(2, "第 2 集", "video-2", 180)
                 )
         ));
+        when(coverStorage.store("https://example.com/cover.jpg")).thenReturn("/uploads/covers/local-cover.jpg");
         when(dramaRepository.findAllBySourcePath("52api://hongguo/hg-1")).thenReturn(List.of());
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> {
             Drama drama = invocation.getArgument(0);
@@ -369,13 +377,51 @@ class HongguoDramaServiceTest {
         assertThat(drama.getSource()).isEqualTo(DramaSources.HONGGUO_52API);
         assertThat(drama.getStatus()).isEqualTo(DramaStatus.READY);
         assertThat(drama.getProviderDramaId()).isEqualTo("hg-1");
+        assertThat(drama.getCoverUrl()).isEqualTo("/uploads/covers/local-cover.jpg");
         assertThat(drama.getEpisodes()).hasSize(2);
         assertThat(drama.getEpisodes().getFirst().getProviderVideoId()).isEqualTo("video-1");
         assertThat(drama.getEpisodes().getFirst().getDownloadUrl()).isNull();
         assertThat(candidate.getStatus()).isEqualTo(HongguoCandidateStatus.IMPORTED);
         assertThat(candidate.getImportedDramaId()).isEqualTo("drama-1");
+        verify(coverStorage).store("https://example.com/cover.jpg");
         verify(apiClient, never()).fetchVideoVariants(any(), any(), any());
         verify(apiClient, never()).decrypt(any(), any());
+    }
+
+    @Test
+    void backfillCoversStoresRemoteHongguoCovers() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoCoverStorage coverStorage = mock(HongguoCoverStorage.class);
+        HongguoDramaService service = new HongguoDramaService(
+                mock(HongguoApiClient.class),
+                mock(HongguoDramaCandidateRepository.class),
+                dramaRepository,
+                coverStorage,
+                Clock.systemUTC()
+        );
+        Drama remote = new Drama();
+        remote.setSourcePath("52api://hongguo/hg-old");
+        remote.setCoverUrl("https://example.com/remote-cover.jpg");
+        Drama local = hongguoDrama();
+        local.setCoverUrl("/uploads/covers/local-cover.jpg");
+        Drama blank = new Drama();
+        blank.setProviderName(HongguoDramaService.PROVIDER);
+        blank.setCoverUrl(" ");
+        Drama other = new Drama();
+        other.setCoverUrl("https://example.com/other-cover.jpg");
+        when(dramaRepository.findAll()).thenReturn(List.of(remote, local, blank, other));
+        when(coverStorage.store("https://example.com/remote-cover.jpg")).thenReturn("/uploads/covers/remote-cover.jpg");
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.CoverBackfillResult result = service.backfillCovers();
+
+        assertThat(result.requested()).isEqualTo(3);
+        assertThat(result.updated()).isEqualTo(1);
+        assertThat(result.skipped()).isEqualTo(2);
+        assertThat(result.failed()).isZero();
+        assertThat(remote.getCoverUrl()).isEqualTo("/uploads/covers/remote-cover.jpg");
+        verify(coverStorage).store("https://example.com/remote-cover.jpg");
+        verify(dramaRepository, times(1)).save(any(Drama.class));
     }
 
     @Test

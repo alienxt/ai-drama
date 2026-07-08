@@ -1370,14 +1370,50 @@ class WeChatVideoPublisher(PlatformPublisher):
             first_check = False
             if self._page_has_text(page, success_pattern):
                 return
-            if submit_clicks < 3 and self._click_playlet_submit_button(page, timeout_error):
+            if submit_clicks < 3:
+                try:
+                    clicked = self._click_playlet_submit_button(page, timeout_error)
+                except RuntimeError as exception:
+                    if self._is_final_playlet_submit_closed_result(exception):
+                        return
+                    raise
+                if not clicked:
+                    self._wait_for_page(page, 1000)
+                    continue
                 submit_clicks += 1
-                self._click_confirm_if_available(page, timeout_error)
+                try:
+                    self._click_confirm_if_available(page, timeout_error)
+                except RuntimeError as exception:
+                    if self._is_final_playlet_submit_closed_result(exception):
+                        return
+                    raise
+                if self._is_page_blank_or_closed(page):
+                    return
                 continue
             self._wait_for_page(page, 1000)
         if submit_clicks == 0:
             raise RuntimeError("短剧表单已唤起，但未找到确认提审/提交审核按钮，任务不会标记完成。")
         raise RuntimeError("短剧表单已唤起，但未确认提交成功，任务不会标记完成。")
+
+    def _is_final_playlet_submit_closed_result(self, exception: Exception) -> bool:
+        message = str(exception)
+        return (
+            self._is_page_closed_error(exception)
+            or "浏览器页面已关闭，无法点击视频号确认提审按钮" in message
+            or "浏览器页面已关闭，无法确认视频号提审" in message
+        )
+
+    @staticmethod
+    def _is_page_blank_or_closed(page) -> bool:
+        is_closed = getattr(page, "is_closed", None)
+        if callable(is_closed):
+            try:
+                if is_closed():
+                    return True
+            except Exception:  # noqa: BLE001
+                return True
+        url = getattr(page, "url", None)
+        return isinstance(url, str) and url in {"", "about:blank"}
 
     def _click_playlet_submit_button(self, page, timeout_error) -> bool:
         patterns = [

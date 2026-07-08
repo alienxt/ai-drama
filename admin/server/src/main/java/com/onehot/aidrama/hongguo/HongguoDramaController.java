@@ -73,4 +73,9 @@ public class HongguoDramaController {
         Drama drama = service.importCandidate(id);
         return ApiResponse.ok(new HongguoDtos.ImportCandidateResponse(drama), MDC.get(TraceIdFilter.TRACE_ID));
     }
+
+    @PostMapping("/backfill-covers")
+    ApiResponse<HongguoDramaService.CoverBackfillResult> backfillCovers() {
+        return ApiResponse.ok(service.backfillCovers(), MDC.get(TraceIdFilter.TRACE_ID));
+    }
 }

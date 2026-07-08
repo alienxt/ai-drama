@@ -107,5 +107,8 @@ AIDRAMA_JWT_SECRET='replace-with-a-long-secret' \
 ```bash
 cd desktop
 ./scripts/build-package.sh       # macOS，输出 dmg
-.\scripts\build-package.ps1      # Windows PowerShell，输出 zip
+.\scripts\build-package.ps1      # Windows PowerShell，输出 zip 和正式安装包 exe
 ```
+
+Windows 打包需先安装 Python 3.11+ 和 Inno Setup 6。安装包输出路径示例：
+`desktop\dist\AI-Drama-Desktop-Setup-0.1.6-windows-x64.exe`。

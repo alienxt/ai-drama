@@ -44,6 +44,7 @@ client/landing/.vite/
 
 # Python
 desktop/.venv/
+desktop/.venv-windows/
 desktop/.pytest_cache/
 desktop/**/__pycache__/
 desktop/**/*.egg-info/

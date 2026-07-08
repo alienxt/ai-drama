@@ -22,6 +22,38 @@ aidrama-desktop run-once
 - `AIDRAMA_TOKEN_FILE`: 登录 token 文件，默认在系统用户配置目录下
 - `AIDRAMA_BROWSER_PROFILE_DIR`: 媒体平台浏览器登录态目录
 
+## Packaging
+
+macOS:
+
+```bash
+./scripts/build-package.sh
+```
+
+Windows:
+
+```powershell
+.\scripts\build-package.ps1
+```
+
+Windows 打包需要先安装 Python 3.11+ 和 Inno Setup 6。脚本会使用 `.venv-windows`
+作为独立构建环境，避免和 macOS/Linux 的 `.venv` 冲突。默认输出：
+
+- `dist\AI-Drama-Desktop-<version>-windows-x64.zip`: 便携版。
+- `dist\AI-Drama-Desktop-Setup-<version>-windows-x64.exe`: 正式安装包。
+
+如果 Inno Setup 安装在非默认目录，可以指定编译器路径：
+
+```powershell
+.\scripts\build-package.ps1 -InnoSetupCompiler "D:\Tools\Inno Setup 6\ISCC.exe"
+```
+
+只需要便携版时：
+
+```powershell
+.\scripts\build-package.ps1 -SkipInstaller
+```
+
 ## Local directories
 
 桌面端本机目录按用途分开，避免短剧素材、配置和浏览器登录态混在一起：

@@ -40,6 +40,7 @@ public class HongguoDramaService {
     private final HongguoApiClient apiClient;
     private final HongguoDramaCandidateRepository candidateRepository;
     private final DramaRepository dramaRepository;
+    private final HongguoCoverStorage coverStorage;
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
     private final Clock clock;
 
@@ -47,9 +48,18 @@ public class HongguoDramaService {
     public HongguoDramaService(
             HongguoApiClient apiClient,
             HongguoDramaCandidateRepository candidateRepository,
+            DramaRepository dramaRepository,
+            HongguoCoverStorage coverStorage
+    ) {
+        this(apiClient, candidateRepository, dramaRepository, coverStorage, Clock.systemUTC());
+    }
+
+    HongguoDramaService(
+            HongguoApiClient apiClient,
+            HongguoDramaCandidateRepository candidateRepository,
             DramaRepository dramaRepository
     ) {
-        this(apiClient, candidateRepository, dramaRepository, Clock.systemUTC());
+        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, Clock.systemUTC());
     }
 
     HongguoDramaService(
@@ -58,9 +68,20 @@ public class HongguoDramaService {
             DramaRepository dramaRepository,
             Clock clock
     ) {
+        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, clock);
+    }
+
+    HongguoDramaService(
+            HongguoApiClient apiClient,
+            HongguoDramaCandidateRepository candidateRepository,
+            DramaRepository dramaRepository,
+            HongguoCoverStorage coverStorage,
+            Clock clock
+    ) {
         this.apiClient = apiClient;
         this.candidateRepository = candidateRepository;
         this.dramaRepository = dramaRepository;
+        this.coverStorage = coverStorage;
         this.clock = clock;
     }
 
@@ -176,7 +197,7 @@ public class HongguoDramaService {
 
         String title = firstText(detail.title(), candidate.getTitle());
         String summary = firstText(detail.summary(), candidate.getSummary());
-        String coverUrl = firstText(detail.coverUrl(), candidate.getCoverUrl());
+        String coverUrl = coverStorage.store(firstText(detail.coverUrl(), candidate.getCoverUrl()));
         String previousSummary = drama.getSummary();
 
         drama.setTitle(title);
@@ -208,6 +229,51 @@ public class HongguoDramaService {
         candidate.setImportedDramaId(saved.getId());
         candidateRepository.save(candidate);
         return saved;
+    }
+
+    public CoverBackfillResult backfillCovers() {
+        List<Drama> dramas = dramaRepository.findAll().stream()
+                .filter(this::isHongguoRecord)
+                .toList();
+        int updated = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        for (Drama drama : dramas) {
+            String coverUrl = drama.getCoverUrl();
+            if (!hasText(coverUrl) || coverUrl.startsWith("/uploads/")) {
+                skipped++;
+                continue;
+            }
+
+            String storedCoverUrl;
+            try {
+                storedCoverUrl = coverStorage.store(coverUrl);
+            } catch (RuntimeException exception) {
+                failed++;
+                continue;
+            }
+
+            if (!hasText(storedCoverUrl) || Objects.equals(storedCoverUrl, coverUrl)) {
+                failed++;
+                continue;
+            }
+
+            drama.setCoverUrl(storedCoverUrl);
+            dramaRepository.save(drama);
+            updated++;
+        }
+
+        return new CoverBackfillResult(dramas.size(), updated, skipped, failed);
+    }
+
+    private boolean isHongguoRecord(Drama drama) {
+        if (drama == null) {
+            return false;
+        }
+        return DramaSources.isHongguo(drama.getSource())
+                || startsWith(drama.getSourcePath(), "52api://hongguo/")
+                || Objects.equals(PROVIDER, drama.getProviderName());
     }
 
     public URI createDownloadUri(Drama drama, DramaEpisode episode) {
@@ -442,6 +508,13 @@ public class HongguoDramaService {
         return value != null && !value.isBlank();
     }
 
+    private boolean startsWith(String value, String prefix) {
+        return value != null && value.startsWith(prefix);
+    }
+
     public record MangaSearchResult(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated) {
+    }
+
+    public record CoverBackfillResult(int requested, int updated, int skipped, int failed) {
     }
 }

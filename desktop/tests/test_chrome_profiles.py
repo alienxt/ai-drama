@@ -1139,6 +1139,39 @@ def test_wechat_video_publisher_submit_clicks_until_success(tmp_path: Path, monk
     assert clicks == ["确认提审", "确认提审"]
 
 
+def test_wechat_video_publisher_treats_closed_page_after_final_submit_as_success(tmp_path: Path, monkeypatch):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    monkeypatch.setattr(publisher, "_page_has_text", lambda page, pattern: False)
+
+    def close_after_submit(page, timeout_error):
+        raise RuntimeError("浏览器页面已关闭，无法点击视频号确认提审按钮")
+
+    monkeypatch.setattr(publisher, "_click_playlet_submit_button", close_after_submit)
+
+    publisher._submit_playlet_and_wait_for_success(object(), TimeoutError, success_timeout_seconds=1)
+
+
+def test_wechat_video_publisher_treats_blank_page_after_final_submit_as_success(tmp_path: Path, monkeypatch):
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    class FakePage:
+        url = "https://channels.weixin.qq.com/platform/native-drama-post"
+
+    page = FakePage()
+
+    monkeypatch.setattr(publisher, "_page_has_text", lambda page, pattern: False)
+
+    def submit_and_open_blank(page, timeout_error):
+        page.url = "about:blank"
+        return True
+
+    monkeypatch.setattr(publisher, "_click_playlet_submit_button", submit_and_open_blank)
+    monkeypatch.setattr(publisher, "_click_confirm_if_available", lambda page, timeout_error: None)
+
+    publisher._submit_playlet_and_wait_for_success(page, TimeoutError, success_timeout_seconds=1)
+
+
 def test_wechat_video_publisher_success_text_can_be_inside_frame(tmp_path: Path):
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 

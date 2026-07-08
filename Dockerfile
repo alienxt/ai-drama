@@ -7,7 +7,10 @@ RUN mvn -f admin/server/pom.xml -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-RUN mkdir -p /app/uploads
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/uploads
 COPY --from=backend /workspace/admin/server/target/ai-drama-server-*.jar /app/ai-drama-server.jar
 ENV SERVER_PORT=8080
 EXPOSE 8080
