@@ -351,6 +351,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_size = 10
         self.task_history_total_pages = 1
         self.task_history_total_elements = 0
+        self.last_auto_error_popup_message: str | None = None
         self.task_cancel_event = threading.Event()
         self.task_pause_event = threading.Event()
         self.task_skip_event = threading.Event()
@@ -1210,11 +1211,12 @@ class DesktopWindow(QMainWindow):
         on_done: Callable[[Any], None] | None = None,
         *,
         log_result: bool = True,
+        on_failed: Callable[[str], None] | None = None,
     ) -> None:
         self.append_log(f"开始：{title}")
         worker = Worker(task)
         worker.signals.done.connect(lambda result: self._task_done(title, result, on_done, log_result=log_result))
-        worker.signals.failed.connect(lambda error: self._task_failed(title, error))
+        worker.signals.failed.connect(lambda error: self._task_failed(title, error, on_failed=on_failed))
         worker.signals.done.connect(lambda _: self._release_worker(worker))
         worker.signals.failed.connect(lambda _: self._release_worker(worker))
         self.active_workers.append(worker)
@@ -1252,7 +1254,11 @@ class DesktopWindow(QMainWindow):
                 return f"共 {len(content)} 条"
         return str(result)
 
-    def _task_failed(self, title: str, error: str) -> None:
+    def _task_failed(self, title: str, error: str, on_failed: Callable[[str], None] | None = None) -> None:
+        self.append_log(f"失败：{title}\n{error}")
+        if on_failed:
+            on_failed(error)
+            return
         if title == "自动执行任务":
             self.auto_task_busy = False
             self.update_task_progress("任务失败：自动执行请求失败", self.current_task_id)
@@ -1266,7 +1272,6 @@ class DesktopWindow(QMainWindow):
                 self.update_task_progress("任务失败：发布执行异常", self.current_task_id)
             if title in {"检查重试条件", "重试任务"} and hasattr(self, "task_history_table"):
                 self.load_task_history(page=self.task_history_page)
-        self.append_log(f"失败：{title}\n{error}")
         QMessageBox.critical(self, title, self.clean_error_message(error))
 
     @staticmethod
@@ -1600,6 +1605,7 @@ class DesktopWindow(QMainWindow):
             reason = self.current_task_error_message() or "发布任务执行失败，请查看最近错误或日志。"
             QMessageBox.warning(self, "重试任务", f"任务重试失败：\n{reason}")
         elif result == "cancelled":
+            self.task_cancel_event.clear()
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已停止，可重新分发。")
         elif result == "paused":
@@ -2883,6 +2889,7 @@ class DesktopWindow(QMainWindow):
             reason = self.current_task_error_message() or "发布任务执行失败，请查看最近错误或日志。"
             QMessageBox.warning(self, "发布下一条", f"发布任务执行失败：\n{reason}")
         elif result == "cancelled":
+            self.task_cancel_event.clear()
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已停止，可重新分发。")
         elif result == "paused":
@@ -2993,7 +3000,13 @@ class DesktopWindow(QMainWindow):
             return
         self.auto_task_busy = True
         self.update_task_progress("发送心跳", self.current_task_id)
-        self.run_async("自动执行任务", self.auto_task_once, self.handle_auto_task_done, log_result=False)
+        self.run_async(
+            "自动执行任务",
+            self.auto_task_once,
+            self.handle_auto_task_done,
+            log_result=False,
+            on_failed=self.handle_auto_task_failed,
+        )
 
     def auto_task_once(self) -> str:
         runner = self.runner()
@@ -3002,11 +3015,13 @@ class DesktopWindow(QMainWindow):
 
     def handle_auto_task_done(self, result: str) -> None:
         self.auto_task_busy = False
+        self.last_auto_error_popup_message = None
         if result == "no-task":
             self.update_task_progress("空闲，等待下一轮", None)
         elif result == "failed":
             self.update_task_progress("任务失败，等待下一轮", self.current_task_id)
         elif result == "cancelled":
+            self.task_cancel_event.clear()
             self.update_task_progress("任务已停止，可重新分发", self.current_task_id)
         elif result == "paused":
             self.task_paused = True
@@ -3018,6 +3033,36 @@ class DesktopWindow(QMainWindow):
         else:
             self.update_task_progress("任务完成，等待下一轮", self.current_task_id)
         self.update_task_control_buttons()
+
+    def handle_auto_task_failed(self, error: str) -> None:
+        self.auto_task_busy = False
+        message = self.clean_error_message(error)
+        self.set_task_error_message(message)
+        if self.is_daily_publish_limit_error(message):
+            if self.auto_task_enabled:
+                self.auto_task_enabled = False
+                self.auto_task_timer.stop()
+                if hasattr(self, "auto_task_button"):
+                    self.auto_task_button.setText("启动自动执行")
+            self.update_task_progress(f"自动执行已停止：{message}", None)
+            self.show_auto_error_once("自动执行", message)
+            return
+        self.update_task_progress(f"任务失败：{message}", self.current_task_id)
+        self.show_auto_error_once("自动执行", message)
+
+    @staticmethod
+    def is_daily_publish_limit_error(message: str) -> bool:
+        return "今日发布次数已达" in message or "明天再发布" in message
+
+    def set_task_error_message(self, message: str) -> None:
+        if hasattr(self, "task_error_label"):
+            self.task_error_label.setText(f"最近错误：{message or '-'}")
+
+    def show_auto_error_once(self, title: str, message: str) -> None:
+        if getattr(self, "last_auto_error_popup_message", None) == message:
+            return
+        self.last_auto_error_popup_message = message
+        QMessageBox.warning(self, title, message)
 
     def toggle_task_pause(self) -> None:
         if self.task_paused:

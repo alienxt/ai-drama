@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
+from aidrama_desktop.platforms.base import PlatformPublisher
 
 
 PLAYLET_SUMMARY_MAX_CHARS = 100
@@ -334,7 +334,7 @@ class WeChatVideoPublisher(PlatformPublisher):
         self._advance_playlet_to_file_step(page, metadata, timeout_error)
         self._upload_playlet_episode_files(page, media_files, episode_count, timeout_error)
         self._advance_playlet_to_confirmation_review(page, timeout_error)
-        raise PlatformPublishPaused("剧目提审第二步视频已上传完成，已停留在提审信息确认页，请人工审核表单并手动确认提审。")
+        self._submit_playlet_and_wait_for_success(page, timeout_error)
 
     def _enter_playlet_plan(self, page, timeout_error) -> None:
         self._accept_playlet_agreement(page, timeout_error)
@@ -1519,14 +1519,12 @@ class WeChatVideoPublisher(PlatformPublisher):
         for _attempt in range(8):
             if WeChatVideoPublisher._is_ai_content_switch_checked(page):
                 return True
-            clicked = False
             for selector in selectors:
                 try:
                     locator = locator_getter(selector).first
                     if locator.count() == 0:
                         continue
                     WeChatVideoPublisher._click_locator(locator, timeout_error, timeout=2500, force=True)
-                    clicked = True
                     wait_for_timeout = getattr(page, "wait_for_timeout", None)
                     if callable(wait_for_timeout):
                         wait_for_timeout(400)

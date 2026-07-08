@@ -2,6 +2,7 @@ package com.onehot.aidrama.distribution;
 
 import org.springframework.data.mongodb.repository.MongoRepository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,6 +36,11 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             String mediaAccountId,
             String dramaId,
             DistributionTaskStatus status
+    );
+    long countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+            List<String> mediaAccountIds,
+            Instant updatedAt,
+            List<DistributionTaskStatus> statuses
     );
 
     default boolean existsActiveByDramaId(String dramaId) {

@@ -25,6 +25,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,13 +46,21 @@ public class DistributionService {
     private static final Duration PREPARATION_FAILURE_GRACE = Duration.ofMinutes(10);
     private static final int PREPARATION_RETRY_AFTER_SECONDS = 3;
     private static final String PREPARATION_FAILURE_PREFIX = "AI 素材生成失败：";
+    private static final String FORCE_STOP_FAILURE_REASON = "用户强制停止任务";
+    private static final int DAILY_PUBLISH_LIMIT = 10;
+    private static final ZoneId DAILY_PUBLISH_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
             DistributionTaskStatus.CLAIMED,
             DistributionTaskStatus.DOWNLOADING,
             DistributionTaskStatus.PROCESSING,
             DistributionTaskStatus.UPLOADING
     );
-    private static final List<DistributionTaskStatus> NON_BLOCKING_GENERATION_STATUSES = List.of(
+    private static final List<DistributionTaskStatus> DAILY_PUBLISH_COUNT_STATUSES = List.of(
+            DistributionTaskStatus.CLAIMED,
+            DistributionTaskStatus.DOWNLOADING,
+            DistributionTaskStatus.PROCESSING,
+            DistributionTaskStatus.UPLOADING,
+            DistributionTaskStatus.SUCCEEDED,
             DistributionTaskStatus.FAILED,
             DistributionTaskStatus.CANCELLED
     );
@@ -436,6 +446,7 @@ public class DistributionService {
         if (mediaAccountIds.isEmpty()) {
             return Optional.empty();
         }
+        assertDailyPublishLimitAvailable(mediaAccountIds);
         return taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
                         DistributionTaskStatus.PENDING,
                         mediaAccountIds
@@ -492,8 +503,31 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
+        assertDailyPublishLimitAvailable(mediaAccountIds);
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation);
+    }
+
+    private void assertDailyPublishLimitAvailable(List<String> mediaAccountIds) {
+        long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+                mediaAccountIds,
+                publishLimitDayStart(),
+                DAILY_PUBLISH_COUNT_STATUSES
+        );
+        if (todayCount >= DAILY_PUBLISH_LIMIT) {
+            throw new BusinessException(
+                    "DAILY_PUBLISH_LIMIT_REACHED",
+                    "今日发布次数已达 " + DAILY_PUBLISH_LIMIT + " 次，请明天再发布。",
+                    HttpStatus.TOO_MANY_REQUESTS
+            );
+        }
+    }
+
+    private Instant publishLimitDayStart() {
+        return ZonedDateTime.now(DAILY_PUBLISH_LIMIT_ZONE)
+                .toLocalDate()
+                .atStartOfDay(DAILY_PUBLISH_LIMIT_ZONE)
+                .toInstant();
     }
 
     private boolean isRetryableFromDesktop(DistributionTaskStatus status) {
@@ -573,7 +607,7 @@ public class DistributionService {
         }
         task.setStatus(DistributionTaskStatus.CANCELLED);
         task.setLockedByDeviceId(null);
-        task.setFailureReason("用户强制停止任务");
+        task.setFailureReason(FORCE_STOP_FAILURE_REASON);
         task.setFinishedAt(Instant.now());
         return taskRepository.save(task);
     }
@@ -665,20 +699,7 @@ public class DistributionService {
     }
 
     private boolean hasBlockingGeneratedTask(String mediaAccountId, String dramaId) {
-        if (taskRepository.existsByMediaAccountIdAndDramaIdAndStatusNotIn(
-                mediaAccountId,
-                dramaId,
-                NON_BLOCKING_GENERATION_STATUSES
-        )) {
-            return true;
-        }
-        return taskRepository.findFirstByMediaAccountIdAndDramaIdAndStatusOrderByCreatedAtDesc(
-                        mediaAccountId,
-                        dramaId,
-                        DistributionTaskStatus.FAILED
-                )
-                .map(this::isPreparationFailureTask)
-                .orElse(false);
+        return taskRepository.existsByMediaAccountIdAndDramaId(mediaAccountId, dramaId);
     }
 
     private boolean isPreparationFailureTask(DistributionTask task) {

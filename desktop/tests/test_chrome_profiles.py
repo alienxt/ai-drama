@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublishPaused
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.platforms.wechat_video import (
     PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS,
@@ -640,6 +639,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     advances = []
     video_uploads = []
     review_steps = []
+    submit_steps = []
     events = []
     agreement_clicks = []
     entry_clicks = []
@@ -753,29 +753,33 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
         "_advance_playlet_to_confirmation_review",
         lambda page, timeout_error: review_steps.append(page),
     )
+    monkeypatch.setattr(
+        publisher,
+        "_submit_playlet_and_wait_for_success",
+        lambda page, timeout_error: submit_steps.append(page),
+    )
     page = FakePage()
-    with pytest.raises(PlatformPublishPaused, match="提审信息确认页"):
-        publisher._upload_playlet(
-            page,
-            [tmp_path / "001.mp4"],
-            "神医归来",
-            "简介",
-            {
-                "publishTitle": "神医归来AI",
-                "summary": "简介",
-                "coverFile": tmp_path / "cover.jpg",
-                "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
-                "monetizationLabel": "IAA广告变现",
-                "freeEpisodeCount": 6,
-                "episodeCount": 27,
-                "producerName": "乙方公司",
-                "productionCostWan": 3,
-                "buyDramaContractImages": [purchase_image],
-                "rightsStatementImages": [rights_image],
-                "costConfigReportImages": [cost_image],
-            },
-            TimeoutError,
-        )
+    publisher._upload_playlet(
+        page,
+        [tmp_path / "001.mp4"],
+        "神医归来",
+        "简介",
+        {
+            "publishTitle": "神医归来AI",
+            "summary": "简介",
+            "coverFile": tmp_path / "cover.jpg",
+            "episodes": [{"episodeNo": 1, "file": tmp_path / "001.mp4"}],
+            "monetizationLabel": "IAA广告变现",
+            "freeEpisodeCount": 6,
+            "episodeCount": 27,
+            "producerName": "乙方公司",
+            "productionCostWan": 3,
+            "buyDramaContractImages": [purchase_image],
+            "rightsStatementImages": [rights_image],
+            "costConfigReportImages": [cost_image],
+        },
+        TimeoutError,
+    )
 
     assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
@@ -792,6 +796,7 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert len(advances) == 1
     assert video_uploads == [([tmp_path / "001.mp4"], 27)]
     assert review_steps == [page]
+    assert submit_steps == [page]
     assert "^数字真人$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
