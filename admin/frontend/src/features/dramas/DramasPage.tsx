@@ -636,6 +636,7 @@ export function DramasPage() {
           { title: '总时长', dataIndex: 'totalMinutes', width: 90, render: (value?: number) => value ? `${value} 分钟` : '-' },
           { title: '成本金额', dataIndex: 'costAmountWan', width: 100, render: (value?: number) => value ? `${value} 万` : '-' },
           { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
+          { title: '发布时间', dataIndex: 'publishedAt', width: 180, render: formatDateTime },
           {
             title: '状态',
             dataIndex: 'status',
@@ -725,6 +726,7 @@ export function DramasPage() {
                 {detailItem('成本金额', viewing.costAmountWan ? `${viewing.costAmountWan} 万` : '-')}
                 {detailItem('评分', `${viewing.rating ?? 5}分`)}
                 {detailItem('创建时间', formatDateTime(viewing.createdAt))}
+                {detailItem('发布时间', formatDateTime(viewing.publishedAt))}
                 {detailItem('更新时间', formatDateTime(viewing.updatedAt))}
                 {detailItem('来源目录', <Typography.Text copyable className="mono-id">{viewing.sourcePath || '-'}</Typography.Text>)}
               </div>
