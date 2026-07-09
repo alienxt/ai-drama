@@ -59,12 +59,15 @@ from aidrama_desktop.contracts import (
     build_contract_template_download_path,
     contract_party_key,
     contract_template_key,
+    convert_contract_docx_images,
     copy_contract_template,
     generate_agreement_number,
     generate_contract_start_date,
+    merge_pngs_vertically,
     required_contract_party_fields,
     required_contract_template_types,
     render_contract_docx,
+    safe_contract_filename,
 )
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
 from aidrama_desktop.local_agent import create_local_agent_server
@@ -843,7 +846,11 @@ class DesktopWindow(QMainWindow):
         actions = QHBoxLayout()
         self.contract_generate_button = QPushButton("生成合同")
         self.contract_generate_button.clicked.connect(self.generate_contract)
+        self.contract_generate_images_button = QPushButton("生成图片")
+        self.contract_generate_images_button.setEnabled(False)
+        self.contract_generate_images_button.clicked.connect(self.generate_last_contract_images)
         actions.addWidget(self.contract_generate_button)
+        actions.addWidget(self.contract_generate_images_button)
         actions.addStretch(1)
         self.contract_preview = QTextEdit()
         self.contract_preview.setReadOnly(True)
@@ -2790,6 +2797,8 @@ class DesktopWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def update_generated_contract_actions(self, paths: list[Path]) -> None:
+        if hasattr(self, "contract_generate_images_button"):
+            self.contract_generate_images_button.setEnabled(any(path.exists() for path in paths))
         if not hasattr(self, "generated_contract_actions_layout"):
             return
         while self.generated_contract_actions_layout.count():
@@ -2808,16 +2817,87 @@ class DesktopWindow(QMainWindow):
             full_path.setReadOnly(True)
             open_button = QPushButton("打开")
             open_button.clicked.connect(lambda _checked=False, target=path: self.open_generated_contract_file(target))
+            image_button = QPushButton("生成图片")
+            image_button.clicked.connect(lambda _checked=False, target=path: self.generate_generated_contract_images(target))
             row_layout.addWidget(name)
             row_layout.addWidget(full_path, 1)
+            row_layout.addWidget(image_button)
             row_layout.addWidget(open_button)
             self.generated_contract_actions_layout.addWidget(row)
+
+    def generate_last_contract_images(self) -> None:
+        existing_paths = [path for path in self.last_contract_paths if path.exists()]
+        if not existing_paths:
+            QMessageBox.warning(self, "生成图片", "请先生成合同。")
+            return
+        self.run_async(
+            "生成合同图片",
+            lambda: [(path, self.build_generated_contract_images(path)) for path in existing_paths],
+            self.open_generated_contract_image_batches,
+            log_result=False,
+        )
 
     def open_generated_contract_file(self, path: Path) -> None:
         if not path.exists():
             QMessageBox.warning(self, "打开合同", f"文件不存在：{path}")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def generate_generated_contract_images(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.warning(self, "生成图片", f"文件不存在：{path}")
+            return
+        self.run_async(
+            "生成合同图片",
+            lambda: self.build_generated_contract_images(path),
+            lambda image_paths: self.open_generated_contract_images(path, image_paths),
+            log_result=False,
+        )
+
+    def build_generated_contract_images(self, path: Path) -> list[Path]:
+        contract_type = self.infer_contract_type_from_path(path)
+        image_dir = path.parent / "images"
+        image_stem = safe_contract_filename(path.stem)
+        image_paths = convert_contract_docx_images(contract_type, path, image_dir, image_stem)
+        if len(image_paths) > 1:
+            image_paths = [merge_pngs_vertically(image_paths, image_dir / f"{image_stem}.png")]
+        if not image_paths or any(not image_path.exists() for image_path in image_paths):
+            raise RuntimeError("合同图片生成失败。")
+        return image_paths
+
+    def open_generated_contract_images(self, contract_path: Path, image_paths: list[Path]) -> None:
+        if hasattr(self, "contract_preview"):
+            self.contract_preview.append("\n已生成合同图片：\n" + "\n".join(str(path) for path in image_paths))
+        for image_path in image_paths:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(image_path)))
+        self.append_log("合同图片已生成：" + "，".join(str(path) for path in image_paths))
+        QMessageBox.information(
+            self,
+            "生成图片",
+            f"{contract_path.name} 的图片已生成并打开：\n" + "\n".join(str(path) for path in image_paths),
+        )
+
+    def open_generated_contract_image_batches(self, batches: list[tuple[Path, list[Path]]]) -> None:
+        all_images = [image_path for _contract_path, image_paths in batches for image_path in image_paths]
+        if hasattr(self, "contract_preview"):
+            self.contract_preview.append("\n已生成合同图片：\n" + "\n".join(str(path) for path in all_images))
+        for image_path in all_images:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(image_path)))
+        self.append_log("合同图片已生成：" + "，".join(str(path) for path in all_images))
+        QMessageBox.information(
+            self,
+            "生成图片",
+            "合同图片已生成并打开：\n" + "\n".join(str(path) for path in all_images),
+        )
+
+    @staticmethod
+    def infer_contract_type_from_path(path: Path) -> str:
+        name = path.stem
+        if "权利声明" in name or "rights" in name.lower():
+            return "rights"
+        if "购买合同" in name or "purchase" in name.lower():
+            return "purchase"
+        return "cost"
 
     def open_settings_row(self, row: SettingsRow) -> None:
         if row.kind != "directory":

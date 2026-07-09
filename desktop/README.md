@@ -64,6 +64,7 @@ Windows 打包需要先安装 Python 3.11+ 和 Inno Setup 6。脚本会使用 `.
 - 下载原片目录：`<工作根目录>/dramas/downloads/<dramaId>`。
 - 转码成品目录：`<工作根目录>/dramas/processed/<dramaId>`。
 - 合同目录：`<工作根目录>/contracts`，保存本地生成的合同文件。
+- 合同图片目录：`<工作根目录>/contracts/images`，保存“合同配置”页从已生成 Word 合同导出的校验图片。
 - 临时目录：`<工作根目录>/tmp`。
 - 浏览器登录态目录：按平台和媒体号隔离，例如 `<browser-profile-dir>/wechat_video/<mediaAccountId>`。
 

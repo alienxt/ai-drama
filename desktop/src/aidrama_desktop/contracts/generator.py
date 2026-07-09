@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import shutil
@@ -766,7 +767,13 @@ def export_contract_docx_images(docx_path: Path, image_dir: Path, image_stem: st
 
 def convert_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    soffice = find_command("soffice", ["/Applications/LibreOffice.app/Contents/MacOS/soffice"])
+    soffice = find_command(
+        "soffice",
+        [
+            os.environ.get("AIDRAMA_SOFFICE_PATH", ""),
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ],
+    )
     if not soffice:
         raise RuntimeError("无法将 Word 合同转换为图片，请先安装 LibreOffice。")
     with tempfile.TemporaryDirectory(prefix="aidrama-libreoffice-") as profile_dir:
