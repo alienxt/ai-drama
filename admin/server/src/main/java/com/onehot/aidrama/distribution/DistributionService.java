@@ -422,7 +422,9 @@ public class DistributionService {
         Query query = new Query(new Criteria().orOperator(
                 Criteria.where("title").regex(pattern),
                 Criteria.where("aiTitle").regex(pattern),
-                Criteria.where("aiSummary").regex(pattern)
+                Criteria.where("aiTitleEn").regex(pattern),
+                Criteria.where("aiSummary").regex(pattern),
+                Criteria.where("aiSummaryEn").regex(pattern)
         )).limit(200);
         return mongoTemplate.find(query, com.onehot.aidrama.dramas.Drama.class).stream()
                 .map(com.onehot.aidrama.dramas.Drama::getId)

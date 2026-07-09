@@ -249,11 +249,15 @@ export function DramasPage() {
     const payload = {
       title: values.title,
       aiTitle: values.aiTitle,
+      aiTitleEn: values.aiTitleEn,
       summary: values.summary,
       aiSummary: values.aiSummary,
+      aiSummaryEn: values.aiSummaryEn,
       coverUrl: values.coverUrl,
       aiCoverUrl: values.aiCoverUrl,
       aiVideoCoverUrl: values.aiVideoCoverUrl,
+      aiCoverEnUrl: values.aiCoverEnUrl,
+      aiVideoCoverEnUrl: values.aiVideoCoverEnUrl,
       rating: values.rating ?? 5,
       costAmountWan: values.costAmountWan,
       categoryIds: values.categoryIds,
@@ -586,6 +590,12 @@ export function DramasPage() {
             render: (aiTitle?: string) => aiTitle || <span className="muted">未生成</span>,
           },
           {
+            title: '英文剧名',
+            dataIndex: 'aiTitleEn',
+            width: 180,
+            render: (aiTitleEn?: string) => aiTitleEn || <span className="muted">未生成</span>,
+          },
+          {
             title: '简介',
             dataIndex: 'summary',
             width: 320,
@@ -602,6 +612,16 @@ export function DramasPage() {
             render: (aiSummary?: string) => (
               <Typography.Paragraph className="table-summary" ellipsis={{ rows: 2, tooltip: aiSummary }}>
                 {aiSummary || <span className="muted">未生成</span>}
+              </Typography.Paragraph>
+            ),
+          },
+          {
+            title: '英文简介',
+            dataIndex: 'aiSummaryEn',
+            width: 320,
+            render: (aiSummaryEn?: string) => (
+              <Typography.Paragraph className="table-summary" ellipsis={{ rows: 2, tooltip: aiSummaryEn }}>
+                {aiSummaryEn || <span className="muted">未生成</span>}
               </Typography.Paragraph>
             ),
           },
@@ -634,7 +654,7 @@ export function DramasPage() {
                 <Tooltip title="编辑">
                   <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => showEditor(record)} />
                 </Tooltip>
-                <Tooltip title="生成新剧名和 AI 简介">
+                <Tooltip title="生成中英文剧名和简介">
                   <Button
                     className="table-action"
                     size="small"
@@ -688,6 +708,7 @@ export function DramasPage() {
                   <Tag color={dramaStatusColors[viewing.status]}>{dramaStatusLabel(viewing.status)}</Tag>
                 </div>
                 <div className="drama-detail-subtitle">{viewing.aiTitle ? `AI 新剧名：${viewing.aiTitle}` : 'AI 新剧名：未生成'}</div>
+                <div className="drama-detail-subtitle">{viewing.aiTitleEn ? `英文剧名：${viewing.aiTitleEn}` : '英文剧名：未生成'}</div>
                 <div className="drama-detail-tags">
                   {viewing.categoryIds?.length
                     ? viewing.categoryIds.map((id) => <Tag key={id}>{categoryName.get(id) ?? id}</Tag>)
@@ -720,6 +741,13 @@ export function DramasPage() {
               <h3>AI 简介</h3>
               <Typography.Paragraph className="drama-detail-summary">
                 {viewing.aiSummary || '-'}
+              </Typography.Paragraph>
+            </section>
+
+            <section className="drama-detail-section">
+              <h3>英文简介</h3>
+              <Typography.Paragraph className="drama-detail-summary">
+                {viewing.aiSummaryEn || '-'}
               </Typography.Paragraph>
             </section>
 
@@ -943,11 +971,17 @@ export function DramasPage() {
           <Form.Item name="aiTitle" label="AI 新剧名">
             <Input />
           </Form.Item>
+          <Form.Item name="aiTitleEn" label="英文剧名">
+            <Input />
+          </Form.Item>
           <Form.Item name="summary" label="简介">
             <Input.TextArea rows={3} />
           </Form.Item>
           <Form.Item name="aiSummary" label="AI 简介">
             <Input.TextArea rows={3} maxLength={100} showCount />
+          </Form.Item>
+          <Form.Item name="aiSummaryEn" label="英文简介">
+            <Input.TextArea rows={3} maxLength={160} showCount />
           </Form.Item>
           <Form.Item name="coverUrl" label="封面地址">
             <Input />
@@ -956,6 +990,12 @@ export function DramasPage() {
             <Input />
           </Form.Item>
           <Form.Item name="aiVideoCoverUrl" label="横版视频封面地址">
+            <Input />
+          </Form.Item>
+          <Form.Item name="aiCoverEnUrl" label="英文封面地址（预留）">
+            <Input />
+          </Form.Item>
+          <Form.Item name="aiVideoCoverEnUrl" label="英文横版封面地址（预留）">
             <Input />
           </Form.Item>
           <Form.Item name="rating" label="评分" rules={[{ required: true }]}>

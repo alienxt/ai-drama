@@ -103,6 +103,7 @@ export function distributionTaskStatusLabel(status: string) {
 }
 
 export const aiTaskTypeLabels: Record<AiTaskType, string> = {
+  DRAMA_METADATA: 'AI剧名/简介',
   DRAMA_TITLE: 'AI剧名',
   DRAMA_SUMMARY: 'AI简介',
   DRAMA_COVER: 'AI封面',
@@ -141,6 +142,7 @@ export function aiTaskStatusLabel(status: string) {
 
 export const systemTaskTypeLabels: Record<SystemTaskType, string> = {
   BAIDU_PAN_SCAN: '百度网盘扫描',
+  HONGGUO_AI_MANGA_AUTO_IMPORT: '红果AI漫剧自动导入',
 };
 
 export const systemTaskTypeOptions = Object.entries(systemTaskTypeLabels).map(([value, label]) => ({

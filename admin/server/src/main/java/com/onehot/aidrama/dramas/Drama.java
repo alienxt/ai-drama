@@ -15,11 +15,15 @@ public class Drama {
     private String id;
     private String title;
     private String aiTitle;
+    private String aiTitleEn;
     private String summary;
     private String aiSummary;
+    private String aiSummaryEn;
     private String coverUrl;
     private String aiCoverUrl;
     private String aiVideoCoverUrl;
+    private String aiCoverEnUrl;
+    private String aiVideoCoverEnUrl;
     private boolean aiCoverGenerating;
     private Instant aiPreparationFailedAt;
     private Integer rating = 5;
@@ -45,16 +49,24 @@ public class Drama {
     public void setTitle(String title) { this.title = title; }
     public String getAiTitle() { return aiTitle; }
     public void setAiTitle(String aiTitle) { this.aiTitle = aiTitle; }
+    public String getAiTitleEn() { return aiTitleEn; }
+    public void setAiTitleEn(String aiTitleEn) { this.aiTitleEn = aiTitleEn; }
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
     public String getAiSummary() { return aiSummary; }
     public void setAiSummary(String aiSummary) { this.aiSummary = aiSummary; }
+    public String getAiSummaryEn() { return aiSummaryEn; }
+    public void setAiSummaryEn(String aiSummaryEn) { this.aiSummaryEn = aiSummaryEn; }
     public String getCoverUrl() { return coverUrl; }
     public void setCoverUrl(String coverUrl) { this.coverUrl = coverUrl; }
     public String getAiCoverUrl() { return aiCoverUrl; }
     public void setAiCoverUrl(String aiCoverUrl) { this.aiCoverUrl = aiCoverUrl; }
     public String getAiVideoCoverUrl() { return aiVideoCoverUrl; }
     public void setAiVideoCoverUrl(String aiVideoCoverUrl) { this.aiVideoCoverUrl = aiVideoCoverUrl; }
+    public String getAiCoverEnUrl() { return aiCoverEnUrl; }
+    public void setAiCoverEnUrl(String aiCoverEnUrl) { this.aiCoverEnUrl = aiCoverEnUrl; }
+    public String getAiVideoCoverEnUrl() { return aiVideoCoverEnUrl; }
+    public void setAiVideoCoverEnUrl(String aiVideoCoverEnUrl) { this.aiVideoCoverEnUrl = aiVideoCoverEnUrl; }
     public boolean isAiCoverGenerating() { return aiCoverGenerating; }
     public void setAiCoverGenerating(boolean aiCoverGenerating) { this.aiCoverGenerating = aiCoverGenerating; }
     public Instant getAiPreparationFailedAt() { return aiPreparationFailedAt; }

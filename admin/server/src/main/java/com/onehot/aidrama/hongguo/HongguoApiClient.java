@@ -79,14 +79,32 @@ public class HongguoApiClient {
     }
 
     public HongguoApiModels.MangaSearchPage fetchScreenedAiMangaNewDramas(int page) {
+        return fetchScreenedAiMangaNewDramas(page, null, List.of());
+    }
+
+    public HongguoApiModels.MangaSearchPage fetchScreenedAiMangaNewDramas(int page, String sessionId, List<String> filterIds) {
         int effectivePage = Math.max(page, 1);
-        JsonNode data = get("/hg_screening", Map.of(
-                "type", "list",
-                "genre", "ai_series",
-                "online_time", "days_7",
-                "duration", "duration_60_120"
-        ));
-        return new HongguoApiModels.MangaSearchPage("AI漫剧7日上新60-120分钟", effectivePage, parseMangaSearchItems(data));
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("type", "list");
+        params.put("genre", "ai_series");
+        params.put("online_time", "days_7");
+        params.put("duration", "duration_60_120");
+        if (effectivePage > 1 && sessionId != null && !sessionId.isBlank()) {
+            params.put("session_id", sessionId.trim());
+        }
+        String joinedFilterIds = joinFilterIds(filterIds);
+        if (effectivePage > 1 && joinedFilterIds != null) {
+            params.put("filter_ids", joinedFilterIds);
+        }
+        JsonNode data = get("/hg_screening", params);
+        List<HongguoApiModels.MangaSearchItem> items = parseMangaSearchItems(data);
+        return new HongguoApiModels.MangaSearchPage(
+                "AI漫剧7日上新60-120分钟",
+                effectivePage,
+                items,
+                firstText(data, "session_id", "sessionId"),
+                providerDramaIds(items)
+        );
     }
 
     static String formatChinaDate(Instant instant) {
@@ -440,6 +458,30 @@ public class HongguoApiClient {
     private static int videoPixels(HongguoApiModels.VideoVariant variant) {
         return Math.max(variant.width() == null ? 0 : variant.width(), 0)
                 * Math.max(variant.height() == null ? 0 : variant.height(), 0);
+    }
+
+    private String joinFilterIds(List<String> filterIds) {
+        if (filterIds == null || filterIds.isEmpty()) {
+            return null;
+        }
+        List<String> values = filterIds.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        return values.isEmpty() ? null : String.join(",", values);
+    }
+
+    private List<String> providerDramaIds(List<HongguoApiModels.MangaSearchItem> items) {
+        if (items == null || items.isEmpty()) {
+            return List.of();
+        }
+        return items.stream()
+                .map(HongguoApiModels.MangaSearchItem::providerDramaId)
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private String firstText(JsonNode node, String... fields) {

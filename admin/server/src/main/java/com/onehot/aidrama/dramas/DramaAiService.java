@@ -1,5 +1,7 @@
 package com.onehot.aidrama.dramas;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onehot.aidrama.ai.AiService;
 import com.onehot.aidrama.ai.AiTask;
 import com.onehot.aidrama.ai.AiTaskService;
@@ -19,8 +21,18 @@ import java.util.regex.Pattern;
 
 @Service
 public class DramaAiService {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern LEADING_INDEX = Pattern.compile("^\\d+[.．、\\s]*");
     private static final Pattern EPISODE_COUNT = Pattern.compile("[（(](\\d+)集[）)]");
+    private static final String DEFAULT_METADATA_PROMPT = """
+            你是短剧发行增长编辑。根据原始剧名和简介，一次生成中文与英文分发素材。
+            输出严格 JSON 对象，不要 Markdown，不要解释，字段必须为 aiTitle、aiSummary、aiTitleEn、aiSummaryEn。
+            aiTitle：中文短剧新剧名，不超过 12 个汉字；延续原始剧名风格、人物气质和类型基调；不要使用书名号。
+            aiSummary：中文短剧简介，不超过 100 个字符，最后三个字符必须是英文省略号 ...；不要编造原简介没有的核心设定。
+            aiTitleEn：适合 TikTok 的英文短剧标题，2-8 个英文单词，像剧集标题，不要使用引号。
+            aiSummaryEn：适合 TikTok 的英文简介，不超过 160 个英文字符，突出人物关系、反转和悬念，不要编造原简介没有的核心设定。
+            不要把温柔、美感、情感向的原题改成血腥暴力、恐怖猎奇或过度复仇表达；避免使用灭门、血洗、屠、虐杀、杀疯、索命等词。
+            """;
     private static final String DEFAULT_TITLE_PROMPT = """
             你是短剧发行增长编辑。根据原始剧名和简介，生成一个适合中文短剧分发平台的新剧名。
             要求：中文；不超过 12 个汉字；延续原始剧名的风格、意境和人物气质；在原有美感或情感基调上增强吸引力。
@@ -83,21 +95,15 @@ public class DramaAiService {
         if (!allowActiveDistributionTask && taskRepository.existsActiveByDramaId(id)) {
             throw new BusinessException("DRAMA_ALREADY_DISTRIBUTED", "这部剧已经分发过，不能重新生成 AI 剧名", HttpStatus.CONFLICT);
         }
-        String systemPrompt = config("openai.prompts.dramaTitle", DEFAULT_TITLE_PROMPT);
-        String userPrompt = titleContext(drama);
-        String aiTitle = withAiErrors(() -> aiTaskService.run(
-                textTask(AiTaskType.DRAMA_TITLE, drama, systemPrompt, userPrompt),
-                () -> aiService.generateText(systemPrompt, userPrompt),
-                result -> Map.of("outputText", result)
-        ));
-        drama.setAiTitle(cleanTitle(aiTitle));
-        drama.setAiSummary(generateAiSummaryValue(drama));
+        AiMetadata metadata = generateAiMetadataValue(drama);
+        applyMetadata(drama, metadata, true);
         return repository.save(drama);
     }
 
     public Drama generateSummary(String id) {
         Drama drama = get(id);
-        drama.setAiSummary(generateAiSummaryValue(drama));
+        AiMetadata metadata = generateAiMetadataValue(drama);
+        applyMetadata(drama, metadata, false);
         return repository.save(drama);
     }
 
@@ -147,18 +153,83 @@ public class DramaAiService {
         });
     }
 
-    private String generateAiSummaryValue(Drama drama) {
-        if (shouldUseSyntheticAiSummary(drama)) {
-            return syntheticAiSummary(drama);
-        }
-        String systemPrompt = config("openai.prompts.dramaSummary", DEFAULT_SUMMARY_PROMPT);
-        String userPrompt = summaryContext(drama);
-        String aiSummary = withAiErrors(() -> aiTaskService.run(
-                textTask(AiTaskType.DRAMA_SUMMARY, drama, systemPrompt, userPrompt),
+    private AiMetadata generateAiMetadataValue(Drama drama) {
+        String systemPrompt = config("openai.prompts.dramaMetadata", DEFAULT_METADATA_PROMPT);
+        String userPrompt = metadataContext(drama);
+        String output = withAiErrors(() -> aiTaskService.run(
+                textTask(AiTaskType.DRAMA_METADATA, drama, systemPrompt, userPrompt),
                 () -> aiService.generateText(systemPrompt, userPrompt),
                 result -> Map.of("outputText", result)
         ));
-        return cleanSummary(aiSummary, drama.getSummary(), drama.getTitle());
+        return cleanMetadata(parseMetadata(output), drama);
+    }
+
+    private void applyMetadata(Drama drama, AiMetadata metadata, boolean updateTitle) {
+        if (updateTitle || trimToEmpty(drama.getAiTitle()).isBlank()) {
+            drama.setAiTitle(metadata.aiTitle());
+        }
+        drama.setAiTitleEn(metadata.aiTitleEn());
+        drama.setAiSummary(metadata.aiSummary());
+        drama.setAiSummaryEn(metadata.aiSummaryEn());
+    }
+
+    private AiMetadata parseMetadata(String output) {
+        String text = trimToEmpty(output);
+        if (text.isBlank()) {
+            return new AiMetadata(null, null, null, null);
+        }
+        try {
+            JsonNode node = MAPPER.readTree(extractJson(text));
+            return new AiMetadata(
+                    text(node, "aiTitle", "title", "titleZh", "zhTitle"),
+                    text(node, "aiSummary", "summary", "summaryZh", "zhSummary"),
+                    text(node, "aiTitleEn", "titleEn", "enTitle", "englishTitle"),
+                    text(node, "aiSummaryEn", "summaryEn", "enSummary", "englishSummary")
+            );
+        } catch (Exception ignored) {
+            return new AiMetadata(text, null, null, null);
+        }
+    }
+
+    private AiMetadata cleanMetadata(AiMetadata metadata, Drama drama) {
+        String aiTitle = cleanTitle(firstText(metadata.aiTitle(), drama.getAiTitle(), drama.getTitle()));
+        String fallbackSummary = shouldUseSyntheticAiSummary(drama) ? syntheticAiSummaryWithTitle(drama, aiTitle) : null;
+        String aiSummary = cleanSummary(
+                firstText(metadata.aiSummary(), fallbackSummary),
+                drama.getSummary(),
+                firstText(aiTitle, drama.getTitle())
+        );
+        String aiTitleEn = cleanEnglishTitle(metadata.aiTitleEn());
+        String aiSummaryEn = cleanEnglishSummary(metadata.aiSummaryEn(), aiTitleEn);
+        return new AiMetadata(aiTitle, aiSummary, aiTitleEn, aiSummaryEn);
+    }
+
+    private String extractJson(String text) {
+        String trimmed = text.trim();
+        if (trimmed.startsWith("```")) {
+            trimmed = trimmed.replaceFirst("^```[a-zA-Z]*\\s*", "")
+                    .replaceFirst("\\s*```$", "")
+                    .trim();
+        }
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return trimmed.substring(start, end + 1);
+        }
+        return trimmed;
+    }
+
+    private String text(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node.path(field);
+            if (!value.isMissingNode() && !value.isNull()) {
+                String text = value.asText(null);
+                if (text != null && !text.isBlank()) {
+                    return text.trim();
+                }
+            }
+        }
+        return null;
     }
 
     private boolean shouldUseSyntheticAiSummary(Drama drama) {
@@ -182,11 +253,19 @@ public class DramaAiService {
         if (title.isBlank()) {
             title = trimToEmpty(drama.getTitle());
         }
+        return syntheticAiSummaryWithTitle(drama, title);
+    }
+
+    private String syntheticAiSummaryWithTitle(Drama drama, String title) {
+        String effectiveTitle = trimToEmpty(title);
+        if (effectiveTitle.isBlank()) {
+            effectiveTitle = trimToEmpty(drama.getTitle());
+        }
         int episodeCount = episodeCount(drama);
         if (episodeCount > 0) {
-            return "%s（%d集）".formatted(title, episodeCount);
+            return "%s（%d集）".formatted(effectiveTitle, episodeCount);
         }
-        return title;
+        return effectiveTitle;
     }
 
     private int episodeCount(Drama drama) {
@@ -277,25 +356,17 @@ public class DramaAiService {
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
     }
 
-    private String titleContext(Drama drama) {
+    private String metadataContext(Drama drama) {
         return """
                 原始剧名：%s
-                简介：%s
-                """.formatted(
-                blankToNone(drama.getTitle()),
-                blankToNone(drama.getSummary())
-        );
-    }
-
-    private String summaryContext(Drama drama) {
-        return """
-                原始剧名：%s
-                AI剧名：%s
+                当前AI剧名：%s
                 原始简介：%s
+                集数：%s
                 """.formatted(
                 blankToNone(drama.getTitle()),
                 blankToNone(drama.getAiTitle()),
-                blankToNone(drama.getSummary())
+                blankToNone(drama.getSummary()),
+                episodeCount(drama) > 0 ? episodeCount(drama) + "集" : "未知"
         );
     }
 
@@ -323,7 +394,8 @@ public class DramaAiService {
     }
 
     private String cleanTitle(String title) {
-        return title.replace("《", "")
+        return trimToEmpty(title)
+                .replace("《", "")
                 .replace("》", "")
                 .replace("\"", "")
                 .replace("'", "")
@@ -357,6 +429,47 @@ public class DramaAiService {
         return text + "...";
     }
 
+    private String cleanEnglishTitle(String title) {
+        String text = trimToEmpty(title)
+                .replace("《", "")
+                .replace("》", "")
+                .replace("\"", "")
+                .replace("'", "")
+                .replaceAll("[\\r\\n\\t]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (text.length() > 80) {
+            text = text.substring(0, 80).replaceAll("[\\s,.;:!?-]+$", "");
+        }
+        return text.isBlank() ? null : text;
+    }
+
+    private String cleanEnglishSummary(String summary, String fallbackTitle) {
+        String text = trimToEmpty(summary)
+                .replace("《", "")
+                .replace("》", "")
+                .replace("\"", "")
+                .replaceAll("[\\r\\n\\t]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (text.isBlank() && fallbackTitle != null && !fallbackTitle.isBlank()) {
+            text = "%s hides secrets, reversals, and emotional stakes in a fast-paced short drama.".formatted(fallbackTitle);
+        }
+        if (text.length() > 160) {
+            text = text.substring(0, 160).replaceAll("[\\s,.;:!?-]+$", "");
+        }
+        return text.isBlank() ? null : text;
+    }
+
+    private String firstText(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
     private String blankToNone(String value) {
         return value == null || value.isBlank() ? "无" : value;
     }
@@ -379,5 +492,8 @@ public class DramaAiService {
 
     private interface AiCall<T> {
         T execute();
+    }
+
+    private record AiMetadata(String aiTitle, String aiSummary, String aiTitleEn, String aiSummaryEn) {
     }
 }

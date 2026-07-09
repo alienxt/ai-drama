@@ -52,6 +52,15 @@ public class BootstrapConfig {
             画面文字只能出现“封面剧名”，不要出现原始剧名、旧标题、副标题或其他额外文字。
             不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
             """;
+    private static final String DEFAULT_METADATA_PROMPT = """
+            你是短剧发行增长编辑。根据原始剧名和简介，一次生成中文与英文分发素材。
+            输出严格 JSON 对象，不要 Markdown，不要解释，字段必须为 aiTitle、aiSummary、aiTitleEn、aiSummaryEn。
+            aiTitle：中文短剧新剧名，不超过 12 个汉字；延续原始剧名风格、人物气质和类型基调；不要使用书名号。
+            aiSummary：中文短剧简介，不超过 100 个字符，最后三个字符必须是英文省略号 ...；不要编造原简介没有的核心设定。
+            aiTitleEn：适合 TikTok 的英文短剧标题，2-8 个英文单词，像剧集标题，不要使用引号。
+            aiSummaryEn：适合 TikTok 的英文简介，不超过 160 个英文字符，突出人物关系、反转和悬念，不要编造原简介没有的核心设定。
+            不要把温柔、美感、情感向的原题改成血腥暴力、恐怖猎奇或过度复仇表达；避免使用灭门、血洗、屠、虐杀、杀疯、索命等词。
+            """;
     private static final String DEFAULT_VIDEO_COVER_PROMPT = """
             你是短剧视频封面视觉总监。根据封面剧名、简介和原始封面信息，生成一张横版中文短剧视频封面。
             画面要求：16:9 横版构图，适合 1280x720 视频首帧和视频缩略图；保持美感和人物吸引力；人物好看、有情绪、有关系张力；氛围精致，有悬念和看点，让用户看了想点进内容。
@@ -115,6 +124,9 @@ public class BootstrapConfig {
         configService.putIfAbsent("hongguo.secretKey", "", true);
         configService.putIfAbsent("hongguo.connectTimeoutSeconds", "30", false);
         configService.putIfAbsent("hongguo.readTimeoutSeconds", "120", false);
+        configService.putIfAbsent("hongguo.aiMangaAutoImportEnabled", "true", false);
+        configService.putIfAbsent("hongguo.aiMangaAutoImportDailyLimit", "30", false);
+        configService.putIfAbsent("hongguo.aiMangaAutoImportMaxPages", "8", false);
     }
 
     private void bootstrapOpenAiConfig(SystemConfigService configService) {
@@ -130,6 +142,7 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.readTimeoutSeconds", "300", false);
         putDefaultTitlePrompt(configService);
         putDefaultSummaryPrompt(configService);
+        putDefaultMetadataPrompt(configService);
         putDefaultCoverPrompt(configService);
         putDefaultVideoCoverPrompt(configService);
     }
@@ -144,6 +157,10 @@ public class BootstrapConfig {
 
     private void putDefaultSummaryPrompt(SystemConfigService configService) {
         configService.putIfAbsent("openai.prompts.dramaSummary", DEFAULT_SUMMARY_PROMPT, false);
+    }
+
+    private void putDefaultMetadataPrompt(SystemConfigService configService) {
+        configService.putIfAbsent("openai.prompts.dramaMetadata", DEFAULT_METADATA_PROMPT, false);
     }
 
     private void putDefaultCoverPrompt(SystemConfigService configService) {

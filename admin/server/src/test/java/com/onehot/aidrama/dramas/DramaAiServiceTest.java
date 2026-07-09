@@ -70,13 +70,17 @@ class DramaAiServiceTest {
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
-        when(aiService.generateText(any(), any())).thenReturn("《新剧名》", "人物命运反转，情感悬念升级...");
+        when(aiService.generateText(any(), any())).thenReturn("""
+                {"aiTitle":"《新剧名》","aiSummary":"人物命运反转，情感悬念升级...","aiTitleEn":"Twisted Fate","aiSummaryEn":"Secrets and reversals pull two hearts into a dangerous short drama."}
+                """);
 
         Drama updated = service.generateTitle("drama-1");
 
         assertThat(updated.getTitle()).isEqualTo("原始剧名");
         assertThat(updated.getAiTitle()).isEqualTo("新剧名");
         assertThat(updated.getAiSummary()).isEqualTo("人物命运反转，情感悬念升级...");
+        assertThat(updated.getAiTitleEn()).isEqualTo("Twisted Fate");
+        assertThat(updated.getAiSummaryEn()).isEqualTo("Secrets and reversals pull two hearts into a dangerous short drama.");
     }
 
     @Test
@@ -96,13 +100,16 @@ class DramaAiServiceTest {
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
-        when(aiService.generateText(any(), any())).thenReturn("妹妹的眼泪", "妹妹归来牵出旧情误会...");
+        when(aiService.generateText(any(), any())).thenReturn("""
+                {"aiTitle":"妹妹的眼泪","aiSummary":"妹妹归来牵出旧情误会...","aiTitleEn":"Her Sister's Tears","aiSummaryEn":"A sister's return exposes buried love and painful misunderstandings."}
+                """);
 
         service.generateTitle("drama-1");
 
         verify(aiService).generateText(
                 org.mockito.ArgumentMatchers.argThat(prompt ->
-                        prompt.contains("延续原始剧名的风格")
+                        prompt.contains("一次生成中文与英文")
+                                && prompt.contains("延续原始剧名风格")
                                 && prompt.contains("不要把温柔、美感、情感向的原题改成血腥暴力")
                                 && prompt.contains("灭门")
                                 && prompt.contains("血洗")
@@ -129,7 +136,9 @@ class DramaAiServiceTest {
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
         when(taskRepository.existsActiveByDramaId("drama-1")).thenReturn(false);
-        when(aiService.generateText(any(), any())).thenReturn("新剧名", "剧情简介改写...");
+        when(aiService.generateText(any(), any())).thenReturn("""
+                {"aiTitle":"新剧名","aiSummary":"剧情简介改写...","aiTitleEn":"New Drama","aiSummaryEn":"A short drama built on secrets and reversals."}
+                """);
 
         service.generateTitle("drama-1");
 
@@ -137,8 +146,8 @@ class DramaAiServiceTest {
                 any(),
                 org.mockito.ArgumentMatchers.argThat(prompt ->
                         prompt.contains("原始剧名：原始剧名")
-                                && prompt.contains("简介：剧情简介")
-                                && !prompt.contains("AI剧名")
+                                && prompt.contains("原始简介：剧情简介")
+                                && prompt.contains("当前AI剧名：无")
                                 && !prompt.contains("原始封面")
                                 && !prompt.contains("/uploads/covers/source.jpg")
                 )
@@ -162,12 +171,15 @@ class DramaAiServiceTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
-        when(aiService.generateText(any(), any())).thenReturn("命运转折".repeat(20) + "。");
+        when(aiService.generateText(any(), any())).thenReturn("""
+                {"aiTitle":"新剧名","aiSummary":"%s","aiTitleEn":"New Drama","aiSummaryEn":"A short drama full of secrets and twists."}
+                """.formatted("命运转折".repeat(20) + "。"));
 
         Drama updated = service.generateSummary("drama-1");
 
         assertThat(updated.getAiSummary()).hasSizeLessThanOrEqualTo(100);
         assertThat(updated.getAiSummary()).endsWith("...");
+        assertThat(updated.getAiTitleEn()).isEqualTo("New Drama");
     }
 
     @Test
@@ -189,10 +201,15 @@ class DramaAiServiceTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
+        when(configService.get(any())).thenReturn(Optional.empty());
+        when(aiService.generateText(any(), any())).thenReturn("""
+                {"aiTitle":"神医抢婚","aiSummary":"神医抢婚（2集）","aiTitleEn":"The Doctor's Bride","aiSummaryEn":"A miracle doctor storms into a marriage and changes every fate."}
+                """);
+
         Drama updated = service.generateSummary("drama-1");
 
-        assertThat(updated.getAiSummary()).isEqualTo("神医抢婚（2集）");
-        verify(aiService, never()).generateText(any(), any());
+        assertThat(updated.getAiSummary()).isEqualTo("神医抢婚（2集）...");
+        assertThat(updated.getAiTitleEn()).isEqualTo("The Doctor's Bride");
     }
 
     @Test
@@ -218,7 +235,7 @@ class DramaAiServiceTest {
         Drama updated = service.generateTitle("drama-1");
 
         assertThat(updated.getAiTitle()).isEqualTo("双影令");
-        assertThat(updated.getAiSummary()).isEqualTo("双影令（2集）");
+        assertThat(updated.getAiSummary()).isEqualTo("双影令（2集）...");
         verify(aiService).generateText(any(), any());
     }
 

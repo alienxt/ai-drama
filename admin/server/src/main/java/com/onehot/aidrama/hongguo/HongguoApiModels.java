@@ -7,7 +7,15 @@ public class HongguoApiModels {
     private HongguoApiModels() {
     }
 
-    public record MangaSearchPage(String keyword, int page, List<MangaSearchItem> items) {
+    public record MangaSearchPage(String keyword, int page, List<MangaSearchItem> items, String sessionId, List<String> filterIds) {
+        public MangaSearchPage(String keyword, int page, List<MangaSearchItem> items) {
+            this(keyword, page, items, null, List.of());
+        }
+
+        public MangaSearchPage {
+            items = items == null ? List.of() : List.copyOf(items);
+            filterIds = filterIds == null ? List.of() : List.copyOf(filterIds);
+        }
     }
 
     public record MangaSearchItem(

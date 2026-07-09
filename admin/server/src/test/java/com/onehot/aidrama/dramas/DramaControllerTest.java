@@ -118,11 +118,15 @@ class DramaControllerTest {
         return new Document("_id", drama.getId())
                 .append("title", drama.getTitle())
                 .append("aiTitle", drama.getAiTitle())
+                .append("aiTitleEn", drama.getAiTitleEn())
                 .append("summary", drama.getSummary())
                 .append("aiSummary", drama.getAiSummary())
+                .append("aiSummaryEn", drama.getAiSummaryEn())
                 .append("coverUrl", drama.getCoverUrl())
                 .append("aiCoverUrl", drama.getAiCoverUrl())
                 .append("aiVideoCoverUrl", drama.getAiVideoCoverUrl())
+                .append("aiCoverEnUrl", drama.getAiCoverEnUrl())
+                .append("aiVideoCoverEnUrl", drama.getAiVideoCoverEnUrl())
                 .append("rating", drama.getRating())
                 .append("totalMinutes", drama.getTotalMinutes())
                 .append("categoryIds", drama.getCategoryIds())
@@ -576,9 +580,13 @@ class DramaControllerTest {
         DramaDtos.DramaRequest request = new DramaDtos.DramaRequest(
                 "原始剧名",
                 "",
+                "",
                 "简介",
                 "",
+                "",
                 "/uploads/covers/source.jpg",
+                "",
+                "",
                 "",
                 "",
                 5,
@@ -643,11 +651,15 @@ class DramaControllerTest {
         drama.setId("drama-1");
         drama.setTitle("短剧");
         drama.setAiTitle("AI短剧名");
+        drama.setAiTitleEn("AI Drama Title");
         drama.setSummary("简介");
         drama.setAiSummary("AI简介...");
+        drama.setAiSummaryEn("An emotional short drama with twists.");
         drama.setCoverUrl("/uploads/covers/source.jpg");
         drama.setAiCoverUrl("/uploads/ai-covers/ai.jpg");
         drama.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
+        drama.setAiCoverEnUrl("/uploads/ai-covers/ai-en.jpg");
+        drama.setAiVideoCoverEnUrl("/uploads/ai-covers/video-en.jpg");
         drama.setCategoryIds(List.of("urban"));
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
@@ -661,11 +673,15 @@ class DramaControllerTest {
         assertThat(plan.episodes()).hasSize(1);
         assertThat(plan.title()).isEqualTo("AI短剧名");
         assertThat(plan.aiTitle()).isEqualTo("AI短剧名");
+        assertThat(plan.aiTitleEn()).isEqualTo("AI Drama Title");
         assertThat(plan.summary()).isEqualTo("简介");
         assertThat(plan.aiSummary()).isEqualTo("AI简介...");
+        assertThat(plan.aiSummaryEn()).isEqualTo("An emotional short drama with twists.");
         assertThat(plan.coverUrl()).isEqualTo("/uploads/covers/source.jpg");
         assertThat(plan.aiCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(plan.aiVideoCoverUrl()).isEqualTo("/uploads/ai-covers/video.jpg");
+        assertThat(plan.aiCoverEnUrl()).isEqualTo("/uploads/ai-covers/ai-en.jpg");
+        assertThat(plan.aiVideoCoverEnUrl()).isEqualTo("/uploads/ai-covers/video-en.jpg");
         assertThat(plan.effectiveCoverUrl()).isEqualTo("/uploads/ai-covers/ai.jpg");
         assertThat(plan.categoryIds()).containsExactly("urban");
         assertThat(plan.episodes().getFirst().size()).isEqualTo(12345);

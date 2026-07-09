@@ -28,11 +28,15 @@ export type Drama = {
   id: string;
   title: string;
   aiTitle?: string;
+  aiTitleEn?: string;
   summary?: string;
   aiSummary?: string;
+  aiSummaryEn?: string;
   coverUrl?: string;
   aiCoverUrl?: string;
   aiVideoCoverUrl?: string;
+  aiCoverEnUrl?: string;
+  aiVideoCoverEnUrl?: string;
   aiCoverGenerating?: boolean;
   rating?: number;
   totalMinutes?: number;
@@ -203,7 +207,7 @@ export type DistributionTaskStatusCount = {
 
 export type AiTask = {
   id: string;
-  type: 'DRAMA_TITLE' | 'DRAMA_SUMMARY' | 'DRAMA_COVER' | 'DRAMA_VIDEO_COVER';
+  type: 'DRAMA_METADATA' | 'DRAMA_TITLE' | 'DRAMA_SUMMARY' | 'DRAMA_COVER' | 'DRAMA_VIDEO_COVER';
   status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
   provider?: string;
   model?: string;
@@ -224,7 +228,7 @@ export type AiTask = {
 
 export type SystemTask = {
   id: string;
-  type: 'BAIDU_PAN_SCAN';
+  type: 'BAIDU_PAN_SCAN' | 'HONGGUO_AI_MANGA_AUTO_IMPORT';
   status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
   title?: string;
   triggerSource?: string;

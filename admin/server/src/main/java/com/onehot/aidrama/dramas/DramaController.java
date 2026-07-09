@@ -153,7 +153,7 @@ public class DramaController {
         Pageable pageable
     ) {
         MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "aiTitle", "summary", "aiSummary", "sourcePath")
+                .containsAny(keyword, "title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "sourcePath")
                 .eq("status", status)
                 .in("categoryIds", categoryIds)
                 .arraySize("episodes", episodeCount)
@@ -194,7 +194,7 @@ public class DramaController {
     ) {
         Instant listedFrom = Instant.now().minus(7, ChronoUnit.DAYS);
         MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "aiTitle", "aiSummary")
+                .containsAny(keyword, "title", "aiTitle", "aiTitleEn", "aiSummary", "aiSummaryEn")
                 .eq("status", DramaStatus.READY)
                 .range("updatedAt", listedFrom, null);
         long total = mongoTemplate.count(query.toQuery(), Drama.class);
@@ -203,7 +203,7 @@ public class DramaController {
                 : pageable;
         Query pageQuery = query.toQuery().with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "summary", "aiSummary", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
+                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -219,11 +219,15 @@ public class DramaController {
                             id,
                             document.getString("title"),
                             document.getString("aiTitle"),
+                            document.getString("aiTitleEn"),
                             document.getString("summary"),
                             document.getString("aiSummary"),
+                            document.getString("aiSummaryEn"),
                             document.getString("coverUrl"),
                             document.getString("aiCoverUrl"),
                             document.getString("aiVideoCoverUrl"),
+                            document.getString("aiCoverEnUrl"),
+                            document.getString("aiVideoCoverEnUrl"),
                             document.getInteger("rating"),
                             categoryIds,
                             categoryIds.stream()
@@ -448,15 +452,19 @@ public class DramaController {
         String previousAiSummary = drama.getAiSummary();
         drama.setTitle(request.title());
         drama.setAiTitle(request.aiTitle());
+        drama.setAiTitleEn(request.aiTitleEn());
         drama.setSummary(request.summary());
         if (!Objects.equals(previousSummary, request.summary()) && Objects.equals(previousAiSummary, request.aiSummary())) {
             drama.setAiSummary(null);
         } else {
             drama.setAiSummary(request.aiSummary());
         }
+        drama.setAiSummaryEn(request.aiSummaryEn());
         drama.setCoverUrl(request.coverUrl());
         drama.setAiCoverUrl(request.aiCoverUrl());
         drama.setAiVideoCoverUrl(request.aiVideoCoverUrl());
+        drama.setAiCoverEnUrl(request.aiCoverEnUrl());
+        drama.setAiVideoCoverEnUrl(request.aiVideoCoverEnUrl());
         drama.setRating(request.rating());
         if (request.costAmountWan() != null) {
             drama.setCostAmountWan(request.costAmountWan());
@@ -522,11 +530,15 @@ public class DramaController {
                         id,
                         effectiveTitle(drama),
                         drama.getAiTitle(),
+                        drama.getAiTitleEn(),
                         drama.getSummary(),
                         drama.getAiSummary(),
+                        drama.getAiSummaryEn(),
                         drama.getCoverUrl(),
                         drama.getAiCoverUrl(),
                         drama.getAiVideoCoverUrl(),
+                        drama.getAiCoverEnUrl(),
+                        drama.getAiVideoCoverEnUrl(),
                         effectiveCoverUrl(drama),
                         drama.getRating(),
                         drama.getTotalMinutes(),
