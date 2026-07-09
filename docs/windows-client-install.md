@@ -1,28 +1,41 @@
 # Windows 客户端安装文档
 
-本文面向 AI Drama Desktop 的 Windows 使用机器。普通使用者只需要安装“运行客户端需要的软件”，不需要安装 Python、Inno Setup 或 Git。
+本文面向 AI Drama Desktop 的 Windows 使用机器。普通用户只需要安装客户端和运行依赖，不需要安装 Python、Git、Inno Setup 或项目源码。
 
-## 1. 安装客户端
+## 1. 必装软件清单
 
-优先使用安装包：
+| 软件 | 用途 | 下载地址 | 安装方式 |
+| --- | --- | --- | --- |
+| AI Drama Desktop | 客户端程序 | 由管理员提供 `.exe` 安装包 | 双击安装 |
+| Google Chrome | 登录媒体号、自动打开发布页面、上传视频 | https://www.google.com/chrome/ | 默认安装 |
+| FFmpeg | 视频转码、提高码率、添加封面帧 | https://ffmpeg.org/download.html | 下载 Windows 预编译包后解压 |
+| LibreOffice | 将合同 Word `.docx` 转为 PDF | https://www.libreoffice.org/download/ | 默认安装 |
+| Poppler | 将合同 PDF 转为 PNG 图片 | https://github.com/oschwartz10612/poppler-windows/releases | 下载 zip 后解压 |
+
+Word 或 WPS 不是客户端运行必需软件，但整理合同模板时建议安装一个能打开 `.docx` 的办公软件。
+
+## 2. 安装客户端
+
+优先使用管理员提供的安装包：
 
 ```text
-desktop/dist/AI-Drama-Desktop-Setup-0.1.6-windows-x64.exe
+AI-Drama-Desktop-Setup-0.1.6-windows-x64.exe
 ```
 
-也可以使用便携版，解压后运行：
+安装步骤：
+
+1. 关闭正在运行的旧版客户端。
+2. 双击新的 `.exe` 安装包。
+3. 按安装向导默认下一步安装。
+4. 安装完成后，从桌面或开始菜单打开 `AI Drama Desktop`。
+
+如果使用便携版，解压后运行：
 
 ```text
-desktop/dist/AI Drama Desktop/AI Drama Desktop.exe
+AI Drama Desktop\AI Drama Desktop.exe
 ```
 
-如果机器上已经安装过旧版本，先关闭旧客户端，再运行新的安装包覆盖安装。
-
-## 2. 运行客户端需要的软件
-
-### Google Chrome
-
-用途：媒体号登录、打开视频号发布页面、自动发布上传。
+## 3. 安装 Google Chrome
 
 下载地址：
 
@@ -30,15 +43,30 @@ desktop/dist/AI Drama Desktop/AI Drama Desktop.exe
 https://www.google.com/chrome/
 ```
 
-默认安装即可。若 Chrome 安装在非默认位置，可设置：
+安装步骤：
+
+1. 打开下载地址。
+2. 点击下载 Chrome。
+3. 下载完成后双击安装程序。
+4. 按默认选项安装即可。
+
+默认安装路径通常是：
+
+```text
+C:\Program Files\Google\Chrome\Application\chrome.exe
+```
+
+如果客户端提示找不到 Chrome，再设置环境变量：
 
 ```powershell
 setx AIDRAMA_CHROME_PATH "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
-### FFmpeg
+设置后需要重新打开客户端。
 
-用途：短剧视频下载后的转码、处理。
+## 4. 安装 FFmpeg
+
+用途：视频转码、提高码率、添加封面帧。Windows 上视频处理慢通常也是 FFmpeg 在重新编码整集视频。
 
 下载入口：
 
@@ -46,25 +74,63 @@ setx AIDRAMA_CHROME_PATH "C:\Program Files\Google\Chrome\Application\chrome.exe"
 https://ffmpeg.org/download.html
 ```
 
-Windows 通常下载预编译包，解压后把 `bin` 目录加入系统 `PATH`，例如：
+推荐下载方式：
+
+1. 打开 FFmpeg 下载页。
+2. 找到 Windows 图标。
+3. 进入 Windows builds，例如：
 
 ```text
-C:\Tools\ffmpeg\bin
+https://www.gyan.dev/ffmpeg/builds/
 ```
 
-验证：
+4. 下载 `ffmpeg-release-essentials.zip`。
+5. 解压到：
 
-```powershell
-ffmpeg -version
+```text
+C:\Tools\ffmpeg
 ```
 
-如果不加入 `PATH`，也可以直接指定可执行文件路径：
+最终需要确认这个文件存在：
+
+```text
+C:\Tools\ffmpeg\bin\ffmpeg.exe
+```
+
+如果解压后多了一层目录，例如：
+
+```text
+C:\Tools\ffmpeg\ffmpeg-xxxx-essentials_build\bin\ffmpeg.exe
+```
+
+可以把里面的内容移动出来，整理成：
+
+```text
+C:\Tools\ffmpeg\bin\ffmpeg.exe
+C:\Tools\ffmpeg\bin\ffprobe.exe
+```
+
+设置客户端使用的 FFmpeg 路径：
 
 ```powershell
 setx AIDRAMA_FFMPEG_PATH "C:\Tools\ffmpeg\bin\ffmpeg.exe"
 ```
 
-### LibreOffice
+验证：
+
+```powershell
+C:\Tools\ffmpeg\bin\ffmpeg.exe -version
+C:\Tools\ffmpeg\bin\ffprobe.exe -version
+```
+
+如果已经把 `C:\Tools\ffmpeg\bin` 加入系统 PATH，也可以直接验证：
+
+```powershell
+ffmpeg -version
+ffprobe -version
+```
+
+## 5. 安装 LibreOffice
 
 用途：完整发布任务中，将 Word 合同 `.docx` 转成 `.pdf`。
 
@@ -74,67 +140,83 @@ setx AIDRAMA_FFMPEG_PATH "C:\Tools\ffmpeg\bin\ffmpeg.exe"
 https://www.libreoffice.org/download/
 ```
 
-默认安装即可。常见路径：
+安装步骤：
+
+1. 打开下载地址。
+2. 选择 Windows 版本。
+3. 下载 `.msi` 安装包。
+4. 双击安装，按默认选项安装。
+
+默认安装路径通常是：
 
 ```text
 C:\Program Files\LibreOffice\program\soffice.exe
 ```
 
-验证：
-
-```powershell
-soffice --version
-```
-
-如果命令不可用，设置：
+设置客户端使用的 LibreOffice 路径：
 
 ```powershell
 setx AIDRAMA_SOFFICE_PATH "C:\Program Files\LibreOffice\program\soffice.exe"
 ```
 
-### Poppler
+验证：
 
-用途：完整发布任务中，将合同 PDF 转成 PNG 图片，主要使用 `pdftoppm`。
-
-Poppler 官方项目入口：
-
-```text
-https://poppler.freedesktop.org/
+```powershell
+& "C:\Program Files\LibreOffice\program\soffice.exe" --version
 ```
 
-Windows 机器可使用常见预编译包：
+如果已经加入系统 PATH，也可以直接验证：
+
+```powershell
+soffice --version
+```
+
+## 6. 安装 Poppler
+
+用途：完整发布任务中，将合同 PDF 转成 PNG 图片，主要使用 `pdftoppm.exe`。
+
+Windows 预编译包下载地址：
 
 ```text
 https://github.com/oschwartz10612/poppler-windows/releases
 ```
 
-下载后解压，把包含 `pdftoppm.exe` 的 `Library\bin` 目录加入系统 `PATH`，例如：
+安装步骤：
+
+1. 打开下载地址。
+2. 进入最新的 Release。
+3. 下载 zip 包，例如 `Release-xx.xx.x-0.zip`。
+4. 解压到：
 
 ```text
-C:\Tools\poppler\Library\bin
+C:\Tools\poppler
 ```
 
-验证：
+最终需要确认这个文件存在：
 
-```powershell
-pdftoppm -v
+```text
+C:\Tools\poppler\Library\bin\pdftoppm.exe
 ```
 
-如果不加入 `PATH`，也可以直接指定可执行文件路径：
+设置客户端使用的 Poppler 路径：
 
 ```powershell
 setx AIDRAMA_PDFTOPPM_PATH "C:\Tools\poppler\Library\bin\pdftoppm.exe"
 ```
 
-设置后需要重新打开客户端。
+验证：
 
-### Word 或 WPS
+```powershell
+C:\Tools\poppler\Library\bin\pdftoppm.exe -v
+```
 
-用途：编辑合同模板、添加盖章和签名。
+如果已经把 `C:\Tools\poppler\Library\bin` 加入系统 PATH，也可以直接验证：
 
-客户端运行不强依赖 Word/WPS，但合同模板整理需要能打开 `.docx` 的办公软件。
+```powershell
+pdftoppm -v
+```
 
-## 3. 环境变量说明
+## 7. 环境变量说明
 
 常用环境变量：
 
@@ -146,21 +228,23 @@ AIDRAMA_SOFFICE_PATH    LibreOffice soffice 可执行文件路径
 AIDRAMA_PDFTOPPM_PATH   Poppler pdftoppm 可执行文件路径
 ```
 
-使用 `setx` 设置环境变量后，需要重新打开客户端才会生效。
+`setx` 设置的是当前 Windows 用户的永久环境变量，不是临时变量。设置后需要关闭并重新打开客户端才会生效。
 
-## 4. 安装后检查
+## 8. 安装后检查
 
 打开新的 PowerShell，执行：
 
 ```powershell
-ffmpeg -version
-soffice --version
-pdftoppm -v
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --version
+C:\Tools\ffmpeg\bin\ffmpeg.exe -version
+C:\Tools\ffmpeg\bin\ffprobe.exe -version
+& "C:\Program Files\LibreOffice\program\soffice.exe" --version
+C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 ```
 
-三条命令都能输出版本信息，说明视频处理和合同图片转换依赖基本就绪。
+以上命令都能输出版本信息，说明客户端运行依赖基本安装完成。
 
-## 5. 合同功能说明
+## 9. 合同功能说明
 
 “合同配置 -> 测试生成 -> 生成合同”只生成 Word `.docx`，不需要 LibreOffice 和 Poppler。
 
@@ -172,13 +256,23 @@ pdftoppm -v
 如果完整发布时合同图片生成失败，优先检查：
 
 ```powershell
-soffice --version
-pdftoppm -v
+& "C:\Program Files\LibreOffice\program\soffice.exe" --version
+C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 ```
 
-## 6. 开发打包机器额外需要的软件
+## 10. 普通用户不需要安装的软件
 
-只有需要从源码构建 Windows 客户端时，才需要安装以下软件：
+以下软件只在开发、拉代码或打包 Windows 客户端时需要，普通用户拿到安装包后不需要安装：
+
+- Python 3.11+
+- Git
+- Inno Setup 6
+- 项目源码
+- `.venv`
+
+## 11. 开发打包机器额外软件
+
+只有需要从源码构建 Windows 客户端时，才需要安装以下软件。
 
 ### Python 3.11+
 
@@ -220,7 +314,7 @@ https://git-scm.com/download/win
 git --version
 ```
 
-## 7. 构建命令
+### 构建命令
 
 在开发打包机器上执行：
 
