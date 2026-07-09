@@ -36,6 +36,7 @@ public class HongguoDramaService {
     public static final Duration NEW_DRAMA_LOOKBACK = Duration.ofHours(3);
     public static final String DEFAULT_MANGA_KEYWORD = "漫剧";
     public static final String NEW_DRAMA_SCOPE = "HONGGUO_NEW_DRAMA";
+    public static final String AI_MANGA_7_DAYS_SCOPE = "HONGGUO_AI_MANGA_DAYS_7";
 
     private final HongguoApiClient apiClient;
     private final HongguoDramaCandidateRepository candidateRepository;
@@ -161,6 +162,40 @@ public class HongguoDramaService {
         );
     }
 
+    public MangaSearchResult syncAiMangaNewDramas(int page) {
+        int effectivePage = 1;
+        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.fetchScreenedAiMangaNewDramas(effectivePage));
+        int created = 0;
+        int updated = 0;
+        int skipped = 0;
+        for (HongguoApiModels.MangaSearchItem item : searchPage.items()) {
+            if (!hasText(item.providerDramaId())) {
+                skipped++;
+                continue;
+            }
+            HongguoDramaCandidate candidate = candidateRepository
+                    .findByProviderAndProviderDramaId(PROVIDER, item.providerDramaId())
+                    .orElseGet(HongguoDramaCandidate::new);
+            boolean isNew = candidate.getId() == null;
+            applyAiMangaCandidate(candidate, item, searchPage.page());
+            candidateRepository.save(candidate);
+            if (isNew) {
+                created++;
+            } else {
+                updated++;
+            }
+        }
+        return new MangaSearchResult(
+                searchPage.keyword(),
+                searchPage.page(),
+                searchPage.items().size(),
+                0,
+                skipped,
+                created,
+                updated
+        );
+    }
+
     public List<HongguoDramaCandidate> listMangaCandidates(String keyword, Integer page) {
         int effectivePage = page == null ? 1 : Math.max(page, 1);
         if (hasText(keyword)) {
@@ -178,6 +213,15 @@ public class HongguoDramaService {
         return candidateRepository.findByProviderAndCalendarDateAndCalendarPageOrderByPublishedAtDescCreatedAtDesc(
                 PROVIDER,
                 NEW_DRAMA_SCOPE,
+                effectivePage
+        );
+    }
+
+    public List<HongguoDramaCandidate> listAiMangaNewDramas(Integer page) {
+        int effectivePage = page == null ? 1 : Math.max(page, 1);
+        return candidateRepository.findByProviderAndCalendarDateAndCalendarPageOrderByPublishedAtDescCreatedAtDesc(
+                PROVIDER,
+                AI_MANGA_7_DAYS_SCOPE,
                 effectivePage
         );
     }
@@ -347,6 +391,19 @@ public class HongguoDramaService {
         candidate.setCalendarPage(page);
     }
 
+    private void applyAiMangaCandidate(
+            HongguoDramaCandidate candidate,
+            HongguoApiModels.MangaSearchItem item,
+            int page
+    ) {
+        applyCandidateFields(candidate, item, null);
+        candidate.setCalendarDate(AI_MANGA_7_DAYS_SCOPE);
+        candidate.setCalendarPage(page);
+        candidate.setSearchKeyword("AI漫剧7日上新");
+        candidate.setSearchPage(page);
+        candidate.setCategories(mergedCategories(candidate.getCategories(), "AI漫剧", "7日上新"));
+    }
+
     private void applyCandidateFields(
             HongguoDramaCandidate candidate,
             HongguoApiModels.MangaSearchItem item,
@@ -494,6 +551,24 @@ public class HongguoDramaService {
             }
         }
         return null;
+    }
+
+    private List<String> mergedCategories(List<String> categories, String... required) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        if (categories != null) {
+            categories.stream()
+                    .filter(this::hasText)
+                    .map(String::trim)
+                    .forEach(values::add);
+        }
+        if (required != null) {
+            for (String value : required) {
+                if (hasText(value)) {
+                    values.add(value.trim());
+                }
+            }
+        }
+        return List.copyOf(values);
     }
 
     private static String sourcePath(String providerDramaId) {

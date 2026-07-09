@@ -41,6 +41,41 @@ class HongguoApiClientTest {
     }
 
     @Test
+    void parseMangaSearchItemsReadsScreeningListFields() throws Exception {
+        JsonNode data = new ObjectMapper().readTree("""
+                {
+                  "session_id": "20260709100000ABC",
+                  "lists": [
+                    {
+                      "id": "screen-1",
+                      "title": "AI漫剧上新第一部",
+                      "desc": "筛选接口返回的AI漫剧",
+                      "cover": "https://example.com/screen.jpg",
+                      "episodeNum": 42,
+                      "playNum": 8888,
+                      "copyright": "红果短剧",
+                      "duration": "2小时4分钟",
+                      "sub_title_list": ["新剧", "AI漫剧"],
+                      "tag_info": {"new": "新剧"}
+                    }
+                  ]
+                }
+                """);
+        HongguoApiClient client = new HongguoApiClient(null, null, null);
+
+        var items = client.parseMangaSearchItems(data);
+
+        assertThat(items).hasSize(1);
+        HongguoApiModels.MangaSearchItem item = items.getFirst();
+        assertThat(item.providerDramaId()).isEqualTo("screen-1");
+        assertThat(item.title()).isEqualTo("AI漫剧上新第一部");
+        assertThat(item.episodeCount()).isEqualTo(42);
+        assertThat(item.playCount()).isEqualTo(8888L);
+        assertThat(item.categories()).contains("新剧", "AI漫剧");
+        assertThat(item.recTags()).contains("新剧");
+    }
+
+    @Test
     void formatChinaDateUsesShanghaiDate() {
         assertThat(HongguoApiClient.formatChinaDate(Instant.parse("2026-07-06T17:30:00Z")))
                 .isEqualTo("2026-07-07");

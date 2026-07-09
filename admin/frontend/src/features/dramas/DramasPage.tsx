@@ -20,7 +20,7 @@ type ClientSyncProgress = {
   detail: string;
 };
 
-type HongguoPanelMode = 'manga' | 'new';
+type HongguoPanelMode = 'manga' | 'new' | 'screening';
 
 const HONGGUO_SYNC_TIMEOUT_MS = 180000;
 
@@ -44,6 +44,7 @@ export function DramasPage() {
   const [hongguoKeyword, setHongguoKeyword] = useState('漫剧');
   const [hongguoPage, setHongguoPage] = useState(1);
   const [hongguoNewPage, setHongguoNewPage] = useState(1);
+  const hongguoScreeningPage = 1;
   const [hongguoCandidates, setHongguoCandidates] = useState<HongguoCandidate[]>([]);
   const [loadingHongguoCandidates, setLoadingHongguoCandidates] = useState(false);
   const [syncingHongguo, setSyncingHongguo] = useState(false);
@@ -58,6 +59,7 @@ export function DramasPage() {
     [categories],
   );
   const isHongguoNewMode = hongguoMode === 'new';
+  const isHongguoScreeningMode = hongguoMode === 'screening';
 
   async function scan() {
     await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
@@ -75,6 +77,12 @@ export function DramasPage() {
     setHongguoMode('new');
     setHongguoOpen(true);
     await loadHongguoNewCandidates(hongguoNewPage);
+  }
+
+  async function openHongguoAiMangaNewDramas() {
+    setHongguoMode('screening');
+    setHongguoOpen(true);
+    await loadHongguoScreeningCandidates(hongguoScreeningPage);
   }
 
   async function loadHongguoMangaCandidates(keyword = hongguoKeyword, page = hongguoPage) {
@@ -105,9 +113,25 @@ export function DramasPage() {
     }
   }
 
+  async function loadHongguoScreeningCandidates(page = hongguoScreeningPage) {
+    setLoadingHongguoCandidates(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(Math.max(Number(page || 1), 1)));
+      const rows = await apiGet<HongguoCandidate[]>(`/admin/hongguo/ai-manga-new-candidates?${params.toString()}`);
+      setHongguoCandidates(rows);
+    } finally {
+      setLoadingHongguoCandidates(false);
+    }
+  }
+
   async function loadCurrentHongguoCandidates() {
     if (hongguoMode === 'new') {
       await loadHongguoNewCandidates(hongguoNewPage);
+      return;
+    }
+    if (hongguoMode === 'screening') {
+      await loadHongguoScreeningCandidates(hongguoScreeningPage);
       return;
     }
     await loadHongguoMangaCandidates(hongguoKeyword, hongguoPage);
@@ -144,9 +168,28 @@ export function DramasPage() {
     }
   }
 
+  async function syncHongguoAiMangaNewDramas() {
+    setSyncingHongguo(true);
+    try {
+      const result = await apiPost<HongguoMangaSyncResponse>('/admin/hongguo/ai-manga-new-sync', {
+        page: hongguoScreeningPage,
+      }, {
+        timeout: HONGGUO_SYNC_TIMEOUT_MS,
+      });
+      appMessage.success(`AI漫剧7日上新60-120分钟已同步：获取 ${result.fetched} 部，查详情 ${result.detailed} 部，跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
+      await loadHongguoScreeningCandidates(hongguoScreeningPage);
+    } finally {
+      setSyncingHongguo(false);
+    }
+  }
+
   async function syncCurrentHongguo() {
     if (hongguoMode === 'new') {
       await syncHongguoNewDramas();
+      return;
+    }
+    if (hongguoMode === 'screening') {
+      await syncHongguoAiMangaNewDramas();
       return;
     }
     await syncHongguoMangaSearch();
@@ -385,6 +428,43 @@ export function DramasPage() {
     setViewing((current) => current?.id === updated.id ? updated : current);
   }
 
+  function hongguoPanelTitle() {
+    if (isHongguoScreeningMode) {
+      return 'AI漫剧7日上新60-120分钟';
+    }
+    return isHongguoNewMode ? '红果新剧' : '红果漫剧搜索';
+  }
+
+  function hongguoCurrentPage() {
+    if (isHongguoScreeningMode) {
+      return hongguoScreeningPage;
+    }
+    return isHongguoNewMode ? hongguoNewPage : hongguoPage;
+  }
+
+  function hongguoSyncButtonText() {
+    if (isHongguoScreeningMode) {
+      return '同步AI漫剧7日上新60-120分钟';
+    }
+    return isHongguoNewMode ? '同步新剧' : '搜索漫剧';
+  }
+
+  function hongguoEmptyMessage() {
+    if (isHongguoScreeningMode) {
+      return '当前页还没有 AI漫剧7日上新60-120分钟候选';
+    }
+    return isHongguoNewMode ? '当前页还没有候选短剧' : '当前关键词还没有候选短剧';
+  }
+
+  function hongguoInfoMessage() {
+    if (isHongguoScreeningMode) {
+      return '同步近 7 日上新、60-120 分钟的 AI 漫剧候选；只请求筛选列表，导入单部时才拉详情并保存目录。';
+    }
+    return isHongguoNewMode
+      ? '走 hg_new_play 的新剧接口；默认 date 取当前时间往前 3 小时所在日期，接口只支持按日期取新剧，不过滤真人/漫剧。每次同步会对当前页候选查详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
+      : '走 hg_new 的 mj_search 搜索漫剧；数字为页码。每次搜索会对当前页所有候选查一次详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。';
+  }
+
   function detailItem(label: string, value: ReactNode) {
     return (
       <div className="drama-detail-item">
@@ -403,6 +483,7 @@ export function DramasPage() {
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
           <Button icon={<SearchOutlined />} onClick={openHongguoMangaSearch}>红果漫剧搜索</Button>
           <Button icon={<CalendarOutlined />} onClick={openHongguoNewDramas}>红果新剧</Button>
+          <Button icon={<RocketOutlined />} onClick={openHongguoAiMangaNewDramas}>AI漫剧7日上新60-120分钟</Button>
           <Button
             icon={<ClockCircleOutlined />}
             disabled={!hasSelectedDramas}
@@ -746,7 +827,7 @@ export function DramasPage() {
         </Space>
       </Modal>
       <Modal
-        title={isHongguoNewMode ? '红果新剧' : '红果漫剧搜索'}
+        title={hongguoPanelTitle()}
         open={hongguoOpen}
         onCancel={() => setHongguoOpen(false)}
         footer={[
@@ -758,7 +839,7 @@ export function DramasPage() {
       >
         <Space direction="vertical" size={16} className="hongguo-calendar">
           <Space wrap>
-            {isHongguoNewMode ? null : (
+            {isHongguoNewMode || isHongguoScreeningMode ? null : (
               <Input
                 value={hongguoKeyword}
                 onChange={(event) => setHongguoKeyword(event.target.value)}
@@ -767,34 +848,34 @@ export function DramasPage() {
                 placeholder="搜索关键词"
               />
             )}
-            <InputNumber
-              min={1}
-              precision={0}
-              value={isHongguoNewMode ? hongguoNewPage : hongguoPage}
-              onChange={(value) => {
-                const page = Number(value || 1);
-                if (isHongguoNewMode) {
-                  setHongguoNewPage(page);
-                } else {
-                  setHongguoPage(page);
-                }
-              }}
-            />
+            {isHongguoScreeningMode ? null : (
+              <InputNumber
+                min={1}
+                precision={0}
+                value={hongguoCurrentPage()}
+                onChange={(value) => {
+                  const page = Number(value || 1);
+                  if (isHongguoNewMode) {
+                    setHongguoNewPage(page);
+                  } else {
+                    setHongguoPage(page);
+                  }
+                }}
+              />
+            )}
             <Button
               type="primary"
-              icon={isHongguoNewMode ? <CalendarOutlined /> : <SearchOutlined />}
+              icon={isHongguoScreeningMode ? <RocketOutlined /> : isHongguoNewMode ? <CalendarOutlined /> : <SearchOutlined />}
               loading={syncingHongguo}
               onClick={syncCurrentHongguo}
             >
-              {isHongguoNewMode ? '同步新剧' : '搜索漫剧'}
+              {hongguoSyncButtonText()}
             </Button>
           </Space>
           <Alert
             type="info"
             showIcon
-            message={isHongguoNewMode
-              ? '走 hg_new_play 的新剧接口；默认 date 取当前时间往前 3 小时所在日期，接口只支持按日期取新剧，不过滤真人/漫剧。每次同步会对当前页候选查详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
-              : '走 hg_new 的 mj_search 搜索漫剧；数字为页码。每次搜索会对当前页所有候选查一次详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'}
+            message={hongguoInfoMessage()}
           />
           <Spin spinning={loadingHongguoCandidates}>
             {hongguoCandidates.length ? (
@@ -839,7 +920,7 @@ export function DramasPage() {
                 ))}
               </div>
             ) : (
-              <Alert type="warning" showIcon message={isHongguoNewMode ? '当前页还没有候选短剧' : '当前关键词还没有候选短剧'} />
+              <Alert type="warning" showIcon message={hongguoEmptyMessage()} />
             )}
           </Spin>
         </Space>

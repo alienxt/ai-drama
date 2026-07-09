@@ -78,6 +78,17 @@ public class HongguoApiClient {
         return new HongguoApiModels.MangaSearchPage("红果新剧", effectivePage, parseMangaSearchItems(data));
     }
 
+    public HongguoApiModels.MangaSearchPage fetchScreenedAiMangaNewDramas(int page) {
+        int effectivePage = Math.max(page, 1);
+        JsonNode data = get("/hg_screening", Map.of(
+                "type", "list",
+                "genre", "ai_series",
+                "online_time", "days_7",
+                "duration", "duration_60_120"
+        ));
+        return new HongguoApiModels.MangaSearchPage("AI漫剧7日上新60-120分钟", effectivePage, parseMangaSearchItems(data));
+    }
+
     static String formatChinaDate(Instant instant) {
         return DATE_FORMATTER.format(LocalDateTime.ofInstant(instant, CHINA_ZONE));
     }
@@ -98,11 +109,11 @@ public class HongguoApiClient {
                     firstText(item, "score", "rate", "rating"),
                     firstText(item, "category", "type", "genre"),
                     firstText(item, "copyright", "source"),
-                    firstInteger(item, "episode_num", "episode_count", "total_episode", "total_episodes", "chapter_num"),
-                    firstLong(item, "play_num", "followed_num", "follow_count", "hot", "heat"),
+                    firstInteger(item, "episodeNum", "episode_num", "episode_count", "total_episode", "total_episodes", "chapter_num"),
+                    firstLong(item, "playNum", "play_num", "followed_num", "follow_count", "hot", "heat"),
                     parseInstant(firstText(item, "create_time", "publish_time", "online_time", "release_time", "update_time")),
-                    mergedTexts(textList(item.path("categories")), recTagTexts(item.path("sub_title_list"))),
-                    recTagTexts(item.path("rec_tags"))
+                    mergedTexts(textList(item.path("categories")), recTagTexts(item.path("sub_title_list")), tagInfoTexts(item.path("tag_info"))),
+                    mergedTexts(recTagTexts(item.path("rec_tags")), tagInfoTexts(item.path("tag_info")))
             ));
         }
         return items;
@@ -552,13 +563,41 @@ public class HongguoApiClient {
         return values;
     }
 
-    private List<String> mergedTexts(List<String> first, List<String> second) {
-        List<String> values = new ArrayList<>();
-        if (first != null) {
-            values.addAll(first);
+    private List<String> tagInfoTexts(JsonNode tagInfo) {
+        if (tagInfo == null || tagInfo.isMissingNode() || tagInfo.isNull()) {
+            return List.of();
         }
-        if (second != null) {
-            values.addAll(second);
+        if (tagInfo.isTextual()) {
+            String value = tagInfo.asText(null);
+            return value == null || value.isBlank() ? List.of() : List.of(value.trim());
+        }
+        if (tagInfo.isArray()) {
+            return recTagTexts(tagInfo);
+        }
+        if (!tagInfo.isObject()) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        tagInfo.fields().forEachRemaining(entry -> {
+            JsonNode value = entry.getValue();
+            String text = value.isObject() ? firstText(value, "content", "name", "title", "label") : value.asText(null);
+            if (text != null && !text.isBlank()) {
+                values.add(text.trim());
+            }
+        });
+        return values;
+    }
+
+    @SafeVarargs
+    private final List<String> mergedTexts(List<String>... groups) {
+        List<String> values = new ArrayList<>();
+        if (groups == null) {
+            return values;
+        }
+        for (List<String> group : groups) {
+            if (group != null) {
+                values.addAll(group);
+            }
         }
         return values;
     }

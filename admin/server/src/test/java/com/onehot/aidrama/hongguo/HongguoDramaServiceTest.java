@@ -335,6 +335,50 @@ class HongguoDramaServiceTest {
     }
 
     @Test
+    void syncAiMangaNewDramasUsesScreeningListWithoutDetailRequests() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
+        HongguoApiModels.MangaSearchItem first = new HongguoApiModels.MangaSearchItem(
+                "screen-1",
+                "AI漫剧近7日上新",
+                "筛选接口候选",
+                "https://example.com/screen-1.jpg",
+                "2小时4分钟",
+                null,
+                "AI短剧",
+                "红果短剧",
+                42,
+                8888L,
+                null,
+                List.of("新剧"),
+                List.of("AI漫剧")
+        );
+        when(apiClient.fetchScreenedAiMangaNewDramas(1))
+                .thenReturn(new HongguoApiModels.MangaSearchPage("AI漫剧7日上新", 1, List.of(first)));
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "screen-1"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.MangaSearchResult result = service.syncAiMangaNewDramas(1);
+
+        assertThat(result.keyword()).isEqualTo("AI漫剧7日上新");
+        assertThat(result.fetched()).isEqualTo(1);
+        assertThat(result.detailed()).isZero();
+        assertThat(result.created()).isEqualTo(1);
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository).save(captor.capture());
+        HongguoDramaCandidate saved = captor.getValue();
+        assertThat(saved.getProviderDramaId()).isEqualTo("screen-1");
+        assertThat(saved.getCalendarDate()).isEqualTo(HongguoDramaService.AI_MANGA_7_DAYS_SCOPE);
+        assertThat(saved.getCalendarPage()).isEqualTo(1);
+        assertThat(saved.getSearchKeyword()).isEqualTo("AI漫剧7日上新");
+        assertThat(saved.getCategories()).contains("新剧", "AI漫剧", "7日上新");
+        verify(apiClient, never()).fetchDetail(any(), any());
+    }
+
+    @Test
     void importCandidateStoresDirectoryWithoutFetchingEpisodeDownloadUrls() {
         HongguoApiClient apiClient = mock(HongguoApiClient.class);
         HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
