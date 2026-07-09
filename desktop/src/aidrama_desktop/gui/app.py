@@ -2753,6 +2753,13 @@ class DesktopWindow(QMainWindow):
         )
 
     def generate_contract(self) -> list[Path] | None:
+        try:
+            return self._generate_contract()
+        except Exception as exception:  # noqa: BLE001
+            self.show_contract_generation_error(exception)
+            return None
+
+    def _generate_contract(self) -> list[Path] | None:
         self.save_contract_party_config()
         missing_labels = self.missing_contract_config_labels(self.current_contract_platform())
         if missing_labels:
@@ -2767,7 +2774,7 @@ class DesktopWindow(QMainWindow):
                 QMessageBox.warning(self, "合同生成", "请先配置当前媒体号所需的全部 Word 合同模板。")
                 return None
             data = self.contract_render_input(contract_type, agreement_number)
-            output = build_contract_output_path(self.settings.contracts_dir, data)
+            output = self.contract_test_output_path(data, agreement_number)
             generated_paths.append(
                 render_contract_docx(template, output, data, normalize_for_rendering=contract_type == "cost")
             )
@@ -2779,6 +2786,21 @@ class DesktopWindow(QMainWindow):
         self.append_log("合同已生成：" + "，".join(str(path) for path in generated_paths))
         QMessageBox.information(self, "合同生成", "合同已生成：\n" + "\n".join(str(path) for path in generated_paths))
         return generated_paths
+
+    def contract_test_output_path(self, data: ContractRenderInput, agreement_number: str) -> Path:
+        output = build_contract_output_path(self.settings.contracts_dir, data)
+        if not sys.platform.startswith("win") or not output.exists():
+            return output
+        suffix = safe_contract_filename(agreement_number)
+        return output.with_name(f"{output.stem}-{suffix}{output.suffix}")
+
+    def show_contract_generation_error(self, exception: Exception) -> None:
+        details = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+        message = self.clean_error_message(str(exception) or details)
+        if hasattr(self, "contract_preview"):
+            self.contract_preview.setPlainText(f"合同生成失败：\n{message}")
+        self.append_log(f"合同生成失败：\n{details}")
+        QMessageBox.critical(self, "合同生成失败", message)
 
     def generate_and_open_contract(self) -> None:
         generated = self.generate_contract()

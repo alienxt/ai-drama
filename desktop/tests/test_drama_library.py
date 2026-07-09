@@ -9,8 +9,9 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget
 
-from aidrama_desktop.contracts import contract_party_key, contract_template_key
+from aidrama_desktop.contracts import ContractRenderInput, contract_party_key, contract_template_key
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
+from aidrama_desktop.gui import app as gui_app
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 from aidrama_desktop.platforms.wechat_video import remote_debugging_port_for_profile
 
@@ -35,6 +36,70 @@ def test_login_page_hides_fixed_service_address(tmp_path):
 
     assert "服务地址" not in label_texts
     assert API_BASE_URL not in input_texts
+
+
+def test_contract_test_output_path_uses_unique_windows_name_when_file_exists(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(contracts_dir=tmp_path)
+    data = ContractRenderInput(
+        contract_type="成本合同",
+        drama_title="关于我转生成蜘蛛这件事",
+        episode_count="52",
+        episode_minutes="59",
+        price="2",
+        buyer="甲方",
+        seller="乙方",
+        sign_date="2026-07-07",
+    )
+
+    original = DesktopWindow.contract_test_output_path(window, data, "HZ-2026-07-123456")
+    original.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(gui_app.sys, "platform", "win32")
+
+    output = DesktopWindow.contract_test_output_path(window, data, "HZ-2026-07-123456")
+
+    assert output != original
+    assert output.name.endswith("-HZ-2026-07-123456.docx")
+
+
+def test_contract_test_output_path_keeps_mac_name_when_file_exists(tmp_path, monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(contracts_dir=tmp_path)
+    data = ContractRenderInput(
+        contract_type="成本合同",
+        drama_title="关于我转生成蜘蛛这件事",
+        episode_count="52",
+        episode_minutes="59",
+        price="2",
+        buyer="甲方",
+        seller="乙方",
+        sign_date="2026-07-07",
+    )
+
+    original = DesktopWindow.contract_test_output_path(window, data, "HZ-2026-07-123456")
+    original.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(gui_app.sys, "platform", "darwin")
+
+    assert DesktopWindow.contract_test_output_path(window, data, "HZ-2026-07-123456") == original
+
+
+def test_generate_contract_surfaces_slot_exceptions(monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    preview = SimpleNamespace(text="", setPlainText=lambda value: setattr(preview, "text", value))
+    window.contract_preview = preview
+    window.append_log = logs.append
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: None)
+
+    def fail() -> list:
+        raise PermissionError("合同文件正在被 Word 占用")
+
+    window._generate_contract = fail
+
+    assert DesktopWindow.generate_contract(window) is None
+    assert "合同生成失败" in preview.text
+    assert "合同文件正在被 Word 占用" in preview.text
+    assert any("合同生成失败" in message for message in logs)
 
 
 def test_desktop_drama_list_path_supports_title_keyword_search():

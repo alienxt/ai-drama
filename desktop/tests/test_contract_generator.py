@@ -4,12 +4,14 @@ from zipfile import ZipFile
 
 from docx import Document
 
+from aidrama_desktop.contracts import generator as contract_generator
 from aidrama_desktop.contracts.generator import (
     ContractConfigStore,
     ContractRenderInput,
     all_required_contract_templates_configured,
     build_contract_template_download_path,
     contract_party_key,
+    convert_pdf_to_pngs,
     convert_contract_docx_images,
     copy_contract_template,
     contract_template_key,
@@ -195,6 +197,30 @@ def test_render_contract_material_bundle_reuses_cached_images(tmp_path):
     assert [material.image_paths for material in second.materials] == [
         material.image_paths for material in first.materials
     ]
+
+
+def test_convert_pdf_to_pngs_uses_pdftoppm_env_path(tmp_path, monkeypatch):
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"%PDF")
+    image_dir = tmp_path / "images"
+    pdftoppm = tmp_path / "pdftoppm.exe"
+    pdftoppm.write_text("", encoding="utf-8")
+    monkeypatch.setenv("AIDRAMA_PDFTOPPM_PATH", str(pdftoppm))
+    monkeypatch.setattr(contract_generator.shutil, "which", lambda _name: None)
+    commands = []
+
+    def fake_run_command(command: list[str], _failure_message: str) -> None:
+        commands.append(command)
+        prefix = Path(command[-1])
+        prefix.parent.mkdir(parents=True, exist_ok=True)
+        (prefix.parent / f"{prefix.name}-1.png").write_bytes(b"png")
+
+    monkeypatch.setattr(contract_generator, "run_command", fake_run_command)
+
+    images = convert_pdf_to_pngs(pdf, image_dir, "contract")
+
+    assert commands[0][0] == str(pdftoppm)
+    assert images == [image_dir / "contract.png"]
 
 
 def test_render_contract_material_bundle_invalidates_cache_when_data_changes(tmp_path):

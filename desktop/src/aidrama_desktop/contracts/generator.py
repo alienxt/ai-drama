@@ -801,7 +801,15 @@ def convert_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path:
 
 
 def convert_pdf_to_pngs(pdf_path: Path, image_dir: Path, image_stem: str) -> list[Path]:
-    pdftoppm = find_command("pdftoppm", ["/opt/homebrew/bin/pdftoppm", "/usr/local/bin/pdftoppm"])
+    pdftoppm = find_command(
+        "pdftoppm",
+        [
+            os.environ.get("AIDRAMA_PDFTOPPM_PATH", ""),
+            "/opt/homebrew/bin/pdftoppm",
+            "/usr/local/bin/pdftoppm",
+            "C:/Tools/poppler/Library/bin/pdftoppm.exe",
+        ],
+    )
     if pdftoppm:
         prefix = image_dir / safe_contract_filename(image_stem)
         for stale_image in image_dir.glob(f"{prefix.name}*.png"):
