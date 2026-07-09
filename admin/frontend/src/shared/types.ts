@@ -108,6 +108,13 @@ export type HongguoImportCandidateResponse = {
   drama: Drama;
 };
 
+export type HongguoCoverBackfillResponse = {
+  requested: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+};
+
 export type BaiduScanStatus = {
   lastScanAt?: string;
 };

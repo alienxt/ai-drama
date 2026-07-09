@@ -293,7 +293,7 @@ def format_contract_date_short(value: str = "") -> str:
 
 
 def format_contract_date_no_wrap(value: str = "") -> str:
-    return format_contract_date(value).replace(" ", "\u00a0")
+    return format_contract_date_compact(value)
 
 
 def format_contract_date(value: str = "") -> str:

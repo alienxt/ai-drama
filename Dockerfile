@@ -8,7 +8,7 @@ RUN mvn -f admin/server/pom.xml -DskipTests package
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg libheif-examples \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/uploads
 COPY --from=backend /workspace/admin/server/target/ai-drama-server-*.jar /app/ai-drama-server.jar

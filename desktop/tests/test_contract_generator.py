@@ -66,8 +66,8 @@ def test_render_contract_docx_replaces_placeholders_in_paragraphs_and_tables(tmp
     rendered = Document(result)
     assert rendered.paragraphs[0].text == "合同剧名：神医归来"
     assert rendered.paragraphs[1].text == "协议编号：HZ-2026-06-123456"
-    assert rendered.paragraphs[2].text == "签署日期：2026\u00a0年\u00a006\u00a0月\u00a015\u00a0日"
-    assert rendered.paragraphs[3].text == "授权开始日期：2026\u00a0年\u00a005\u00a0月\u00a010\u00a0日"
+    assert rendered.paragraphs[2].text == "签署日期：2026年06月15日"
+    assert rendered.paragraphs[3].text == "授权开始日期：2026年05月10日"
     assert rendered.paragraphs[4].text == "半价：2500"
     assert rendered.tables[0].cell(0, 1).text == "80 集，共 80 分钟"
 
@@ -107,8 +107,8 @@ def test_format_contract_date_short_fits_repeated_footer_date():
     assert format_contract_date_short("2026-06-05") == "2026.06.05"
 
 
-def test_format_contract_date_no_wrap_keeps_visual_spacing_without_line_breaks():
-    assert format_contract_date_no_wrap("2026-06-05") == "2026\u00a0年\u00a006\u00a0月\u00a005\u00a0日"
+def test_format_contract_date_no_wrap_uses_compact_chinese_date():
+    assert format_contract_date_no_wrap("2026-06-05") == "2026年06月05日"
 
 
 def test_replace_double_date_footer_text_keeps_chinese_date_format():
@@ -142,9 +142,9 @@ def test_double_date_paragraph_keeps_chinese_date_format_with_compact_spacing(tm
     )
 
     assert Document(result).paragraphs[0].text == (
-        "日期：2026\u00a0年\u00a006\u00a0月\u00a023\u00a0日"
+        "日期：2026年06月23日"
         "                    "
-        "日期：2026\u00a0年\u00a006\u00a0月\u00a023\u00a0日"
+        "日期：2026年06月23日"
     )
 
 

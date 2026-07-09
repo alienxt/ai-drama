@@ -19,13 +19,16 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
 
 @Component
 public class LocalHongguoCoverStorage implements HongguoCoverStorage {
     private static final Logger LOGGER = LoggerFactory.getLogger(LocalHongguoCoverStorage.class);
     private static final int MAX_COVER_BYTES = 10 * 1024 * 1024;
+    private static final int MAX_CONVERTER_OUTPUT_CHARS = 500;
 
     private final Path uploadDir;
     private final HttpClient httpClient;
@@ -100,7 +103,8 @@ public class LocalHongguoCoverStorage implements HongguoCoverStorage {
     private byte[] download(URI uri) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(30))
-                .header("User-Agent", "ai-drama-server/1.0")
+                .header("User-Agent", "Mozilla/5.0 (compatible; ai-drama-server/1.0)")
+                .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
                 .GET()
                 .build();
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -122,7 +126,8 @@ public class LocalHongguoCoverStorage implements HongguoCoverStorage {
         Path input = output.resolveSibling(output.getFileName() + ".heif");
         Files.write(input, bytes);
         try {
-            Process process = new ProcessBuilder(
+            List<String> errors = new ArrayList<>();
+            if (runConverter(List.of(
                     "ffmpeg",
                     "-y",
                     "-hide_banner",
@@ -135,14 +140,55 @@ public class LocalHongguoCoverStorage implements HongguoCoverStorage {
                     "-q:v",
                     "2",
                     output.toString()
-            ).start();
-            int exitCode = process.waitFor();
-            if (exitCode != 0 || !hasExistingFile(output)) {
-                throw new IOException("ffmpeg HEIF conversion failed with exit code " + exitCode);
+            ), output, errors)) {
+                return;
             }
+            if (runConverter(List.of(
+                    "heif-convert",
+                    "-q",
+                    "95",
+                    input.toString(),
+                    output.toString()
+            ), output, errors)) {
+                return;
+            }
+            throw new IOException("HEIF conversion failed: " + String.join("; ", errors));
         } finally {
             Files.deleteIfExists(input);
         }
+    }
+
+    private boolean runConverter(List<String> command, Path output, List<String> errors) throws InterruptedException {
+        try {
+            Files.deleteIfExists(output);
+            Process process = new ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start();
+            byte[] processOutput = process.getInputStream().readAllBytes();
+            int exitCode = process.waitFor();
+            if (exitCode == 0 && hasExistingFile(output)) {
+                return true;
+            }
+            errors.add(command.getFirst() + " exit " + exitCode + ": " + processOutput(processOutput));
+            return false;
+        } catch (IOException exception) {
+            errors.add(command.getFirst() + ": " + exception.getMessage());
+            return false;
+        }
+    }
+
+    private String processOutput(byte[] output) {
+        if (output == null || output.length == 0) {
+            return "no output";
+        }
+        String text = new String(output, StandardCharsets.UTF_8).replaceAll("\\s+", " ").trim();
+        if (text.isBlank()) {
+            return "no output";
+        }
+        if (text.length() > MAX_CONVERTER_OUTPUT_CHARS) {
+            return text.substring(0, MAX_CONVERTER_OUTPUT_CHARS);
+        }
+        return text;
     }
 
     private boolean isHeif(byte[] bytes) {

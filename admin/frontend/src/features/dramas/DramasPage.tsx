@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoImportCandidateResponse, HongguoMangaSyncResponse } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -36,6 +36,7 @@ export function DramasPage() {
   const [freshing, setFreshing] = useState(false);
   const [backfillingMinutes, setBackfillingMinutes] = useState(false);
   const [backfillingAiSummaries, setBackfillingAiSummaries] = useState(false);
+  const [backfillingHongguoCovers, setBackfillingHongguoCovers] = useState(false);
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
   const [clientSyncItems, setClientSyncItems] = useState<ClientSyncProgress[]>([]);
@@ -236,6 +237,17 @@ export function DramasPage() {
       setVersion((value) => value + 1);
     } finally {
       setBackfillingAiSummaries(false);
+    }
+  }
+
+  async function backfillHongguoCovers() {
+    setBackfillingHongguoCovers(true);
+    try {
+      const result = await apiPost<HongguoCoverBackfillResponse>('/admin/hongguo/backfill-covers', {});
+      appMessage.success(`红果封面已回填：更新 ${result.updated} / ${result.requested} 部，失败 ${result.failed} 部`);
+      setVersion((value) => value + 1);
+    } finally {
+      setBackfillingHongguoCovers(false);
     }
   }
 
@@ -511,6 +523,13 @@ export function DramasPage() {
             onClick={openSyncAssetsMode}
           >
             同步封面和简介{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
+          </Button>
+          <Button
+            icon={<PictureOutlined />}
+            loading={backfillingHongguoCovers}
+            onClick={backfillHongguoCovers}
+          >
+            补红果封面
           </Button>
           <Button
             icon={<RocketOutlined />}
