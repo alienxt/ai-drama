@@ -92,6 +92,7 @@ class TaskRunner:
     contract_buyer: str = "甲方公司"
     contract_seller: str = "乙方公司"
     contract_image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None
+    soffice_path: str | None = None
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -160,20 +161,6 @@ class TaskRunner:
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
-                if is_playlet_ready_for_review_message(failure_reason):
-                    result_task = self.api.put(
-                        f"/desktop/tasks/{task_id}/result",
-                        {
-                            "success": True,
-                            "platformPublishId": f"wechat-video-playlet-draft:{task_id}",
-                            "failureReason": None,
-                        },
-                    )
-                    if self._is_cancelled_result(result_task):
-                        self._notify("任务已停止，可重新分发", task_id, task)
-                        return "cancelled"
-                    self._notify("视频已全部上传，等待确认提审", task_id, task)
-                    return "ready-for-review"
                 result_task = self.api.put(
                     f"/desktop/tasks/{task_id}/result",
                     {"success": False, "platformPublishId": None, "failureReason": failure_reason},
@@ -274,6 +261,7 @@ class TaskRunner:
             output_dir,
             data_factory,
             image_converter=self.contract_image_converter,
+            soffice_path=self.soffice_path,
         )
         self._notify(f"合同材料已生成：{drama_title}", task_id)
         return bundle.metadata()
@@ -395,7 +383,8 @@ class TaskRunner:
         original_episode_count: int,
     ) -> list[EpisodeMediaFile]:
         needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
-        if not callable(needs_transcode):
+        single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
+        if not callable(single_transcode):
             return source_items
         cover_file = self._cover_file_for_sources([item.file for item in source_items])
         upload_items: list[EpisodeMediaFile] = []
@@ -405,7 +394,7 @@ class TaskRunner:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             source_file = item.file
             episode_no = episode_number(item.episode, item.episode_index)
-            source_needs_transcode = bool(needs_transcode(source_file))
+            source_needs_transcode = bool(needs_transcode(source_file)) if callable(needs_transcode) else False
             should_add_cover_frame = cover_file is not None
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
@@ -413,13 +402,19 @@ class TaskRunner:
             processed_count += 1
             target = self.output_dir() / source_file.parent.name / source_file.name
             signature = self._processed_media_signature(source_file, cover_file)
-            if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not needs_transcode(target):
+            target_needs_transcode = bool(needs_transcode(target)) if callable(needs_transcode) else False
+            if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not target_needs_transcode:
                 upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target))
                 continue
-            action = "提升码率并添加封面帧" if should_add_cover_frame else "提升码率"
+            action_parts = []
+            if source_needs_transcode:
+                action_parts.append("提升码率")
+            if should_add_cover_frame:
+                action_parts.append("添加封面帧")
+            action = "、".join(action_parts) or "统一转码"
             self._notify(f"转码：{drama_title} 第 {episode_no} 集（{action}）", task_id)
             try:
-                processed_file = self.processor.transcode_for_wechat_video(source_file, target, cover_path=cover_file)
+                processed_file = single_transcode(source_file, target, cover_path=cover_file)
                 self._write_processed_media_signature(processed_file, signature)
                 upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file))
             except Exception as exception:  # noqa: BLE001
@@ -552,10 +547,11 @@ class TaskRunner:
         original_episodes = download_plan.get("episodes") or []
         effective_count = len(media_items)
         original_count = len(original_episodes)
+        downloaded_indexes = {item.episode_index for item in media_items}
         skipped_episode_numbers = [
             episode_number(episode, index)
             for index, episode in enumerate(original_episodes, start=1)
-            if index not in {item.episode_index for item in media_items}
+            if index not in downloaded_indexes
         ]
         effective_plan = {
             **download_plan,
@@ -963,10 +959,6 @@ def sleep_before_retry(
         raise_if_task_interrupted(should_stop, should_pause, should_skip)
         remaining = max(deadline - time.monotonic(), 0)
         time.sleep(min(0.2, remaining))
-
-
-def is_playlet_ready_for_review_message(message: str) -> bool:
-    return "第二步视频已上传完成" in message or "剧集文件选取" in message and "停留" in message
 
 
 def download_cover(

@@ -8,7 +8,7 @@ from pathlib import Path
 WECHAT_VIDEO_MIN_BITRATE_BPS = 4_000_000
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
-WECHAT_VIDEO_COVER_FRAME_VERSION = "wechat-video-cover-frame-v5"
+WECHAT_VIDEO_COVER_FRAME_VERSION = "wechat-video-cover-frame-v6"
 
 
 class FfmpegError(RuntimeError):
@@ -22,6 +22,9 @@ class FfmpegProcessor:
     def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         command = self._transcode_with_cover_command(source, target, cover_path) if cover_path else self._transcode_command(source, target)
+        return self._run_ffmpeg(command, target)
+
+    def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
         except FileNotFoundError as exception:

@@ -66,6 +66,9 @@ class FakeProcessor:
         target.write_text(source.name)
         return target
 
+    def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
+        return False
+
     def video_dimensions(self, source: Path):
         return self.dimensions.get(source.name)
 
@@ -109,13 +112,6 @@ class DraftPausedPublisher:
         raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
 
 
-class PlayletReadyPublisher:
-    def publish(self, media_files, title, summary=None, metadata=None):
-        from aidrama_desktop.platforms.base import PlatformPublishPaused
-
-        raise PlatformPublishPaused("剧目提审第二步视频已上传完成，已停留在第二步剧集文件选取。")
-
-
 def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeypatch):
     api = FakeApi()
     processor = FakeProcessor()
@@ -152,8 +148,10 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("POST", "/desktop/tasks/task-1/prepare", None) in api.calls
     assert ("GET", "/desktop/dramas/drama-1/download-plan", None) in api.calls
     assert publisher.title == "神医归来"
-    assert len(publisher.files) == 2
-    assert all(str(file).startswith(str(tmp_path / "dramas" / "downloads" / "drama-1")) for file in publisher.files)
+    assert publisher.files == [
+        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+        tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+    ]
     assert processor.calls == []
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
@@ -233,6 +231,7 @@ def test_publish_once_notifies_claimed_media_account(tmp_path, monkeypatch):
 def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = FakePublisher()
+    processor = FakeProcessor()
     cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
@@ -248,7 +247,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
     runner = TaskRunner(
         api=api,
-        processor=FakeProcessor(),
+        processor=processor,
         publisher=publisher,
         work_dir=tmp_path,
         device_id="device-1",
@@ -269,9 +268,18 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
     assert publisher.metadata["freeEpisodeCount"] == 2
     assert publisher.metadata["episodeCount"] == 2
+    assert publisher.metadata["originalEpisodeCount"] == 2
     assert publisher.metadata["episodes"] == [
-        {"episodeNo": 1, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"},
-        {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
+        {
+            "episodeNo": 1,
+            "title": None,
+            "file": tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4",
+        },
+        {
+            "episodeNo": 2,
+            "title": None,
+            "file": tmp_path / "dramas" / "processed" / "drama-1" / "002.mp4",
+        },
     ]
 
 
@@ -301,11 +309,19 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
     assert runner.publish_once() == "succeeded"
 
     processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    untouched_file = tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
     assert ("PUT", "/desktop/tasks/task-1/progress", {"status": "PROCESSING", "progress": 70}) in api.calls
-    assert publisher.files == [processed_file, tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
-    assert processor.calls == [(tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_file, None)]
+    assert publisher.files == [processed_file, untouched_file]
+    assert processor.calls == [
+        (
+            tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+            processed_file,
+            None,
+        )
+    ]
     assert publisher.metadata["episodes"][0]["file"] == processed_file
-    assert publisher.metadata["episodes"][1]["file"] == tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
+    assert publisher.metadata["episodes"][1]["file"] == untouched_file
+    assert publisher.metadata["episodeCount"] == 2
 
 
 def test_publish_once_cleans_failed_transcode_cache_for_retry(tmp_path, monkeypatch):
@@ -368,7 +384,11 @@ def test_publish_once_skips_failed_transcode_episode_and_uploads_remaining(tmp_p
     assert publisher.metadata["skippedEpisodeCount"] == 1
     assert publisher.metadata["skippedEpisodeNumbers"] == [1]
     assert publisher.metadata["episodes"] == [
-        {"episodeNo": 2, "title": None, "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"},
+        {
+            "episodeNo": 2,
+            "title": None,
+            "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+        },
     ]
 
 
@@ -404,11 +424,22 @@ def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch
     processed_2 = tmp_path / "dramas" / "processed" / "drama-1" / "002.mp4"
     assert publisher.files == [processed_1, processed_2]
     assert processor.calls == [
-        (tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4", processed_1, cover_file),
-        (tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4", processed_2, cover_file),
+        (
+            tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+            processed_1,
+            cover_file,
+        ),
+        (
+            tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+            processed_2,
+            cover_file,
+        ),
     ]
-    marker = processed_2.with_name("002.mp4.aidrama.json")
+    marker = processed_1.with_name("001.mp4.aidrama.json")
     assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(cover_file)
+    assert json.loads(marker.read_text(encoding="utf-8"))["source"] == str(
+        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
+    )
 
 
 def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypatch):
@@ -529,10 +560,8 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
     assert purchase_number.startswith("HZ-2026-07-")
     assert cost_number == purchase_number
     assert rights_number == purchase_number
-    assert purchase_paragraphs[1].text == "签署日期：2026\u00a0年\u00a007\u00a0月\u00a006\u00a0日"
-    assert "2026\u00a0年\u00a005\u00a0月\u00a0" in purchase_paragraphs[2].text or (
-        "2026\u00a0年\u00a006\u00a0月\u00a0" in purchase_paragraphs[2].text
-    )
+    assert purchase_paragraphs[1].text == "签署日期：2026年07月06日"
+    assert "2026年05月" in purchase_paragraphs[2].text or "2026年06月" in purchase_paragraphs[2].text
 
 
 def test_publish_once_generates_contracts_with_successful_episode_count(tmp_path, monkeypatch):
@@ -737,9 +766,8 @@ def test_publish_once_fails_upload_when_playlet_first_step_is_ready(tmp_path, mo
     assert ("POST", "/desktop/tasks/task-1/pause", {"deviceId": "device-1"}) not in api.calls
 
 
-def test_publish_once_marks_playlet_ready_for_review_when_second_step_upload_is_done(tmp_path, monkeypatch):
+def test_publish_once_fails_when_playlet_stops_before_final_submit(tmp_path, monkeypatch):
     api = FakeApi()
-    progress_events = []
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         target = target_dir / "001.mp4"
@@ -747,27 +775,31 @@ def test_publish_once_marks_playlet_ready_for_review_when_second_step_upload_is_
         target.write_text("video")
         return [target]
 
+    class StoppedBeforeSubmitPublisher:
+        def publish(self, media_files, title, summary=None, metadata=None):
+            from aidrama_desktop.platforms.base import PlatformPublishPaused
+
+            raise PlatformPublishPaused("剧目提审信息确认页已打开，已停留在最后一步，等待手动提交审核。")
+
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
     runner = TaskRunner(
         api=api,
         processor=FakeProcessor(),
-        publisher=PlayletReadyPublisher(),
+        publisher=StoppedBeforeSubmitPublisher(),
         work_dir=tmp_path,
         device_id="device-1",
-        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
     )
 
-    assert runner.publish_once() == "ready-for-review"
+    assert runner.publish_once() == "failed"
     assert (
         "PUT",
         "/desktop/tasks/task-1/result",
         {
-            "success": True,
-            "platformPublishId": "wechat-video-playlet-draft:task-1",
-            "failureReason": None,
+            "success": False,
+            "platformPublishId": None,
+            "failureReason": "剧目提审信息确认页已打开，已停留在最后一步，等待手动提交审核。",
         },
     ) in api.calls
-    assert ("视频已全部上传，等待确认提审", "task-1") in progress_events
 
 
 def test_publish_once_skips_task_without_cancelling(tmp_path, monkeypatch):

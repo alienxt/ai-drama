@@ -92,6 +92,7 @@ def test_settings_rows_marks_directory_values(tmp_path: Path):
     assert "合同目录" in directory_labels
     assert "浏览器登录态目录" in directory_labels
     assert "Token 文件" in file_labels
+    assert any(row.label == "LibreOffice" for row in rows)
     assert all(row.label != "服务地址" for row in rows)
     assert all(row.label != "本地服务端口" for row in rows)
 

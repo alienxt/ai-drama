@@ -385,6 +385,7 @@ def render_contract_material_bundle(
     output_dir: Path,
     data_factory: Callable[[str, str], ContractRenderInput],
     image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None,
+    soffice_path: str | None = None,
 ) -> ContractMaterialBundle:
     if not all_required_contract_templates_configured(templates, platform):
         missing = [
@@ -428,6 +429,7 @@ def render_contract_material_bundle(
             output_dir / "images",
             image_stem,
             image_converter,
+            soffice_path=soffice_path,
         )
         if contract_type == "purchase" and len(image_paths) > 1:
             image_paths = [
@@ -450,6 +452,7 @@ def convert_contract_docx_images(
     image_dir: Path,
     image_stem: str,
     image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None,
+    soffice_path: str | None = None,
 ) -> list[Path]:
     if image_converter is not None:
         return image_converter(docx_path, image_dir, image_stem)
@@ -457,7 +460,15 @@ def convert_contract_docx_images(
         quicklook = quicklook_docx_to_image(docx_path, image_dir, image_stem)
         if quicklook:
             return [quicklook]
-    return export_contract_docx_images(docx_path, image_dir, image_stem)
+    allow_single_page_fallback = contract_type != "purchase"
+    return export_contract_docx_images(
+        docx_path,
+        image_dir,
+        image_stem,
+        soffice_path=soffice_path,
+        allow_quicklook_fallback=allow_single_page_fallback,
+        allow_single_page_pdf_fallback=allow_single_page_fallback,
+    )
 
 
 def build_contract_material_cache_path(cache_dir: Path, image_stem: str) -> Path:
@@ -746,61 +757,98 @@ def _word_attr(name: str) -> str:
     return f"{{{WORDML_NAMESPACES['w']}}}{name}"
 
 
-def export_contract_docx_images(docx_path: Path, image_dir: Path, image_stem: str | None = None) -> list[Path]:
+def export_contract_docx_images(
+    docx_path: Path,
+    image_dir: Path,
+    image_stem: str | None = None,
+    *,
+    soffice_path: str | None = None,
+    allow_quicklook_fallback: bool = True,
+    allow_single_page_pdf_fallback: bool = True,
+) -> list[Path]:
     image_dir.mkdir(parents=True, exist_ok=True)
     stem = image_stem or docx_path.stem
     try:
-        pdf_path = convert_docx_to_pdf(docx_path, image_dir)
+        pdf_path = convert_docx_to_pdf(docx_path, image_dir, soffice_path=soffice_path)
     except RuntimeError:
+        if not allow_quicklook_fallback:
+            raise
         quicklook = quicklook_docx_to_image(docx_path, image_dir, stem)
         if quicklook:
             return [quicklook]
         raise
     try:
-        return convert_pdf_to_pngs(pdf_path, image_dir, stem)
+        return convert_pdf_to_pngs(
+            pdf_path,
+            image_dir,
+            stem,
+            allow_single_page_fallback=allow_single_page_pdf_fallback,
+        )
     except RuntimeError:
+        if not allow_quicklook_fallback:
+            raise
         quicklook = quicklook_docx_to_image(docx_path, image_dir, stem)
         if quicklook:
             return [quicklook]
         raise
 
 
-def convert_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path:
+def convert_docx_to_pdf(docx_path: Path, output_dir: Path, *, soffice_path: str | None = None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    soffice = find_command(
+    soffice_options = find_command_options(
         "soffice",
         [
+            soffice_path or "",
             os.environ.get("AIDRAMA_SOFFICE_PATH", ""),
             "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+            "/opt/homebrew/bin/soffice",
+            "/usr/local/bin/soffice",
+            "C:/Program Files/LibreOffice/program/soffice.exe",
+            str(Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/bin/soffice"),
         ],
+        prefer_candidates=bool(str(soffice_path or "").strip() and str(soffice_path).strip() != "soffice"),
     )
-    if not soffice:
+    if not soffice_options:
         raise RuntimeError("无法将 Word 合同转换为图片，请先安装 LibreOffice。")
-    with tempfile.TemporaryDirectory(prefix="aidrama-libreoffice-") as profile_dir:
-        command = [
-            soffice,
-            f"-env:UserInstallation={Path(profile_dir).as_uri()}",
-            "--headless",
-            "--nologo",
-            "--nofirststartwizard",
-            "--convert-to",
-            "pdf:writer_pdf_Export",
-            "--outdir",
-            str(output_dir),
-            str(docx_path),
-        ]
-        run_command(command, "Word 合同转 PDF 失败")
-    pdf_path = output_dir / f"{docx_path.stem}.pdf"
-    if not pdf_path.exists():
-        matches = list(output_dir.glob(f"{docx_path.stem}*.pdf"))
-        if matches:
-            pdf_path = matches[0]
-    if not pdf_path.exists():
-        raise RuntimeError("Word 合同转 PDF 后没有找到输出文件。")
-    return pdf_path
+    errors: list[str] = []
+    for soffice in soffice_options:
+        with tempfile.TemporaryDirectory(prefix="aidrama-libreoffice-") as profile_dir:
+            command = [
+                soffice,
+                f"-env:UserInstallation={Path(profile_dir).as_uri()}",
+                "--headless",
+                "--nologo",
+                "--nofirststartwizard",
+                "--convert-to",
+                "pdf:writer_pdf_Export",
+                "--outdir",
+                str(output_dir),
+                str(docx_path),
+            ]
+            try:
+                run_command(command, f"Word 合同转 PDF 失败（LibreOffice：{soffice}）")
+            except RuntimeError as exception:
+                errors.append(str(exception))
+                continue
+        pdf_path = output_dir / f"{docx_path.stem}.pdf"
+        if not pdf_path.exists():
+            matches = list(output_dir.glob(f"{docx_path.stem}*.pdf"))
+            if matches:
+                pdf_path = matches[0]
+        if pdf_path.exists():
+            return pdf_path
+        errors.append(f"Word 合同转 PDF 后没有找到输出文件（LibreOffice：{soffice}）。")
+    detail = "\n".join(errors[-3:])
+    raise RuntimeError(f"无法使用 LibreOffice 转换 Word 合同：\n{detail}" if detail else "无法使用 LibreOffice 转换 Word 合同。")
 
 
-def convert_pdf_to_pngs(pdf_path: Path, image_dir: Path, image_stem: str) -> list[Path]:
+def convert_pdf_to_pngs(
+    pdf_path: Path,
+    image_dir: Path,
+    image_stem: str,
+    *,
+    allow_single_page_fallback: bool = True,
+) -> list[Path]:
     pdftoppm = find_command(
         "pdftoppm",
         [
@@ -825,7 +873,7 @@ def convert_pdf_to_pngs(pdf_path: Path, image_dir: Path, image_stem: str) -> lis
                 return [target]
             return images
 
-    sips = find_command("sips")
+    sips = find_command("sips") if allow_single_page_fallback else None
     if sips:
         target = image_dir / f"{safe_contract_filename(image_stem)}.png"
         run_command([sips, "-s", "format", "png", str(pdf_path), "--out", str(target)], "PDF 合同转图片失败")
@@ -890,14 +938,38 @@ def quicklook_docx_to_image(docx_path: Path, image_dir: Path, image_stem: str) -
     return target
 
 
-def find_command(name: str, candidates: list[str] | None = None) -> str | None:
-    found = shutil.which(name)
-    if found:
-        return found
+def find_command(name: str, candidates: list[str] | None = None, *, prefer_candidates: bool = False) -> str | None:
+    options = find_command_options(name, candidates, prefer_candidates=prefer_candidates)
+    return options[0] if options else None
+
+
+def find_command_options(name: str, candidates: list[str] | None = None, *, prefer_candidates: bool = False) -> list[str]:
+    options: list[str] = []
+
+    def add(value: str | None) -> None:
+        value = str(value or "").strip()
+        if value and value not in options:
+            options.append(value)
+
+    def add_command(value: str | None) -> None:
+        value = str(value or "").strip()
+        if not value:
+            return
+        candidate_path = Path(value)
+        if candidate_path.exists():
+            add(str(candidate_path))
+            return
+        if candidate_path.is_absolute() or "/" in value or "\\" in value:
+            return
+        add(shutil.which(value))
+
+    if not prefer_candidates:
+        add(shutil.which(name))
     for candidate in candidates or []:
-        if Path(candidate).exists():
-            return candidate
-    return None
+        add_command(candidate)
+    if prefer_candidates:
+        add(shutil.which(name))
+    return options
 
 
 def run_command(command: list[str], failure_message: str) -> None:

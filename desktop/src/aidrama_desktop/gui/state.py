@@ -60,6 +60,7 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
         SettingsRow("更新包目录", str(settings.updates_dir), "directory"),
         SettingsRow("浏览器登录态目录", str(settings.browser_profile_dir), "directory"),
         SettingsRow("FFmpeg", settings.ffmpeg_path),
+        SettingsRow("LibreOffice", settings.soffice_path),
     ]
 
 

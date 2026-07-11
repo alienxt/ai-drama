@@ -1191,6 +1191,7 @@ class DesktopWindow(QMainWindow):
             contract_platform=contract_platform,
             contract_buyer=self.contract_party_value(contract_platform, "buyer"),
             contract_seller=self.contract_party_value(contract_platform, "seller"),
+            soffice_path=self.settings.soffice_path,
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
@@ -1625,8 +1626,8 @@ class DesktopWindow(QMainWindow):
             self.update_task_progress("任务已跳过，已放回池里", None)
             QMessageBox.information(self, "重试任务", "任务已跳过，并已放回待执行池。")
         elif result == "ready-for-review":
-            self.update_task_progress("视频已全部上传，等待确认提审", self.current_task_id)
-            QMessageBox.information(self, "重试任务", "视频已全部上传完成，已停留在第二步。请在视频号页面确认提审。")
+            self.update_task_progress("提审未自动提交，任务未完成", self.current_task_id)
+            QMessageBox.warning(self, "重试任务", "视频已上传但提审未自动提交，请重试任务或查看日志。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
@@ -2880,7 +2881,13 @@ class DesktopWindow(QMainWindow):
         contract_type = self.infer_contract_type_from_path(path)
         image_dir = path.parent / "images"
         image_stem = safe_contract_filename(path.stem)
-        image_paths = convert_contract_docx_images(contract_type, path, image_dir, image_stem)
+        image_paths = convert_contract_docx_images(
+            contract_type,
+            path,
+            image_dir,
+            image_stem,
+            soffice_path=self.settings.soffice_path,
+        )
         if len(image_paths) > 1:
             image_paths = [merge_pngs_vertically(image_paths, image_dir / f"{image_stem}.png")]
         if not image_paths or any(not image_path.exists() for image_path in image_paths):
@@ -3004,8 +3011,8 @@ class DesktopWindow(QMainWindow):
             self.update_task_progress("任务已跳过，已放回池里", None)
             QMessageBox.information(self, "发布下一条", "任务已跳过，并已放回待执行池。")
         elif result == "ready-for-review":
-            self.update_task_progress("视频已全部上传，等待确认提审", self.current_task_id)
-            QMessageBox.information(self, "发布下一条", "视频已全部上传完成，已停留在第二步。请在视频号页面确认提审。")
+            self.update_task_progress("提审未自动提交，任务未完成", self.current_task_id)
+            QMessageBox.warning(self, "发布下一条", "视频已上传但提审未自动提交，请重试任务或查看日志。")
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "发布下一条", "发布任务已执行完成。")

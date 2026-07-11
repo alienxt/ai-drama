@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
 from docx import Document
 
 from aidrama_desktop.contracts import generator as contract_generator
@@ -221,6 +222,93 @@ def test_convert_pdf_to_pngs_uses_pdftoppm_env_path(tmp_path, monkeypatch):
 
     assert commands[0][0] == str(pdftoppm)
     assert images == [image_dir / "contract.png"]
+
+
+def test_convert_pdf_to_pngs_can_disable_single_page_fallback(tmp_path, monkeypatch):
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"%PDF")
+    image_dir = tmp_path / "images"
+    commands = []
+
+    def fake_find_command(name: str, candidates=None):
+        if name == "sips":
+            return "/usr/bin/sips"
+        return None
+
+    def fake_run_command(command: list[str], _failure_message: str) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(contract_generator, "find_command", fake_find_command)
+    monkeypatch.setattr(contract_generator, "run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="pdftoppm"):
+        convert_pdf_to_pngs(pdf, image_dir, "contract", allow_single_page_fallback=False)
+
+    assert commands == []
+
+
+def test_convert_docx_to_pdf_uses_explicit_soffice_path(tmp_path, monkeypatch):
+    docx_path = tmp_path / "contract.docx"
+    output_dir = tmp_path / "images"
+    soffice = tmp_path / "LibreOffice.app" / "Contents" / "MacOS" / "soffice"
+    docx_path.write_bytes(b"docx")
+    soffice.parent.mkdir(parents=True, exist_ok=True)
+    soffice.write_text("", encoding="utf-8")
+    commands = []
+
+    monkeypatch.setattr(contract_generator.shutil, "which", lambda _name: None)
+
+    def fake_run_command(command: list[str], _failure_message: str) -> None:
+        commands.append(command)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "contract.pdf").write_bytes(b"%PDF")
+
+    monkeypatch.setattr(contract_generator, "run_command", fake_run_command)
+
+    pdf_path = contract_generator.convert_docx_to_pdf(
+        docx_path,
+        output_dir,
+        soffice_path=str(soffice),
+    )
+
+    assert pdf_path == output_dir / "contract.pdf"
+    assert commands[0][0] == str(soffice)
+
+
+def test_purchase_contract_image_conversion_does_not_fallback_to_quicklook(tmp_path, monkeypatch):
+    docx_path = tmp_path / "purchase.docx"
+    pdf_path = tmp_path / "images" / "purchase.pdf"
+    docx_path.write_bytes(b"docx")
+    calls = []
+
+    def fake_convert_docx_to_pdf(path: Path, output_dir: Path, *, soffice_path: str | None = None):
+        calls.append(("pdf", path, output_dir))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF")
+        return pdf_path
+
+    def fake_convert_pdf_to_pngs(path: Path, image_dir: Path, stem: str, *, allow_single_page_fallback: bool = True):
+        calls.append(("png", path, image_dir, stem, allow_single_page_fallback))
+        raise RuntimeError("无法将 PDF 合同转换为图片，请安装 poppler(pdftoppm)。")
+
+    def fake_quicklook(path: Path, target_dir: Path, stem: str):
+        calls.append(("quicklook", path, target_dir, stem))
+        target_dir.mkdir(parents=True, exist_ok=True)
+        quicklook = target_dir / f"{stem}.png"
+        quicklook.write_bytes(b"first-page")
+        return quicklook
+
+    monkeypatch.setattr(contract_generator, "convert_docx_to_pdf", fake_convert_docx_to_pdf)
+    monkeypatch.setattr(contract_generator, "convert_pdf_to_pngs", fake_convert_pdf_to_pngs)
+    monkeypatch.setattr(contract_generator, "quicklook_docx_to_image", fake_quicklook)
+
+    with pytest.raises(RuntimeError, match="pdftoppm"):
+        convert_contract_docx_images("purchase", docx_path, tmp_path / "images", "purchase")
+
+    assert calls == [
+        ("pdf", docx_path, tmp_path / "images"),
+        ("png", pdf_path, tmp_path / "images", "purchase", False),
+    ]
 
 
 def test_render_contract_material_bundle_invalidates_cache_when_data_changes(tmp_path):
