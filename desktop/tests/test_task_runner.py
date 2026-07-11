@@ -59,6 +59,7 @@ class FakeProcessor:
     def __init__(self):
         self.calls = []
         self.dimensions = {}
+        self.durations = {}
 
     def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
         self.calls.append((source, target, cover_path))
@@ -71,6 +72,9 @@ class FakeProcessor:
 
     def video_dimensions(self, source: Path):
         return self.dimensions.get(source.name)
+
+    def video_duration_seconds(self, source: Path):
+        return self.durations.get(source.name)
 
 
 class LowBitrateProcessor(FakeProcessor):
@@ -390,6 +394,75 @@ def test_publish_once_skips_failed_transcode_episode_and_uploads_remaining(tmp_p
             "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
         },
     ]
+
+
+def test_publish_once_skips_short_video_episode_and_uploads_remaining(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FakeProcessor()
+    processor.durations = {"001.mp4": 29.4, "002.mp4": 31.0}
+    publisher = FakePublisher()
+    progress_events = []
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.files == [tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
+    assert publisher.metadata["episodeCount"] == 1
+    assert publisher.metadata["skippedEpisodeCount"] == 1
+    assert publisher.metadata["skippedEpisodeNumbers"] == [1]
+    assert any("第 1 集视频时长 29.4 秒，小于视频号要求的 30 秒" in stage for stage, _task_id in progress_events)
+
+
+def test_publish_once_fails_when_all_video_episodes_are_too_short(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FakeProcessor()
+    processor.durations = {"001.mp4": 12.0, "002.mp4": 29.9}
+    publisher = FakePublisher()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "failed"
+
+    result_calls = [call for call in api.calls if call[0] == "PUT" and call[1] == "/desktop/tasks/task-1/result"]
+    assert result_calls
+    failure_reason = result_calls[-1][2]["failureReason"]
+    assert "没有可上传的剧集" in failure_reason
+    assert "第 2 集视频时长 29.9 秒，小于视频号要求的 30 秒" in failure_reason
+    assert publisher.files == []
 
 
 def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch):

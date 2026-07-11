@@ -64,6 +64,23 @@ def test_ffmpeg_processor_ignores_unreadable_bitrate(monkeypatch, tmp_path):
     assert processor.needs_wechat_video_bitrate_transcode(source) is False
 
 
+def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        assert command[0] == "ffprobe"
+        assert "format=duration" in command
+        assert str(source) in command
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "29.42"}}))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.video_duration_seconds(source) == 29.42
+
+
 def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"

@@ -226,9 +226,50 @@ AIDRAMA_CHROME_PATH     Chrome 可执行文件路径
 AIDRAMA_FFMPEG_PATH     FFmpeg 可执行文件路径
 AIDRAMA_SOFFICE_PATH    LibreOffice soffice 可执行文件路径
 AIDRAMA_PDFTOPPM_PATH   Poppler pdftoppm 可执行文件路径
+AIDRAMA_WORK_DIR        客户端工作数据目录，保存下载、转码、合同、更新包和临时文件
+AIDRAMA_BROWSER_PROFILE_DIR  媒体号浏览器登录态目录
+AIDRAMA_TOKEN_FILE      登录 token 文件路径，体积很小，可选迁移
 ```
 
 `setx` 设置的是当前 Windows 用户的永久环境变量，不是临时变量。设置后需要关闭并重新打开客户端才会生效。
+
+### C 盘空间不足时迁移数据目录
+
+客户端默认会把数据放在当前用户的 AppData 目录，通常位于 C 盘：
+
+```text
+%LOCALAPPDATA%\ai-drama-desktop\work
+%LOCALAPPDATA%\ai-drama-desktop\chrome-profiles
+```
+
+其中最占空间的是视频下载、转码输出、合同材料和浏览器登录态。建议把工作目录和浏览器目录迁移到空间更大的磁盘，例如 D 盘。
+
+如果电脑允许写系统环境变量，推荐右键 PowerShell 或命令提示符，选择“以管理员身份运行”，执行：
+
+```powershell
+setx AIDRAMA_WORK_DIR "D:\ai-drama\ai-drama-desktop\work" /M
+setx AIDRAMA_BROWSER_PROFILE_DIR "D:\ai-drama\ai-drama-desktop\chrome-profiles" /M
+setx AIDRAMA_TOKEN_FILE "D:\ai-drama\ai-drama-desktop\config\token"
+```
+
+其中 `/M` 表示写入系统级环境变量，需要管理员权限。`AIDRAMA_TOKEN_FILE` 体积很小，也可以不设置；如果设置，可以用上面的用户级命令保存到同一套数据目录。
+
+如果不能写系统环境变量，也可以只设置当前用户环境变量：
+
+```powershell
+setx AIDRAMA_WORK_DIR "D:\ai-drama\ai-drama-desktop\work"
+setx AIDRAMA_BROWSER_PROFILE_DIR "D:\ai-drama\ai-drama-desktop\chrome-profiles"
+setx AIDRAMA_TOKEN_FILE "D:\ai-drama\ai-drama-desktop\config\token"
+```
+
+设置完成后关闭并重新打开客户端。旧数据如需保留，可手动把下面两个目录内容搬到新的 D 盘目录：
+
+```text
+%LOCALAPPDATA%\ai-drama-desktop\work
+%LOCALAPPDATA%\ai-drama-desktop\chrome-profiles
+```
+
+不建议随意设置 `AIDRAMA_DEVICE_ID`，否则可能影响后台的设备绑定和媒体号权限判断。
 
 ## 8. 安装后检查
 

@@ -170,6 +170,24 @@ class FfmpegProcessor:
                 return width, height
         return None
 
+    def video_duration_seconds(self, source: Path) -> float | None:
+        command = [
+            self.ffprobe_path(),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            payload = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+            return None
+        return self._positive_float((payload.get("format") or {}).get("duration"))
+
     def ffprobe_path(self) -> str:
         ffmpeg = Path(self.ffmpeg_path)
         if ffmpeg.name == "ffmpeg":
@@ -190,6 +208,14 @@ class FfmpegProcessor:
     def _positive_int(value: object) -> int | None:
         try:
             parsed = int(str(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _positive_float(value: object) -> float | None:
+        try:
+            parsed = float(str(value))
         except (TypeError, ValueError):
             return None
         return parsed if parsed > 0 else None

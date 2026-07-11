@@ -35,6 +35,7 @@ DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
 MAX_SKIPPED_EPISODE_FAILURES = 3
+WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS = 30.0
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
@@ -390,10 +391,26 @@ class TaskRunner:
         upload_items: list[EpisodeMediaFile] = []
         processed_count = 0
         skipped_count = max(original_episode_count - len(source_items), 0)
+        last_skip_message: str | None = None
         for item in source_items:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             source_file = item.file
             episode_no = episode_number(item.episode, item.episode_index)
+            duration_seconds = self._video_duration_seconds(source_file)
+            if duration_seconds is not None and duration_seconds < WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:
+                skipped_count += 1
+                message = (
+                    f"第 {episode_no} 集视频时长 {duration_seconds:.1f} 秒，小于视频号要求的 "
+                    f"{WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:.0f} 秒，已跳过该集；"
+                    f"已跳过 {skipped_count}/{self.max_skipped_episode_failures} 集"
+                )
+                last_skip_message = message
+                if skipped_count > self.max_skipped_episode_failures:
+                    raise RuntimeError(
+                        f"剧集失败超过 {self.max_skipped_episode_failures} 集，整部剧分发失败。最后错误：{message}"
+                    )
+                self._notify(f"跳过：{drama_title} {message}", task_id)
+                continue
             source_needs_transcode = bool(needs_transcode(source_file)) if callable(needs_transcode) else False
             should_add_cover_frame = cover_file is not None
             if not source_needs_transcode and not should_add_cover_frame:
@@ -426,11 +443,14 @@ class TaskRunner:
                     f"第 {episode_no} 集视频转码失败，已跳过该集并清理本地缓存；"
                     f"已跳过 {skipped_count}/{self.max_skipped_episode_failures} 集：{exception}"
                 )
+                last_skip_message = message
                 if skipped_count > self.max_skipped_episode_failures:
                     raise RuntimeError(
                         f"剧集失败超过 {self.max_skipped_episode_failures} 集，整部剧分发失败。最后错误：{message}"
                     ) from exception
                 self._notify(f"跳过：{drama_title} {message}", task_id)
+        if not upload_items and last_skip_message:
+            raise RuntimeError(f"没有可上传的剧集：{last_skip_message}")
         if processed_count:
             label = "视频码率和封面帧处理完成" if cover_file else "视频码率处理完成"
             self._notify(f"{label}：{drama_title}（{processed_count} 集）", task_id)
@@ -466,6 +486,22 @@ class TaskRunner:
             return None
         width, height = dimensions
         return (int(width), int(height)) if width and height else None
+
+    def _video_duration_seconds(self, source_file: Path) -> float | None:
+        video_duration = getattr(self.processor, "video_duration_seconds", None)
+        if not callable(video_duration):
+            return None
+        try:
+            duration = video_duration(source_file)
+        except Exception:  # noqa: BLE001
+            return None
+        if duration is None:
+            return None
+        try:
+            parsed = float(duration)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
 
     @staticmethod
     def _existing_file(path: Path) -> Path | None:
