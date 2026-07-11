@@ -663,8 +663,8 @@ public class DistributionService {
         if (drama.getStatus() != DramaStatus.READY) {
             throw new BusinessException("DRAMA_NOT_READY", "短剧不可分发", HttpStatus.BAD_REQUEST);
         }
-        if (!isRecentUpdatedDrama(drama)) {
-            throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在最近更新剧池内", HttpStatus.BAD_REQUEST);
+        if (!isRecentCreatedDrama(drama)) {
+            throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在近 7 天创建剧池内", HttpStatus.BAD_REQUEST);
         }
         List<String> ownedMediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .map(MediaAccount::getId)
@@ -710,10 +710,10 @@ public class DistributionService {
     }
 
     private List<com.onehot.aidrama.dramas.Drama> recentReadyDramas() {
-        return dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        return dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 DramaStatus.READY,
-                recentUpdatedFrom(),
-                Sort.by(Sort.Direction.DESC, "updatedAt")
+                recentCreatedFrom(),
+                Sort.by(Sort.Direction.DESC, "createdAt")
         );
     }
 
@@ -727,11 +727,11 @@ public class DistributionService {
                 && !drama.getEpisodes().isEmpty();
     }
 
-    private boolean isRecentUpdatedDrama(com.onehot.aidrama.dramas.Drama drama) {
-        return drama.getUpdatedAt() != null && !drama.getUpdatedAt().isBefore(recentUpdatedFrom());
+    private boolean isRecentCreatedDrama(com.onehot.aidrama.dramas.Drama drama) {
+        return drama.getCreatedAt() != null && !drama.getCreatedAt().isBefore(recentCreatedFrom());
     }
 
-    private Instant recentUpdatedFrom() {
+    private Instant recentCreatedFrom() {
         return Instant.now().minus(7, ChronoUnit.DAYS);
     }
 

@@ -8,7 +8,7 @@ import java.util.List;
 
 public interface DramaRepository extends MongoRepository<Drama, String> {
     List<Drama> findByStatus(DramaStatus status);
-    List<Drama> findByStatusAndUpdatedAtGreaterThanEqual(DramaStatus status, Instant updatedAt, Sort sort);
+    List<Drama> findByStatusAndCreatedAtGreaterThanEqual(DramaStatus status, Instant createdAt, Sort sort);
     List<Drama> findAllBySourcePath(String sourcePath);
     List<Drama> findAllByTitle(String title);
 }

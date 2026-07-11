@@ -68,7 +68,7 @@ class DistributionServiceTest {
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-owned");
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
-        verify(dramaRepository, never()).findByStatusAndUpdatedAtGreaterThanEqual(
+        verify(dramaRepository, never()).findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -258,7 +258,7 @@ class DistributionServiceTest {
                 DistributionTaskStatus.PENDING,
                 List.of("media-1", "media-2")
         )).thenReturn(Optional.empty());
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -289,7 +289,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
-        markUpdatedNow(drama);
+        markCreatedNow(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
@@ -299,7 +299,7 @@ class DistributionServiceTest {
         MediaAccount first = activeMedia("media-1", "owner-1", "urban");
         MediaAccount second = activeMedia("media-2", "owner-1", "urban");
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -326,7 +326,7 @@ class DistributionServiceTest {
 
         Drama drama = readyDrama("drama-1", "urban");
         drama.setAiSummary("");
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -359,7 +359,7 @@ class DistributionServiceTest {
         drama.setEpisodes(List.of(episode));
         markPrepared(drama);
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -382,7 +382,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
-        markUpdatedNow(drama);
+        markCreatedNow(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
         episode.setSourcePath("/drama/1.mp4");
@@ -418,7 +418,7 @@ class DistributionServiceTest {
         drama.setId("drama-1");
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of("urban"));
-        markUpdatedNow(drama);
+        markCreatedNow(drama);
         markPrepared(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
@@ -448,7 +448,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void priorityRejectsDramaOutsideRecentUpdatedPool() {
+    void priorityRejectsDramaOutsideRecentCreatedPool() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -457,11 +457,11 @@ class DistributionServiceTest {
         Drama drama = new Drama();
         drama.setId("drama-old");
         drama.setStatus(DramaStatus.READY);
-        ReflectionTestUtils.setField(drama, "updatedAt", Instant.now().minusSeconds(8 * 24 * 60 * 60));
+        ReflectionTestUtils.setField(drama, "createdAt", Instant.now().minusSeconds(8 * 24 * 60 * 60));
         when(dramaRepository.findById("drama-old")).thenReturn(Optional.of(drama));
 
         assertThatThrownBy(() -> service.prioritizeDramaForOwner("owner-1", "drama-old"))
-                .hasMessage("短剧不在最近更新剧池内");
+                .hasMessage("短剧不在近 7 天创建剧池内");
         verify(mediaAccountRepository, never()).findByOwnerAccountId("owner-1");
         verify(taskRepository, never()).save(any(DistributionTask.class));
     }
@@ -483,7 +483,7 @@ class DistributionServiceTest {
         drama.setEpisodes(List.of(episode));
         markPrepared(drama);
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -505,7 +505,7 @@ class DistributionServiceTest {
 
         Drama drama = readyDrama("drama-1", "urban");
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -531,7 +531,7 @@ class DistributionServiceTest {
         failed.setStatus(DistributionTaskStatus.FAILED);
         failed.setFailureReason("AI 素材生成失败：OpenAI 配置无效");
 
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -544,12 +544,12 @@ class DistributionServiceTest {
     }
 
     @Test
-    void generatesFromSameRecentUpdatedReadyPoolAsDesktopDramaList() {
+    void generatesFromRecentCreatedReadyPoolOrderedByCreatedAtDesc() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
         DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
-        when(dramaRepository.findByStatusAndUpdatedAtGreaterThanEqual(
+        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
                 any(Sort.class)
@@ -557,10 +557,10 @@ class DistributionServiceTest {
 
         service.generateTasksForOwner("owner-1");
 
-        verify(dramaRepository).findByStatusAndUpdatedAtGreaterThanEqual(
+        verify(dramaRepository).findByStatusAndCreatedAtGreaterThanEqual(
                 any(DramaStatus.class),
                 any(Instant.class),
-                org.mockito.ArgumentMatchers.argThat(sort -> sort.toString().contains("updatedAt: DESC"))
+                org.mockito.ArgumentMatchers.argThat(sort -> sort.toString().contains("createdAt: DESC"))
         );
         verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
     }
@@ -1032,7 +1032,7 @@ class DistributionServiceTest {
         drama.setId(id);
         drama.setStatus(DramaStatus.READY);
         drama.setCategoryIds(List.of(categoryId));
-        markUpdatedNow(drama);
+        markCreatedNow(drama);
         markPrepared(drama);
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(1);
@@ -1048,7 +1048,7 @@ class DistributionServiceTest {
         drama.setAiVideoCoverUrl("/uploads/ai-covers/" + drama.getId() + "-video.jpg");
     }
 
-    private static void markUpdatedNow(Drama drama) {
-        ReflectionTestUtils.setField(drama, "updatedAt", Instant.now());
+    private static void markCreatedNow(Drama drama) {
+        ReflectionTestUtils.setField(drama, "createdAt", Instant.now());
     }
 }
