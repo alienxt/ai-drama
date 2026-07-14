@@ -1,5 +1,6 @@
 package com.onehot.aidrama.distribution;
 
+import com.onehot.aidrama.media.MediaPlatform;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
@@ -14,6 +15,7 @@ public class DistributionTask {
     @Id
     private String id;
     private String mediaAccountId;
+    private MediaPlatform platform;
     private String dramaId;
     private List<Integer> episodeRange = new ArrayList<>();
     private DistributionTaskStatus status = DistributionTaskStatus.PENDING;
@@ -32,6 +34,8 @@ public class DistributionTask {
     public void setId(String id) { this.id = id; }
     public String getMediaAccountId() { return mediaAccountId; }
     public void setMediaAccountId(String mediaAccountId) { this.mediaAccountId = mediaAccountId; }
+    public MediaPlatform getPlatform() { return platform; }
+    public void setPlatform(MediaPlatform platform) { this.platform = platform; }
     public String getDramaId() { return dramaId; }
     public void setDramaId(String dramaId) { this.dramaId = dramaId; }
     public List<Integer> getEpisodeRange() { return episodeRange; }

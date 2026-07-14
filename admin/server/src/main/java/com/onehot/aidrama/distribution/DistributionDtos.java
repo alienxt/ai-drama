@@ -1,5 +1,7 @@
 package com.onehot.aidrama.distribution;
 
+import com.onehot.aidrama.media.MediaPlatform;
+
 import java.time.Instant;
 
 public class DistributionDtos {
@@ -9,6 +11,7 @@ public class DistributionDtos {
             String ownerUsername,
             String mediaAccountId,
             String mediaAccountName,
+            MediaPlatform platform,
             String dramaId,
             String dramaTitle,
             DistributionTaskStatus status,
@@ -31,6 +34,7 @@ public class DistributionDtos {
                     ownerUsername,
                     task.getMediaAccountId(),
                     mediaAccountName,
+                    task.getPlatform(),
                     task.getDramaId(),
                     dramaTitle,
                     task.getStatus(),

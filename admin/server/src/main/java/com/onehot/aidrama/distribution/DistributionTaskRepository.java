@@ -2,6 +2,8 @@ package com.onehot.aidrama.distribution;
 
 import org.springframework.data.mongodb.repository.MongoRepository;
 
+import com.onehot.aidrama.media.MediaPlatform;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -26,6 +28,8 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             int priority,
             List<String> mediaAccountIds
     );
+    List<DistributionTask> findByDramaId(String dramaId);
+    boolean existsByDramaIdAndPlatform(String dramaId, MediaPlatform platform);
     boolean existsByMediaAccountIdAndDramaId(String mediaAccountId, String dramaId);
     boolean existsByMediaAccountIdAndDramaIdAndStatusNotIn(
             String mediaAccountId,

@@ -5,9 +5,12 @@ import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.error.BusinessException;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaRepository;
+import com.onehot.aidrama.dramas.DramaSources;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
+import com.onehot.aidrama.media.MediaAccountStatus;
+import com.onehot.aidrama.media.MediaPlatform;
 import com.onehot.aidrama.users.Account;
 import com.onehot.aidrama.users.AccountRepository;
 import org.bson.types.ObjectId;
@@ -31,6 +34,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -131,7 +135,7 @@ public class DistributionService {
     }
 
     public List<DistributionTask> generateTasks() {
-        var dramas = recentReadyDramas();
+        var dramas = recentTaskCandidateDramas();
         var mediaAccounts = mediaAccountRepository.findAll();
         return generateTasksForMediaAccounts(mediaAccounts, dramas);
     }
@@ -174,6 +178,9 @@ public class DistributionService {
         Map<String, Account> ownerById = ownerAccountsById(mediaById);
         var rows = taskPage.getContent().stream().map(task -> {
             MediaAccount mediaAccount = mediaById.get(task.getMediaAccountId());
+            if (task.getPlatform() == null && mediaAccount != null) {
+                task.setPlatform(mediaAccount.getPlatform());
+            }
             String ownerAccountId = mediaAccount == null ? null : mediaAccount.getOwnerAccountId();
             String ownerUsername = ownerAccountId == null
                     ? null
@@ -432,7 +439,7 @@ public class DistributionService {
     }
 
     public List<DistributionTask> generateTasksForOwner(String ownerAccountId) {
-        var dramas = recentReadyDramas();
+        var dramas = recentTaskCandidateDramas();
         var mediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
         return generateTasksForMediaAccounts(mediaAccounts, dramas);
     }
@@ -442,9 +449,7 @@ public class DistributionService {
     }
 
     public Optional<DistributionTask> claimForOwner(String ownerAccountId, String deviceId, boolean asyncPreparation) {
-        List<String> mediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
-                .map(MediaAccount::getId)
-                .toList();
+        List<String> mediaAccountIds = claimableOwnerMediaAccountIds(ownerAccountId);
         if (mediaAccountIds.isEmpty()) {
             return Optional.empty();
         }
@@ -470,14 +475,14 @@ public class DistributionService {
     }
 
     private Optional<DistributionTask> generateNextTaskForOwner(String ownerAccountId) {
-        var dramas = recentReadyDramas();
+        var dramas = recentTaskCandidateDramas();
         var mediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
         for (var drama : dramas) {
             for (var media : mediaAccounts) {
                 if (hasSavedLoginState(media)
                         && planner.canDistribute(media, drama)
-                        && !hasBlockingGeneratedTask(media.getId(), drama.getId())) {
-                    return Optional.of(createTask(media.getId(), drama.getId(), 0));
+                        && !hasBlockingGeneratedTask(media, drama.getId())) {
+                    return Optional.of(createTask(media, drama.getId(), 0));
                 }
             }
         }
@@ -642,7 +647,9 @@ public class DistributionService {
         }
         Drama drama = dramaRepository.findById(task.getDramaId())
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
-        if (isPreparedForDistribution(drama)) {
+        boolean requiresTikTokAssets = requiresTikTokAssets(task);
+        if (isPreparedForDistribution(drama, requiresTikTokAssets)) {
+            markDramaReadyIfPrepared(drama, requiresTikTokAssets);
             return preparationPrepared();
         }
         if (isRecentPreparationFailure(drama)) {
@@ -653,14 +660,14 @@ public class DistributionService {
         if (existing != null) {
             return preparationPreparing("AI 素材准备中，请稍候");
         }
-        executePreparation(() -> prepareTaskDramaInBackground(task.getId(), task.getDramaId(), marker));
+        executePreparation(() -> prepareTaskDramaInBackground(task.getId(), task.getDramaId(), marker, requiresTikTokAssets));
         return preparationPreparing("AI 素材准备已开始，请稍候");
     }
 
     public DistributionTask prioritizeDramaForOwner(String ownerAccountId, String dramaId) {
         var drama = dramaRepository.findById(dramaId)
                 .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
-        if (drama.getStatus() != DramaStatus.READY) {
+        if (!canEnterTaskQueue(drama)) {
             throw new BusinessException("DRAMA_NOT_READY", "短剧不可分发", HttpStatus.BAD_REQUEST);
         }
         if (!isRecentCreatedDrama(drama)) {
@@ -684,24 +691,60 @@ public class DistributionService {
         return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
                 .filter(this::hasSavedLoginState)
                 .filter(media -> planner.canDistribute(media, drama))
-                .filter(media -> !hasBlockingGeneratedTask(media.getId(), dramaId))
+                .filter(media -> !hasBlockingGeneratedTask(media, dramaId))
                 .findFirst()
-                .map(media -> createTask(media.getId(), dramaId, 100))
+                .map(media -> createTask(media, dramaId, 100))
                 .orElseThrow(() -> new BusinessException("NO_ELIGIBLE_MEDIA_ACCOUNT", "没有可用媒体号可分发这部剧", HttpStatus.BAD_REQUEST));
     }
 
     private List<DistributionTask> generateTasksForMediaAccounts(List<MediaAccount> mediaAccounts, List<com.onehot.aidrama.dramas.Drama> dramas) {
-        return dramas.stream()
-                .flatMap(drama -> mediaAccounts.stream()
-                        .filter(media -> hasSavedLoginState(media))
-                        .filter(media -> planner.canDistribute(media, drama))
-                        .filter(media -> !hasBlockingGeneratedTask(media.getId(), drama.getId()))
-                        .map(media -> createTask(media.getId(), drama.getId(), 0)))
-                .toList();
+        List<DistributionTask> generated = new ArrayList<>();
+        for (var drama : dramas) {
+            Map<MediaPlatform, MediaAccount> selectedByPlatform = new LinkedHashMap<>();
+            for (var media : mediaAccounts) {
+                MediaPlatform platform = taskPlatform(media);
+                if (selectedByPlatform.containsKey(platform)
+                        || !hasSavedLoginState(media)
+                        || !planner.canDistribute(media, drama)
+                        || hasBlockingGeneratedTask(media, drama.getId())) {
+                    continue;
+                }
+                selectedByPlatform.put(platform, media);
+            }
+            selectedByPlatform.values().forEach(media -> generated.add(createTask(media, drama.getId(), 0)));
+        }
+        return generated;
     }
 
-    private boolean hasBlockingGeneratedTask(String mediaAccountId, String dramaId) {
-        return taskRepository.existsByMediaAccountIdAndDramaId(mediaAccountId, dramaId);
+    private boolean hasBlockingGeneratedTask(MediaAccount media, String dramaId) {
+        if (taskRepository.existsByMediaAccountIdAndDramaId(media.getId(), dramaId)) {
+            return true;
+        }
+        MediaPlatform platform = taskPlatform(media);
+        if (taskRepository.existsByDramaIdAndPlatform(dramaId, platform)) {
+            return true;
+        }
+        return legacyTaskExistsForPlatform(dramaId, platform);
+    }
+
+    private boolean legacyTaskExistsForPlatform(String dramaId, MediaPlatform platform) {
+        List<DistributionTask> existingTasks = taskRepository.findByDramaId(dramaId);
+        if (existingTasks == null || existingTasks.isEmpty()) {
+            return false;
+        }
+        for (DistributionTask task : existingTasks) {
+            if (task.getPlatform() == platform) {
+                return true;
+            }
+            if (task.getPlatform() != null || task.getMediaAccountId() == null || task.getMediaAccountId().isBlank()) {
+                continue;
+            }
+            Optional<MediaAccount> existingMedia = mediaAccountRepository.findById(task.getMediaAccountId());
+            if (existingMedia.map(MediaAccount::getPlatform).filter(platform::equals).isPresent()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isPreparationFailureTask(DistributionTask task) {
@@ -709,19 +752,46 @@ public class DistributionService {
         return failureReason != null && failureReason.startsWith(PREPARATION_FAILURE_PREFIX);
     }
 
-    private List<com.onehot.aidrama.dramas.Drama> recentReadyDramas() {
-        return dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                DramaStatus.READY,
+    private List<com.onehot.aidrama.dramas.Drama> recentTaskCandidateDramas() {
+        return dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                List.of(DramaStatus.READY, DramaStatus.DRAFT),
                 recentCreatedFrom(),
                 Sort.by(Sort.Direction.DESC, "createdAt")
-        );
+        ).stream()
+                .filter(this::canEnterTaskQueue)
+                .toList();
+    }
+
+    private boolean canEnterTaskQueue(com.onehot.aidrama.dramas.Drama drama) {
+        if (drama == null) {
+            return false;
+        }
+        if (drama.getStatus() == DramaStatus.READY) {
+            return true;
+        }
+        return drama.getStatus() == DramaStatus.DRAFT
+                && DramaSources.BAIDU_PAN.equals(DramaSources.normalize(drama.getSource()))
+                && hasText(drama.getSourcePath())
+                && drama.getEpisodes() != null
+                && !drama.getEpisodes().isEmpty()
+                && !drama.isAiCoverGenerating()
+                && !isRecentPreparationFailure(drama);
     }
 
     private boolean isPreparedForDistribution(com.onehot.aidrama.dramas.Drama drama) {
+        return isPreparedForDistribution(drama, false);
+    }
+
+    private boolean isPreparedForDistribution(com.onehot.aidrama.dramas.Drama drama, boolean requireTikTokAssets) {
         return hasText(drama.getAiTitle())
                 && hasText(drama.getAiSummary())
                 && hasText(drama.getAiCoverUrl())
                 && hasText(drama.getAiVideoCoverUrl())
+                && (!requireTikTokAssets
+                || (hasText(drama.getAiTitleEn())
+                        && hasText(drama.getAiSummaryEn())
+                        && hasText(drama.getAiCoverEnUrl())
+                        && hasText(drama.getAiVideoCoverEnUrl())))
                 && !drama.isAiCoverGenerating()
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
@@ -749,11 +819,28 @@ public class DistributionService {
                 .toList();
     }
 
+    private List<String> claimableOwnerMediaAccountIds(String ownerAccountId) {
+        return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
+                .filter(media -> media.getStatus() == MediaAccountStatus.ACTIVE)
+                .map(MediaAccount::getId)
+                .toList();
+    }
+
     private DistributionTask claim(DistributionTask task, String deviceId) {
+        fillTaskPlatform(task);
         task.setStatus(DistributionTaskStatus.CLAIMED);
         task.setLockedByDeviceId(deviceId);
         task.setFinishedAt(null);
         return taskRepository.save(task);
+    }
+
+    private void fillTaskPlatform(DistributionTask task) {
+        if (task.getPlatform() != null || task.getMediaAccountId() == null || task.getMediaAccountId().isBlank()) {
+            return;
+        }
+        mediaAccountRepository.findById(task.getMediaAccountId())
+                .map(this::taskPlatform)
+                .ifPresent(task::setPlatform);
     }
 
     private DistributionTask prepareAndClaim(DistributionTask task, String deviceId, boolean asyncPreparation) {
@@ -771,17 +858,20 @@ public class DistributionService {
         taskExecutor.execute(runnable);
     }
 
-    private void prepareTaskDramaInBackground(String taskId, String dramaId, Object marker) {
+    private void prepareTaskDramaInBackground(String taskId, String dramaId, Object marker, boolean requireTikTokAssets) {
         try {
             Drama drama = dramaRepository.findById(dramaId)
                     .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
-            if (isPreparedForDistribution(drama)) {
+            if (isPreparedForDistribution(drama, requireTikTokAssets)) {
+                markDramaReadyIfPrepared(drama, requireTikTokAssets);
                 return;
             }
-            Drama prepared = preparationService.prepareForDistribution(drama);
-            if (!isPreparedForDistribution(prepared)) {
-                markTaskPreparationFailed(taskId, "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试");
+            Drama prepared = prepareForTaskPlatform(drama, requireTikTokAssets);
+            if (!isPreparedForDistribution(prepared, requireTikTokAssets)) {
+                markTaskPreparationFailed(taskId, preparationFailedReason(requireTikTokAssets));
+                return;
             }
+            markDramaReadyIfPrepared(prepared, requireTikTokAssets);
         } catch (RuntimeException exception) {
             markTaskPreparationFailed(taskId, preparationFailureMessage(exception));
         } finally {
@@ -847,17 +937,20 @@ public class DistributionService {
             synchronized (lock) {
                 Drama drama = dramaRepository.findById(task.getDramaId())
                         .orElseThrow(() -> new BusinessException("DRAMA_NOT_FOUND", "短剧不存在", HttpStatus.NOT_FOUND));
-                if (isPreparedForDistribution(drama)) {
+                boolean requireTikTokAssets = requiresTikTokAssets(task);
+                if (isPreparedForDistribution(drama, requireTikTokAssets)) {
+                    markDramaReadyIfPrepared(drama, requireTikTokAssets);
                     return;
                 }
-                Drama prepared = preparationService.prepareForDistribution(drama);
-                if (!isPreparedForDistribution(prepared)) {
+                Drama prepared = prepareForTaskPlatform(drama, requireTikTokAssets);
+                if (!isPreparedForDistribution(prepared, requireTikTokAssets)) {
                     throw new BusinessException(
                             "DRAMA_PREPARATION_FAILED",
-                            "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试",
+                            preparationFailedReason(requireTikTokAssets),
                             HttpStatus.BAD_GATEWAY
                     );
                 }
+                markDramaReadyIfPrepared(prepared, requireTikTokAssets);
             }
         } catch (RuntimeException exception) {
             markTaskPreparationFailed(task, exception);
@@ -865,6 +958,52 @@ public class DistributionService {
         } finally {
             preparationLocks.remove(task.getDramaId(), lock);
         }
+    }
+
+    private Drama prepareForTaskPlatform(Drama drama, boolean requireTikTokAssets) {
+        if (requireTikTokAssets) {
+            return preparationService.prepareForDistribution(drama, true);
+        }
+        return preparationService.prepareForDistribution(drama);
+    }
+
+    private Drama markDramaReadyIfPrepared(Drama drama, boolean requireTikTokAssets) {
+        if (drama == null || drama.getStatus() != DramaStatus.DRAFT || !isPreparedForDistribution(drama, requireTikTokAssets)) {
+            return drama;
+        }
+        drama.setStatus(DramaStatus.READY);
+        drama.setAiPreparationFailedAt(null);
+        return dramaRepository.save(drama);
+    }
+
+    private String preparationFailedReason(boolean requireTikTokAssets) {
+        if (requireTikTokAssets) {
+            return "AI 剧名、AI 简介、AI 封面、视频封面或 TK 英文封面生成失败，请检查 OpenAI 配置后重试";
+        }
+        return "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试";
+    }
+
+    private boolean requiresTikTokAssets(DistributionTask task) {
+        return resolveTaskPlatform(task) == MediaPlatform.TIKTOK;
+    }
+
+    private MediaPlatform resolveTaskPlatform(DistributionTask task) {
+        if (task == null) {
+            return MediaPlatform.WECHAT_VIDEO;
+        }
+        if (task.getPlatform() != null) {
+            return task.getPlatform();
+        }
+        if (task.getMediaAccountId() == null || task.getMediaAccountId().isBlank()) {
+            return MediaPlatform.WECHAT_VIDEO;
+        }
+        Optional<MediaAccount> media = mediaAccountRepository.findById(task.getMediaAccountId());
+        if (media != null && media.isPresent()) {
+            MediaPlatform platform = taskPlatform(media.get());
+            task.setPlatform(platform);
+            return platform;
+        }
+        return MediaPlatform.WECHAT_VIDEO;
     }
 
     private void markTaskPreparationFailed(DistributionTask task, RuntimeException exception) {
@@ -884,12 +1023,17 @@ public class DistributionService {
         return PREPARATION_FAILURE_PREFIX + message;
     }
 
-    private DistributionTask createTask(String mediaAccountId, String dramaId, int priority) {
+    private DistributionTask createTask(MediaAccount media, String dramaId, int priority) {
         DistributionTask task = new DistributionTask();
-        task.setMediaAccountId(mediaAccountId);
+        task.setMediaAccountId(media.getId());
+        task.setPlatform(taskPlatform(media));
         task.setDramaId(dramaId);
         task.setStatus(DistributionTaskStatus.PENDING);
         task.setPriority(priority);
         return taskRepository.save(task);
+    }
+
+    private MediaPlatform taskPlatform(MediaAccount media) {
+        return media.getPlatform() == null ? MediaPlatform.WECHAT_VIDEO : media.getPlatform();
     }
 }

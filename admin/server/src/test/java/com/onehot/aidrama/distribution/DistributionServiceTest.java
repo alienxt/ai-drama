@@ -4,11 +4,13 @@ import com.onehot.aidrama.baiduyun.BaiduDramaPreparationService;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaEpisode;
 import com.onehot.aidrama.dramas.DramaRepository;
+import com.onehot.aidrama.dramas.DramaSources;
 import com.onehot.aidrama.dramas.DramaStatus;
 import com.onehot.aidrama.media.DistributionPolicy;
 import com.onehot.aidrama.media.MediaAccount;
 import com.onehot.aidrama.media.MediaAccountRepository;
 import com.onehot.aidrama.media.MediaAccountStatus;
+import com.onehot.aidrama.media.MediaPlatform;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.users.Account;
 import com.onehot.aidrama.users.AccountRepository;
@@ -68,8 +70,8 @@ class DistributionServiceTest {
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-owned");
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
-        verify(dramaRepository, never()).findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        verify(dramaRepository, never()).findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         );
@@ -96,6 +98,38 @@ class DistributionServiceTest {
 
         verify(taskRepository, never()).findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(any(), any());
         verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void claimIgnoresPausedMediaAccounts() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        MediaAccount pausedWechat = activeMedia("media-wechat", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        pausedWechat.setStatus(MediaAccountStatus.PAUSED);
+        MediaAccount activeTiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
+        DistributionTask pendingTiktok = new DistributionTask();
+        pendingTiktok.setMediaAccountId("media-tiktok");
+        pendingTiktok.setDramaId("drama-1");
+        pendingTiktok.setStatus(DistributionTaskStatus.PENDING);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(pausedWechat, activeTiktok));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-tiktok")
+        )).thenReturn(Optional.of(pendingTiktok));
+        when(taskRepository.save(pendingTiktok)).thenReturn(pendingTiktok);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(pendingTiktok);
+        assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-tiktok");
+        verify(taskRepository).findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-tiktok")
+        );
     }
 
     @Test
@@ -205,6 +239,43 @@ class DistributionServiceTest {
     }
 
     @Test
+    void tiktokPreparationEndpointRequiresEnglishAssets() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                preparationService,
+                Runnable::run
+        );
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setMediaAccountId("media-tiktok");
+        task.setPlatform(MediaPlatform.TIKTOK);
+        task.setDramaId("drama-1");
+        task.setStatus(DistributionTaskStatus.CLAIMED);
+        Drama unprepared = readyDrama("drama-1", "urban");
+        Drama prepared = readyDrama("drama-1", "urban");
+        markTiktokPrepared(prepared);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK)));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(unprepared), Optional.of(unprepared), Optional.of(prepared));
+        when(preparationService.prepareForDistribution(unprepared, true)).thenReturn(prepared);
+
+        DistributionDtos.PreparationResponse response = service.prepareTaskDramaForOwner("owner-1", "task-1");
+
+        assertThat(response.preparing()).isTrue();
+        verify(preparationService).prepareForDistribution(unprepared, true);
+        verify(preparationService, never()).prepareForDistribution(unprepared);
+    }
+
+    @Test
     void claimMarksTaskFailedWhenAiPreparationFails() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
@@ -258,8 +329,8 @@ class DistributionServiceTest {
                 DistributionTaskStatus.PENDING,
                 List.of("media-1", "media-2")
         )).thenReturn(Optional.empty());
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(firstDrama, secondDrama));
@@ -279,7 +350,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void generatesOneTaskForEachEligibleMediaAccount() {
+    void generatesOneTaskPerPlatformWhenMultipleEligibleMediaAccountsSharePlatform() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -299,8 +370,8 @@ class DistributionServiceTest {
         MediaAccount first = activeMedia("media-1", "owner-1", "urban");
         MediaAccount second = activeMedia("media-2", "owner-1", "urban");
 
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -311,10 +382,75 @@ class DistributionServiceTest {
 
         List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
 
-        assertThat(generated).hasSize(2);
+        assertThat(generated).hasSize(1);
         assertThat(generated).extracting(DistributionTask::getDramaId).containsOnly("drama-1");
-        assertThat(generated).extracting(DistributionTask::getMediaAccountId).containsExactly("media-1", "media-2");
+        assertThat(generated).extracting(DistributionTask::getMediaAccountId).containsExactly("media-1");
+        assertThat(generated).extracting(DistributionTask::getPlatform).containsExactly(MediaPlatform.WECHAT_VIDEO);
+        verify(taskRepository).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void generatesOneTaskForWechatAndOneTaskForTiktokForSameDrama() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = readyDrama("drama-1", "urban");
+        MediaAccount wechat = activeMedia("media-wechat", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount anotherWechat = activeMedia("media-wechat-2", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
+
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, anotherWechat, tiktok));
+        when(taskRepository.existsByMediaAccountIdAndDramaId(any(), eq("drama-1"))).thenReturn(false);
+        when(taskRepository.existsByDramaIdAndPlatform(eq("drama-1"), any())).thenReturn(false);
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
+
+        assertThat(generated).hasSize(2);
+        assertThat(generated).extracting(DistributionTask::getMediaAccountId).containsExactly("media-wechat", "media-tiktok");
+        assertThat(generated).extracting(DistributionTask::getPlatform).containsExactly(MediaPlatform.WECHAT_VIDEO, MediaPlatform.TIKTOK);
         verify(taskRepository, times(2)).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void prepareNextCreatesTiktokTaskWhenWechatTaskAlreadyExistsForSameDrama() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = readyDrama("drama-1", "urban");
+        MediaAccount wechat = activeMedia("media-wechat", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, tiktok));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-wechat", "media-tiktok")
+        )).thenReturn(Optional.empty());
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
+        when(taskRepository.existsByMediaAccountIdAndDramaId("media-wechat", "drama-1")).thenReturn(true);
+        when(taskRepository.existsByMediaAccountIdAndDramaId("media-tiktok", "drama-1")).thenReturn(false);
+        when(taskRepository.existsByDramaIdAndPlatform("drama-1", MediaPlatform.TIKTOK)).thenReturn(false);
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<DistributionTask> claimed = service.prepareAndClaimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).isPresent();
+        assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-tiktok");
+        assertThat(claimed.get().getPlatform()).isEqualTo(MediaPlatform.TIKTOK);
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
     }
 
     @Test
@@ -326,8 +462,8 @@ class DistributionServiceTest {
 
         Drama drama = readyDrama("drama-1", "urban");
         drama.setAiSummary("");
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -340,6 +476,69 @@ class DistributionServiceTest {
         assertThat(generated).hasSize(1);
         assertThat(generated.getFirst().getDramaId()).isEqualTo("drama-1");
         verify(taskRepository).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void generatesTaskForBaiduDraftDramaToPrepareAssetsOnClaim() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama baiduDraft = baiduDraftDrama("drama-baidu", "urban");
+        Drama hongguoDraft = baiduDraftDrama("drama-hongguo", "urban");
+        hongguoDraft.setSource(DramaSources.HONGGUO_52API);
+
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(baiduDraft, hongguoDraft));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.existsByMediaAccountIdAndDramaId("media-1", "drama-baidu")).thenReturn(false);
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
+
+        assertThat(generated).hasSize(1);
+        assertThat(generated.getFirst().getDramaId()).isEqualTo("drama-baidu");
+        assertThat(generated.getFirst().getStatus()).isEqualTo(DistributionTaskStatus.PENDING);
+        verify(taskRepository).save(any(DistributionTask.class));
+        verify(taskRepository, never()).existsByMediaAccountIdAndDramaId("media-1", "drama-hongguo");
+    }
+
+    @Test
+    void claimMarksPreparedBaiduDraftDramaReadyWithoutRegeneratingAssets() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository, preparationService);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setId("task-1");
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-baidu");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+        Drama drama = baiduDraftDrama("drama-baidu", "urban");
+        markPrepared(drama);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(Optional.of(pending));
+        when(dramaRepository.findById("drama-baidu")).thenReturn(Optional.of(drama));
+        when(dramaRepository.save(drama)).thenReturn(drama);
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1");
+
+        assertThat(claimed).contains(pending);
+        assertThat(drama.getStatus()).isEqualTo(DramaStatus.READY);
+        assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        verify(preparationService, never()).prepareForDistribution(any());
+        verify(dramaRepository).save(drama);
     }
 
     @Test
@@ -359,8 +558,8 @@ class DistributionServiceTest {
         drama.setEpisodes(List.of(episode));
         markPrepared(drama);
 
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -483,8 +682,8 @@ class DistributionServiceTest {
         drama.setEpisodes(List.of(episode));
         markPrepared(drama);
 
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -505,8 +704,8 @@ class DistributionServiceTest {
 
         Drama drama = readyDrama("drama-1", "urban");
 
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -531,8 +730,8 @@ class DistributionServiceTest {
         failed.setStatus(DistributionTaskStatus.FAILED);
         failed.setFailureReason("AI 素材生成失败：OpenAI 配置无效");
 
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of(drama));
@@ -549,16 +748,16 @@ class DistributionServiceTest {
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
         DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
-        when(dramaRepository.findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 any(Sort.class)
         )).thenReturn(List.of());
 
         service.generateTasksForOwner("owner-1");
 
-        verify(dramaRepository).findByStatusAndCreatedAtGreaterThanEqual(
-                any(DramaStatus.class),
+        verify(dramaRepository).findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
                 any(Instant.class),
                 org.mockito.ArgumentMatchers.argThat(sort -> sort.toString().contains("createdAt: DESC"))
         );
@@ -1015,9 +1214,14 @@ class DistributionServiceTest {
     }
 
     private static MediaAccount activeMedia(String id, String ownerAccountId, String categoryId) {
+        return activeMedia(id, ownerAccountId, categoryId, MediaPlatform.WECHAT_VIDEO);
+    }
+
+    private static MediaAccount activeMedia(String id, String ownerAccountId, String categoryId, MediaPlatform platform) {
         MediaAccount media = new MediaAccount();
         media.setId(id);
         media.setOwnerAccountId(ownerAccountId);
+        media.setPlatform(platform);
         media.setStatus(MediaAccountStatus.ACTIVE);
         media.setLoginStateRef("profile");
         DistributionPolicy policy = new DistributionPolicy();
@@ -1041,11 +1245,33 @@ class DistributionServiceTest {
         return drama;
     }
 
+    private static Drama baiduDraftDrama(String id, String categoryId) {
+        Drama drama = new Drama();
+        drama.setId(id);
+        drama.setStatus(DramaStatus.DRAFT);
+        drama.setSource(DramaSources.BAIDU_PAN);
+        drama.setSourcePath("/drama/2026/7月14日/" + id);
+        drama.setCategoryIds(List.of(categoryId));
+        markCreatedNow(drama);
+        DramaEpisode episode = new DramaEpisode();
+        episode.setEpisodeNo(1);
+        episode.setSourcePath("/drama/" + id + ".mp4");
+        drama.setEpisodes(List.of(episode));
+        return drama;
+    }
+
     private static void markPrepared(Drama drama) {
         drama.setAiTitle("AI剧名");
         drama.setAiSummary("AI简介...");
         drama.setAiCoverUrl("/uploads/ai-covers/" + drama.getId() + ".jpg");
         drama.setAiVideoCoverUrl("/uploads/ai-covers/" + drama.getId() + "-video.jpg");
+    }
+
+    private static void markTiktokPrepared(Drama drama) {
+        drama.setAiTitleEn("English Title");
+        drama.setAiSummaryEn("English summary.");
+        drama.setAiCoverEnUrl("/uploads/ai-covers/" + drama.getId() + "-en.jpg");
+        drama.setAiVideoCoverEnUrl("/uploads/ai-covers/" + drama.getId() + "-en-video.jpg");
     }
 
     private static void markCreatedNow(Drama drama) {

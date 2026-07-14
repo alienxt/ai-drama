@@ -164,6 +164,39 @@ class BaiduDramaPreparationServiceTest {
     }
 
     @Test
+    void defaultPreparationDoesNotGenerateEnglishCover() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService aiService = mock(DramaAiService.class);
+        BaiduDramaPreparationService service = service(repository, aiService);
+        Drama drama = preparedDrama("drama-1");
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama prepared = service.prepareForDistribution(drama);
+
+        assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
+        verify(aiService, never()).generateEnglishCover("drama-1");
+    }
+
+    @Test
+    void tiktokPreparationGeneratesEnglishCoverWhenMissing() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService aiService = mock(DramaAiService.class);
+        BaiduDramaPreparationService service = service(repository, aiService);
+        Drama drama = preparedDrama("drama-1");
+        Drama covered = preparedDrama("drama-1");
+        covered.setAiCoverEnUrl("/uploads/ai-covers/en.jpg");
+        covered.setAiVideoCoverEnUrl("/uploads/ai-covers/en-video.jpg");
+        when(aiService.generateEnglishCover("drama-1")).thenReturn(covered);
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama prepared = service.prepareForDistribution(drama, true);
+
+        assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
+        assertThat(prepared.getAiCoverEnUrl()).isEqualTo("/uploads/ai-covers/en.jpg");
+        verify(aiService).generateEnglishCover("drama-1");
+    }
+
+    @Test
     void skipsDramaDuringPreparationFailureCooldown() {
         DramaRepository repository = mock(DramaRepository.class);
         DramaAiService aiService = mock(DramaAiService.class);
@@ -196,6 +229,17 @@ class BaiduDramaPreparationServiceTest {
         episode.setEpisodeNo(1);
         episode.setSourcePath("/root/01.mp4");
         drama.setEpisodes(List.of(episode));
+        return drama;
+    }
+
+    private Drama preparedDrama(String id) {
+        Drama drama = drama(id);
+        drama.setAiTitle("中文剧名");
+        drama.setAiSummary("中文简介...");
+        drama.setAiTitleEn("English Title");
+        drama.setAiSummaryEn("English summary.");
+        drama.setAiCoverUrl("/uploads/ai-covers/" + id + ".jpg");
+        drama.setAiVideoCoverUrl("/uploads/ai-covers/" + id + "-video.jpg");
         return drama;
     }
 }
