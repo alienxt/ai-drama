@@ -62,9 +62,11 @@ public class HongguoDramaController {
 
     @PostMapping("/ai-manga-new-sync")
     ApiResponse<HongguoDtos.MangaSearchResponse> syncAiMangaNew(@RequestBody(required = false) HongguoDtos.NewDramaRequest request) {
-        int page = request == null || request.page() == null ? 1 : request.page();
+        int maxPages = request == null || request.maxPages() == null
+                ? HongguoDramaService.DEFAULT_AI_MANGA_SYNC_MAX_PAGES
+                : request.maxPages();
         return ApiResponse.ok(
-                HongguoDtos.MangaSearchResponse.from(service.syncAiMangaNewDramas(page)),
+                HongguoDtos.MangaSearchResponse.from(service.syncAiMangaNewDramas(maxPages)),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }

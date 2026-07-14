@@ -10,7 +10,10 @@ public class BaiduDramaImportPlanner {
     private static final Pattern DATE_DIR = Pattern.compile("^(\\d{1,2})月(\\d{1,2})日$");
     private static final Pattern LEADING_INDEX = Pattern.compile("^\\d+[.．、\\s]*");
     private static final Pattern EPISODE_COUNT = Pattern.compile("[（(](\\d+)集[）)]");
-    private static final Pattern EPISODE_FILE = Pattern.compile("^(\\d+).*\\.(mp4|mov|m4v)$", Pattern.CASE_INSENSITIVE);
+    private static final String VIDEO_EXTENSIONS = "mp4|mov|m4v|mkv";
+    private static final Pattern CHINESE_EPISODE_FILE = Pattern.compile("^.*第\\s*0*(\\d+)\\s*集.*\\.(" + VIDEO_EXTENSIONS + ")$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EPISODE_FILE = Pattern.compile("^0*(\\d+)(?:\\s*集)?.*\\.(" + VIDEO_EXTENSIONS + ")$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PREFIXED_EPISODE_FILE = Pattern.compile("^(?:ep|episode)\\s*0*(\\d+).*\\.(" + VIDEO_EXTENSIONS + ")$", Pattern.CASE_INSENSITIVE);
 
     public Optional<BaiduPanEntry> pickLatestDateDirectory(List<BaiduPanEntry> entries) {
         return entries.stream()
@@ -47,13 +50,33 @@ public class BaiduDramaImportPlanner {
         return new PlannedDrama(title, summary, summaryPath, dramaDir.path(), coverPath, resolvedEpisodeCount, episodes);
     }
 
-    private Optional<PlannedEpisode> toEpisode(BaiduPanEntry entry) {
-        Matcher matcher = EPISODE_FILE.matcher(entry.name());
-        if (!matcher.matches()) {
-            return Optional.empty();
+    public boolean looksLikeDramaDirectory(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
         }
-        int episodeNo = Integer.parseInt(matcher.group(1));
-        return Optional.of(new PlannedEpisode(episodeNo, entry.name(), entry.path(), entry.fsId(), entry.size()));
+        String rawName = LEADING_INDEX.matcher(name).replaceFirst("").trim();
+        return extractEpisodeCount(rawName) > 0;
+    }
+
+    private Optional<PlannedEpisode> toEpisode(BaiduPanEntry entry) {
+        return episodeNo(entry.name())
+                .map(episodeNo -> new PlannedEpisode(episodeNo, entry.name(), entry.path(), entry.fsId(), entry.size()));
+    }
+
+    private Optional<Integer> episodeNo(String name) {
+        Matcher matcher = CHINESE_EPISODE_FILE.matcher(name);
+        if (matcher.matches()) {
+            return Optional.of(Integer.parseInt(matcher.group(1)));
+        }
+        matcher = EPISODE_FILE.matcher(name);
+        if (matcher.matches()) {
+            return Optional.of(Integer.parseInt(matcher.group(1)));
+        }
+        matcher = PREFIXED_EPISODE_FILE.matcher(name);
+        if (matcher.matches()) {
+            return Optional.of(Integer.parseInt(matcher.group(1)));
+        }
+        return Optional.empty();
     }
 
     private boolean isImage(String name) {

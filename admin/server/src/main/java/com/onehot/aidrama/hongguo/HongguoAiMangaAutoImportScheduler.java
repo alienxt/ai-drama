@@ -69,7 +69,7 @@ public class HongguoAiMangaAutoImportScheduler {
         int maxPages = configInt(MAX_PAGES_KEY, 8);
         HongguoDramaService.AutoImportResult result = systemTaskService.run(
                 SystemTaskType.HONGGUO_AI_MANGA_AUTO_IMPORT,
-                "红果AI漫剧7日上新自动导入",
+                "红果AI漫剧近3日上新自动导入",
                 "scheduled",
                 mapOf("date", todayText, "limit", limit, "maxPages", maxPages),
                 () -> dramaService.autoImportAiMangaNewDramas(limit, maxPages),

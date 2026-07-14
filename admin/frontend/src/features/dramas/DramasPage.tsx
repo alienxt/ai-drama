@@ -46,6 +46,7 @@ export function DramasPage() {
   const [hongguoPage, setHongguoPage] = useState(1);
   const [hongguoNewPage, setHongguoNewPage] = useState(1);
   const hongguoScreeningPage = 1;
+  const [hongguoScreeningMaxPages, setHongguoScreeningMaxPages] = useState(8);
   const [hongguoCandidates, setHongguoCandidates] = useState<HongguoCandidate[]>([]);
   const [loadingHongguoCandidates, setLoadingHongguoCandidates] = useState(false);
   const [syncingHongguo, setSyncingHongguo] = useState(false);
@@ -173,11 +174,11 @@ export function DramasPage() {
     setSyncingHongguo(true);
     try {
       const result = await apiPost<HongguoMangaSyncResponse>('/admin/hongguo/ai-manga-new-sync', {
-        page: hongguoScreeningPage,
+        maxPages: hongguoScreeningMaxPages,
       }, {
         timeout: HONGGUO_SYNC_TIMEOUT_MS,
       });
-      appMessage.success(`AI漫剧7日上新60-120分钟已同步：获取 ${result.fetched} 部，查详情 ${result.detailed} 部，跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
+      appMessage.success(`AI漫剧近3日上新已同步：翻页 ${result.page} 页，获取 ${result.fetched} 部，过滤/跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
       await loadHongguoScreeningCandidates(hongguoScreeningPage);
     } finally {
       setSyncingHongguo(false);
@@ -446,7 +447,7 @@ export function DramasPage() {
 
   function hongguoPanelTitle() {
     if (isHongguoScreeningMode) {
-      return 'AI漫剧7日上新60-120分钟';
+      return 'AI漫剧近3日上新60-120分钟';
     }
     return isHongguoNewMode ? '红果新剧' : '红果漫剧搜索';
   }
@@ -460,21 +461,21 @@ export function DramasPage() {
 
   function hongguoSyncButtonText() {
     if (isHongguoScreeningMode) {
-      return '同步AI漫剧7日上新60-120分钟';
+      return '同步近3日AI漫剧';
     }
     return isHongguoNewMode ? '同步新剧' : '搜索漫剧';
   }
 
   function hongguoEmptyMessage() {
     if (isHongguoScreeningMode) {
-      return '当前页还没有 AI漫剧7日上新60-120分钟候选';
+      return '当前没有 AI漫剧近3日上新候选';
     }
     return isHongguoNewMode ? '当前页还没有候选短剧' : '当前关键词还没有候选短剧';
   }
 
   function hongguoInfoMessage() {
     if (isHongguoScreeningMode) {
-      return '同步近 7 日上新、60-120 分钟的 AI 漫剧候选；只请求筛选列表，导入单部时才拉详情并保存目录。';
+      return '从红果 AI 漫剧 7 日筛选池多页获取，保存前只保留发布时间近 3 天、60-120 分钟的候选；导入单部时才拉详情并保存目录。';
     }
     return isHongguoNewMode
       ? '走 hg_new_play 的新剧接口；默认 date 取当前时间往前 3 小时所在日期，接口只支持按日期取新剧，不过滤真人/漫剧。每次同步会对当前页候选查详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
@@ -499,7 +500,7 @@ export function DramasPage() {
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
           <Button icon={<SearchOutlined />} onClick={openHongguoMangaSearch}>红果漫剧搜索</Button>
           <Button icon={<CalendarOutlined />} onClick={openHongguoNewDramas}>红果新剧</Button>
-          <Button icon={<RocketOutlined />} onClick={openHongguoAiMangaNewDramas}>AI漫剧7日上新60-120分钟</Button>
+          <Button icon={<RocketOutlined />} onClick={openHongguoAiMangaNewDramas}>AI漫剧近3日上新</Button>
           <Button
             icon={<ClockCircleOutlined />}
             disabled={!hasSelectedDramas}
@@ -897,7 +898,16 @@ export function DramasPage() {
                 placeholder="搜索关键词"
               />
             )}
-            {isHongguoScreeningMode ? null : (
+            {isHongguoScreeningMode ? (
+              <InputNumber
+                min={1}
+                max={20}
+                precision={0}
+                value={hongguoScreeningMaxPages}
+                addonBefore="翻页数"
+                onChange={(value) => setHongguoScreeningMaxPages(Number(value || 1))}
+              />
+            ) : (
               <InputNumber
                 min={1}
                 precision={0}

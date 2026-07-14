@@ -57,6 +57,41 @@ class BaiduDramaImportPlannerTest {
     }
 
     @Test
+    void parsesChineseAndPrefixedEpisodeFileNames() {
+        BaiduDramaImportPlanner planner = new BaiduDramaImportPlanner();
+
+        PlannedDrama drama = planner.planDrama(
+                new BaiduPanEntry("/root/2.错嫁甜妻（3集）", "2.错嫁甜妻（3集）", true, 1L, 0),
+                List.of(
+                        new BaiduPanEntry("/root/第1集.mp4", "第1集.mp4", false, 10L, 100),
+                        new BaiduPanEntry("/root/EP02.mkv", "EP02.mkv", false, 11L, 100),
+                        new BaiduPanEntry("/root/episode 03.mov", "episode 03.mov", false, 12L, 100)
+                )
+        );
+
+        assertThat(drama.episodes()).extracting(PlannedEpisode::episodeNo).containsExactly(1, 2, 3);
+        assertThat(planner.looksLikeDramaDirectory("2.错嫁甜妻（3集）")).isTrue();
+        assertThat(planner.looksLikeDramaDirectory("甜宠情感")).isFalse();
+    }
+
+    @Test
+    void parsesEpisodeNumberWhenFileNameStartsWithDramaTitle() {
+        BaiduDramaImportPlanner planner = new BaiduDramaImportPlanner();
+
+        PlannedDrama drama = planner.planDrama(
+                new BaiduPanEntry("/root/5.藏仇入宫从女官步步崛起（25集）", "5.藏仇入宫从女官步步崛起（25集）", true, 1L, 0),
+                List.of(
+                        new BaiduPanEntry("/root/藏仇入宫从女官步步崛起 第7集.mp4", "藏仇入宫从女官步步崛起 第7集.mp4", false, 10L, 100),
+                        new BaiduPanEntry("/root/藏仇入宫从女官步步崛起 第08集.mp4", "藏仇入宫从女官步步崛起 第08集.mp4", false, 11L, 100),
+                        new BaiduPanEntry("/root/藏仇入宫从女官步步崛起 第19集.mp4", "藏仇入宫从女官步步崛起 第19集.mp4", false, 12L, 100),
+                        new BaiduPanEntry("/root/海报.jpg", "海报.jpg", false, 13L, 100)
+                )
+        );
+
+        assertThat(drama.episodes()).extracting(PlannedEpisode::episodeNo).containsExactly(7, 8, 19);
+    }
+
+    @Test
     void prefersZeroNamedImageAsCoverBeforeOtherImages() {
         BaiduDramaImportPlanner planner = new BaiduDramaImportPlanner();
 

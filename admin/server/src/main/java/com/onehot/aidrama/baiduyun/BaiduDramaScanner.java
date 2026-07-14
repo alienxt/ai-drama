@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class BaiduDramaScanner {
     private static final Logger LOGGER = LoggerFactory.getLogger(BaiduDramaScanner.class);
+    private static final int MAX_CONTAINER_SCAN_DEPTH = 3;
 
     private final BaiduPanClient baiduPanClient;
     private final DramaRepository dramaRepository;
@@ -124,8 +125,7 @@ public class BaiduDramaScanner {
     public List<Drama> scanDateDirectory(String dateDirectory) {
         return baiduPanClient.listDirectory(dateDirectory).stream()
                 .filter(BaiduPanEntry::directory)
-                .map(this::importDramaSafely)
-                .flatMap(Optional::stream)
+                .flatMap(entry -> importDramaOrNestedContainerSafely(entry, 0).stream())
                 .toList();
     }
 
@@ -295,8 +295,49 @@ public class BaiduDramaScanner {
         }
     }
 
+    private List<Drama> importDramaOrNestedContainerSafely(BaiduPanEntry directory, int depth) {
+        try {
+            List<BaiduPanEntry> children = baiduPanClient.listDirectory(directory.path());
+            PlannedDrama planned = importPlanner.planDrama(directory, children);
+            if (!planned.episodes().isEmpty()) {
+                return List.of(importPlannedDrama(planned));
+            }
+            List<BaiduPanEntry> likelyDramaDirs = children.stream()
+                    .filter(BaiduPanEntry::directory)
+                    .filter(entry -> importPlanner.looksLikeDramaDirectory(entry.name()))
+                    .toList();
+            if (!likelyDramaDirs.isEmpty()
+                    && depth < MAX_CONTAINER_SCAN_DEPTH
+                    && !importPlanner.looksLikeDramaDirectory(directory.name())) {
+                LOGGER.info(
+                        "Descend Baidu container directory: path={}, childDramaDirs={}",
+                        directory.path(),
+                        likelyDramaDirs.size()
+                );
+                return likelyDramaDirs.stream()
+                        .flatMap(entry -> importDramaOrNestedContainerSafely(entry, depth + 1).stream())
+                        .toList();
+            }
+            LOGGER.warn("Skip Baidu drama import for {}: no episode video files found", directory.path());
+            return List.of();
+        } catch (DuplicateDramaException exception) {
+            LOGGER.info("Skip duplicate Baidu drama import for {}: {}", directory.path(), exception.getMessage());
+            return List.of();
+        } catch (BaiduPanException | IllegalArgumentException exception) {
+            LOGGER.warn("Skip Baidu drama import for {}: {}", directory.path(), rootCauseMessage(exception));
+            return List.of();
+        }
+    }
+
     private Drama importDrama(BaiduPanEntry dramaDir) {
         PlannedDrama planned = importPlanner.planDrama(dramaDir, baiduPanClient.listDirectory(dramaDir.path()));
+        return importPlannedDrama(planned);
+    }
+
+    private Drama importPlannedDrama(PlannedDrama planned) {
+        if (planned.episodes().isEmpty()) {
+            throw new IllegalArgumentException("no episode video files found");
+        }
         List<Drama> matches = dramaRepository.findAllBySourcePath(planned.sourcePath());
         Optional<Drama> existing = matches.stream().findFirst();
         if (matches.size() > 1) {

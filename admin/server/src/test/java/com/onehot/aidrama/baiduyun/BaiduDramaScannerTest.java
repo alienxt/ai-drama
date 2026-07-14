@@ -108,6 +108,59 @@ class BaiduDramaScannerTest {
     }
 
     @Test
+    void descendsCategoryFolderInsteadOfImportingItAsZeroEpisodeDrama() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+
+        when(baiduPanClient.listDirectory("/root/6月20日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月20日/甜宠情感", "甜宠情感", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月20日/甜宠情感")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）", "1.错嫁甜妻（2集）", true, 2L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）/第1集.mp4", "第1集.mp4", false, 3L, 100),
+                new BaiduPanEntry("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）/EP02.mkv", "EP02.mkv", false, 4L, 100)
+        ));
+        when(dramaRepository.findAllBySourcePath("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）")).thenReturn(List.of());
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<Drama> imported = scanner.scanDateDirectory("/root/6月20日");
+
+        assertThat(imported).hasSize(1);
+        Drama drama = imported.getFirst();
+        assertThat(drama.getTitle()).isEqualTo("错嫁甜妻");
+        assertThat(drama.getSourcePath()).isEqualTo("/root/6月20日/甜宠情感/1.错嫁甜妻（2集）");
+        assertThat(drama.getEpisodes()).extracting(DramaEpisode::getEpisodeNo).containsExactly(1, 2);
+        verify(dramaRepository, never()).findAllBySourcePath("/root/6月20日/甜宠情感");
+    }
+
+    @Test
+    void skipsLeafDirectoryWhenNoEpisodeFilesAreFound() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+
+        when(baiduPanClient.listDirectory("/root/6月20日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月20日/空目录", "空目录", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/6月20日/空目录")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月20日/空目录/cover.jpg", "cover.jpg", false, 2L, 100),
+                new BaiduPanEntry("/root/6月20日/空目录/简介.txt", "简介.txt", false, 3L, 100)
+        ));
+
+        List<Drama> imported = scanner.scanDateDirectory("/root/6月20日");
+
+        assertThat(imported).isEmpty();
+        verify(dramaRepository, never()).save(any(Drama.class));
+    }
+
+    @Test
     void failedLatestDateScanDoesNotUpdateLastScanTime() {
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);

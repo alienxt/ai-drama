@@ -357,7 +357,7 @@ class HongguoDramaServiceTest {
                 List.of("新剧"),
                 List.of("AI漫剧")
         );
-        when(apiClient.fetchScreenedAiMangaNewDramas(1))
+        when(apiClient.fetchScreenedAiMangaNewDramas(1, null, List.of()))
                 .thenReturn(new HongguoApiModels.MangaSearchPage("AI漫剧7日上新", 1, List.of(first)));
         when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "screen-1"))
                 .thenReturn(Optional.empty());
@@ -365,7 +365,7 @@ class HongguoDramaServiceTest {
 
         HongguoDramaService.MangaSearchResult result = service.syncAiMangaNewDramas(1);
 
-        assertThat(result.keyword()).isEqualTo("AI漫剧7日上新");
+        assertThat(result.keyword()).isEqualTo("AI漫剧近3日上新60-120分钟");
         assertThat(result.fetched()).isEqualTo(1);
         assertThat(result.detailed()).isZero();
         assertThat(result.created()).isEqualTo(1);
@@ -373,10 +373,63 @@ class HongguoDramaServiceTest {
         verify(candidateRepository).save(captor.capture());
         HongguoDramaCandidate saved = captor.getValue();
         assertThat(saved.getProviderDramaId()).isEqualTo("screen-1");
-        assertThat(saved.getCalendarDate()).isEqualTo(HongguoDramaService.AI_MANGA_7_DAYS_SCOPE);
+        assertThat(saved.getCalendarDate()).isEqualTo(HongguoDramaService.AI_MANGA_RECENT_SCOPE);
         assertThat(saved.getCalendarPage()).isEqualTo(1);
-        assertThat(saved.getSearchKeyword()).isEqualTo("AI漫剧7日上新");
-        assertThat(saved.getCategories()).contains("新剧", "AI漫剧", "7日上新");
+        assertThat(saved.getSearchKeyword()).isEqualTo("AI漫剧近3日上新");
+        assertThat(saved.getCategories()).contains("新剧", "AI漫剧", "近3日上新");
+        verify(apiClient, never()).fetchDetail(any(), any());
+    }
+
+    @Test
+    void syncAiMangaNewDramasPaginatesAndFiltersItemsOlderThanThreeDays() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        Instant now = Instant.parse("2026-07-10T10:00:00Z");
+        Instant since = now.minus(HongguoDramaService.AI_MANGA_NEW_LOOKBACK);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                candidateRepository,
+                dramaRepository,
+                Clock.fixed(now, ZoneOffset.UTC)
+        );
+        HongguoApiModels.MangaSearchItem recentFirstPage = aiMangaItem("recent-1", "近三天AI漫剧一", since.plusSeconds(60));
+        HongguoApiModels.MangaSearchItem old = aiMangaItem("old-1", "三天外AI漫剧", since.minusSeconds(1));
+        HongguoApiModels.MangaSearchItem recentSecondPage = aiMangaItem("recent-2", "近三天AI漫剧二", since.plusSeconds(120));
+        when(apiClient.fetchScreenedAiMangaNewDramas(1, null, List.of()))
+                .thenReturn(new HongguoApiModels.MangaSearchPage(
+                        "AI漫剧7日上新60-120分钟",
+                        1,
+                        List.of(recentFirstPage, old),
+                        "session-1",
+                        List.of("recent-1", "old-1")
+                ));
+        when(apiClient.fetchScreenedAiMangaNewDramas(2, "session-1", List.of("recent-1", "old-1")))
+                .thenReturn(new HongguoApiModels.MangaSearchPage(
+                        "AI漫剧7日上新60-120分钟",
+                        2,
+                        List.of(recentSecondPage),
+                        "session-1",
+                        List.of("recent-2")
+                ));
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "recent-1"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "recent-2"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.MangaSearchResult result = service.syncAiMangaNewDramas(2);
+
+        assertThat(result.page()).isEqualTo(2);
+        assertThat(result.fetched()).isEqualTo(3);
+        assertThat(result.skipped()).isEqualTo(1);
+        assertThat(result.created()).isEqualTo(2);
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository, times(2)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(HongguoDramaCandidate::getProviderDramaId)
+                .containsExactly("recent-1", "recent-2");
+        verify(candidateRepository, never()).findByProviderAndProviderDramaId(HongguoDramaService.PROVIDER, "old-1");
         verify(apiClient, never()).fetchDetail(any(), any());
     }
 
@@ -620,6 +673,10 @@ class HongguoDramaServiceTest {
     }
 
     private HongguoApiModels.MangaSearchItem aiMangaItem(String providerDramaId, String title) {
+        return aiMangaItem(providerDramaId, title, null);
+    }
+
+    private HongguoApiModels.MangaSearchItem aiMangaItem(String providerDramaId, String title, Instant publishedAt) {
         return new HongguoApiModels.MangaSearchItem(
                 providerDramaId,
                 title,
@@ -631,7 +688,7 @@ class HongguoDramaServiceTest {
                 "红果短剧",
                 42,
                 8888L,
-                null,
+                publishedAt,
                 List.of("AI漫剧", "新剧"),
                 List.of("AI漫剧")
         );

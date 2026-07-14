@@ -37,9 +37,13 @@ public class HongguoDramaService {
     public static final String PROVIDER = "52API_HONGGUO";
     private static final Duration DOWNLOAD_URL_CACHE_SKEW = Duration.ofMinutes(2);
     public static final Duration NEW_DRAMA_LOOKBACK = Duration.ofHours(3);
+    public static final Duration AI_MANGA_NEW_LOOKBACK = Duration.ofDays(3);
+    public static final int DEFAULT_AI_MANGA_SYNC_MAX_PAGES = 8;
     public static final String DEFAULT_MANGA_KEYWORD = "漫剧";
     public static final String NEW_DRAMA_SCOPE = "HONGGUO_NEW_DRAMA";
-    public static final String AI_MANGA_7_DAYS_SCOPE = "HONGGUO_AI_MANGA_DAYS_7";
+    public static final String AI_MANGA_RECENT_SCOPE = "HONGGUO_AI_MANGA_DAYS_3";
+    private static final String AI_MANGA_RECENT_LABEL = "AI漫剧近3日上新60-120分钟";
+    private static final String AI_MANGA_RECENT_SEARCH_KEYWORD = "AI漫剧近3日上新";
 
     private final HongguoApiClient apiClient;
     private final HongguoDramaCandidateRepository candidateRepository;
@@ -165,10 +169,49 @@ public class HongguoDramaService {
         );
     }
 
-    public MangaSearchResult syncAiMangaNewDramas(int page) {
-        int effectivePage = 1;
-        HongguoApiModels.MangaSearchPage searchPage = callApi(() -> apiClient.fetchScreenedAiMangaNewDramas(effectivePage));
-        return saveAiMangaSearchPage(searchPage).result();
+    public MangaSearchResult syncAiMangaNewDramas(int maxPages) {
+        int effectiveMaxPages = Math.max(1, maxPages);
+        Instant since = Instant.now(clock).minus(AI_MANGA_NEW_LOOKBACK);
+        LinkedHashSet<String> filterIds = new LinkedHashSet<>();
+        String sessionId = null;
+        int pagesFetched = 0;
+        int fetched = 0;
+        int created = 0;
+        int updated = 0;
+        int skipped = 0;
+
+        for (int pageNumber = 1; pageNumber <= effectiveMaxPages; pageNumber++) {
+            int currentPage = pageNumber;
+            String requestSessionId = sessionId;
+            List<String> requestFilterIds = List.copyOf(filterIds);
+            HongguoApiModels.MangaSearchPage searchPage = callApi(
+                    () -> apiClient.fetchScreenedAiMangaNewDramas(currentPage, requestSessionId, requestFilterIds)
+            );
+            CandidateSyncResult syncResult = saveAiMangaSearchPage(searchPage, since);
+            MangaSearchResult pageResult = syncResult.result();
+            pagesFetched++;
+            fetched += pageResult.fetched();
+            created += pageResult.created();
+            updated += pageResult.updated();
+            skipped += pageResult.skipped();
+            if (hasText(searchPage.sessionId())) {
+                sessionId = searchPage.sessionId().trim();
+            }
+            filterIds.addAll(searchPage.filterIds());
+            if (searchPage.items().isEmpty()) {
+                break;
+            }
+        }
+
+        return new MangaSearchResult(
+                AI_MANGA_RECENT_LABEL,
+                pagesFetched,
+                fetched,
+                0,
+                skipped,
+                created,
+                updated
+        );
     }
 
     public AutoImportResult autoImportAiMangaNewDramas(int limit, int maxPages) {
@@ -183,6 +226,7 @@ public class HongguoDramaService {
         int updated = 0;
         int skipped = 0;
         int skippedExisting = 0;
+        Instant since = Instant.now(clock).minus(AI_MANGA_NEW_LOOKBACK);
 
         for (int pageNumber = 1; pageNumber <= effectiveMaxPages && queuedCandidates.size() < effectiveLimit; pageNumber++) {
             int currentPage = pageNumber;
@@ -191,7 +235,7 @@ public class HongguoDramaService {
             HongguoApiModels.MangaSearchPage searchPage = callApi(
                     () -> apiClient.fetchScreenedAiMangaNewDramas(currentPage, requestSessionId, requestFilterIds)
             );
-            CandidateSyncResult syncResult = saveAiMangaSearchPage(searchPage);
+            CandidateSyncResult syncResult = saveAiMangaSearchPage(searchPage, since);
             MangaSearchResult pageResult = syncResult.result();
             pagesFetched++;
             candidatesFetched += pageResult.fetched();
@@ -260,13 +304,17 @@ public class HongguoDramaService {
         );
     }
 
-    private CandidateSyncResult saveAiMangaSearchPage(HongguoApiModels.MangaSearchPage searchPage) {
+    private CandidateSyncResult saveAiMangaSearchPage(HongguoApiModels.MangaSearchPage searchPage, Instant publishedSince) {
         int created = 0;
         int updated = 0;
         int skipped = 0;
         List<HongguoDramaCandidate> candidates = new ArrayList<>();
         for (HongguoApiModels.MangaSearchItem item : searchPage.items()) {
             if (!hasText(item.providerDramaId())) {
+                skipped++;
+                continue;
+            }
+            if (!isRecentOrUnknown(item.publishedAt(), publishedSince)) {
                 skipped++;
                 continue;
             }
@@ -319,12 +367,14 @@ public class HongguoDramaService {
     }
 
     public List<HongguoDramaCandidate> listAiMangaNewDramas(Integer page) {
-        int effectivePage = page == null ? 1 : Math.max(page, 1);
-        return candidateRepository.findByProviderAndCalendarDateAndCalendarPageOrderByPublishedAtDescCreatedAtDesc(
+        Instant since = Instant.now(clock).minus(AI_MANGA_NEW_LOOKBACK);
+        return candidateRepository.findByProviderAndCalendarDateOrderByPublishedAtDesc(
                 PROVIDER,
-                AI_MANGA_7_DAYS_SCOPE,
-                effectivePage
-        );
+                AI_MANGA_RECENT_SCOPE
+        ).stream()
+                .filter(candidate -> isRecentOrUnknown(candidate.getPublishedAt(), since))
+                .limit(50)
+                .toList();
     }
 
     public Drama importCandidate(String candidateId) {
@@ -498,11 +548,11 @@ public class HongguoDramaService {
             int page
     ) {
         applyCandidateFields(candidate, item, null);
-        candidate.setCalendarDate(AI_MANGA_7_DAYS_SCOPE);
+        candidate.setCalendarDate(AI_MANGA_RECENT_SCOPE);
         candidate.setCalendarPage(page);
-        candidate.setSearchKeyword("AI漫剧7日上新");
+        candidate.setSearchKeyword(AI_MANGA_RECENT_SEARCH_KEYWORD);
         candidate.setSearchPage(page);
-        candidate.setCategories(mergedCategories(candidate.getCategories(), "AI漫剧", "7日上新"));
+        candidate.setCategories(mergedCategories(candidate.getCategories(), "AI漫剧", "近3日上新"));
     }
 
     private void applyCandidateFields(
@@ -531,6 +581,10 @@ public class HongguoDramaService {
         } catch (HongguoApiException exception) {
             throw new BusinessException("HONGGUO_API_FAILED", exception.getMessage(), HttpStatus.BAD_GATEWAY);
         }
+    }
+
+    private boolean isRecentOrUnknown(Instant publishedAt, Instant since) {
+        return publishedAt == null || since == null || !publishedAt.isBefore(since);
     }
 
     private String normalizeKeyword(String keyword) {

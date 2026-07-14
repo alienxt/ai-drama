@@ -9,7 +9,7 @@ public class HongguoDtos {
     public record MangaSearchRequest(String keyword, Integer page) {
     }
 
-    public record NewDramaRequest(Integer page) {
+    public record NewDramaRequest(Integer page, Integer maxPages) {
     }
 
     public record MangaSearchResponse(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated) {
