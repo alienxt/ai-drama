@@ -19,12 +19,15 @@ from xml.etree import ElementTree
 from docx import Document
 
 
-CONTRACT_MEDIA_PLATFORMS = ("WECHAT_VIDEO",)
+CONTRACT_MEDIA_PLATFORMS = ("WECHAT_VIDEO", "TIKTOK")
 CONTRACT_TEMPLATE_TYPES = ("cost", "purchase", "rights")
 CONTRACT_TEMPLATE_TYPE_LABELS = {
     "cost": "成本合同",
     "purchase": "购买合同",
     "rights": "权利声明",
+}
+CONTRACT_PLATFORM_TEMPLATE_TYPE_LABELS = {
+    ("TIKTOK", "purchase"): "TK合作协议",
 }
 CONTRACT_PARTY_FIELD_LABELS = {
     "buyer": "买方/甲方",
@@ -81,7 +84,13 @@ def contract_party_key(platform: str, party: str) -> str:
 
 def required_contract_template_types(platform: str) -> tuple[tuple[str, str], ...]:
     types = CONTRACT_PLATFORM_TEMPLATE_TYPES.get(platform, ("purchase",))
-    return tuple((contract_type, CONTRACT_TEMPLATE_TYPE_LABELS[contract_type]) for contract_type in types)
+    return tuple(
+        (
+            contract_type,
+            CONTRACT_PLATFORM_TEMPLATE_TYPE_LABELS.get((platform, contract_type), CONTRACT_TEMPLATE_TYPE_LABELS[contract_type]),
+        )
+        for contract_type in types
+    )
 
 
 def required_contract_party_fields(platform: str) -> tuple[tuple[str, str], ...]:
@@ -169,7 +178,7 @@ def default_contract_templates() -> dict[str, Path | None]:
     return {
         contract_template_key(platform, contract_type): None
         for platform in CONTRACT_MEDIA_PLATFORMS
-        for contract_type in CONTRACT_TEMPLATE_TYPES
+        for contract_type, _label in required_contract_template_types(platform)
     }
 
 
@@ -179,7 +188,7 @@ def default_contract_config() -> dict[str, Path | str | None]:
         **{
             contract_party_key(platform, party): ""
             for platform in CONTRACT_MEDIA_PLATFORMS
-            for party in CONTRACT_PARTY_FIELD_LABELS
+            for party, _label in required_contract_party_fields(platform)
         },
     }
 
@@ -201,7 +210,7 @@ class ContractConfigStore:
             if isinstance(value, str) and value.strip():
                 templates[key] = Path(value)
         for platform in CONTRACT_MEDIA_PLATFORMS:
-            for party in CONTRACT_PARTY_FIELD_LABELS:
+            for party, _label in required_contract_party_fields(platform):
                 key = contract_party_key(platform, party)
                 value = data.get(key)
                 if isinstance(value, str):

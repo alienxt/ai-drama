@@ -197,6 +197,7 @@ export type DistributionTask = {
   ownerUsername?: string;
   mediaAccountId: string;
   mediaAccountName?: string;
+  platform?: 'WECHAT_VIDEO' | 'DOUYIN' | 'TIKTOK';
   dramaId: string;
   dramaTitle?: string;
   status: 'PENDING' | 'CLAIMED' | 'DOWNLOADING' | 'PROCESSING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';

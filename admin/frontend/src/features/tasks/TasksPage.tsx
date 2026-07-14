@@ -7,7 +7,7 @@ import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiGet, apiGetPage, apiPost } from '../../shared/http';
-import { distributionTaskStatusColors, distributionTaskStatusLabel, distributionTaskStatusOptions } from '../../shared/labels';
+import { distributionTaskStatusColors, distributionTaskStatusLabel, distributionTaskStatusOptions, mediaPlatformLabel } from '../../shared/labels';
 import type { DistributionTask, DistributionTaskStatusCount } from '../../shared/types';
 
 export function TasksPage() {
@@ -80,6 +80,7 @@ export function TasksPage() {
           { title: '任务', dataIndex: 'id', width: 190, render: (id: string) => <span className="mono-id">{id}</span> },
           { title: '所属账户', dataIndex: 'ownerUsername', width: 130, render: (_: string | undefined, record) => record.ownerUsername || record.ownerAccountId || '-' },
           { title: '媒体号', dataIndex: 'mediaAccountName', width: 180, render: renderTaskCellText },
+          { title: '平台', dataIndex: 'platform', width: 100, render: (platform?: string) => <Tag>{mediaPlatformLabel(platform || '')}</Tag> },
           { title: '短剧', dataIndex: 'dramaTitle', width: 260, render: renderTaskCellText },
           {
             title: '状态',

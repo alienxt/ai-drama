@@ -427,6 +427,16 @@ def test_contract_config_store_round_trips_template_paths(tmp_path):
     assert store.load()[contract_template_key("WECHAT_VIDEO", "rights")] == tmp_path / "rights.docx"
 
 
+def test_contract_config_store_round_trips_tiktok_template_path(tmp_path):
+    store = ContractConfigStore(tmp_path / "contract-templates.json")
+    template = tmp_path / "tk.docx"
+    template.write_text("tk", encoding="utf-8")
+
+    store.save({contract_template_key("TIKTOK", "purchase"): template})
+
+    assert store.load()[contract_template_key("TIKTOK", "purchase")] == template
+
+
 def test_contract_config_store_round_trips_party_fields(tmp_path):
     store = ContractConfigStore(tmp_path / "contract-templates.json")
 
@@ -634,4 +644,16 @@ def test_wechat_video_requires_cost_and_purchase_templates(tmp_path):
             contract_template_key("WECHAT_VIDEO", "rights"): rights,
         },
         "WECHAT_VIDEO",
+    )
+
+
+def test_tiktok_requires_cooperation_agreement_template(tmp_path):
+    purchase = tmp_path / "tk.docx"
+    purchase.write_text("purchase", encoding="utf-8")
+
+    assert required_contract_template_types("TIKTOK") == (("purchase", "TK合作协议"),)
+    assert not all_required_contract_templates_configured({}, "TIKTOK")
+    assert all_required_contract_templates_configured(
+        {contract_template_key("TIKTOK", "purchase"): purchase},
+        "TIKTOK",
     )

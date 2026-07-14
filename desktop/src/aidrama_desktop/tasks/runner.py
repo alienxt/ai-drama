@@ -36,6 +36,15 @@ TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
 MAX_SKIPPED_EPISODE_FAILURES = 3
 WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS = 30.0
+TIKTOK_MIN_EPISODE_DURATION_SECONDS = 15.0
+TIKTOK_MAX_EPISODE_COUNT = 120
+TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
+TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
+TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
+TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
+TIKTOK_COVER_WIDTH = 768
+TIKTOK_COVER_HEIGHT = 1024
+TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
@@ -69,6 +78,7 @@ class EpisodeMediaFile:
     episode: dict[str, Any]
     episode_index: int
     file: Path
+    source_episode_indexes: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -112,11 +122,51 @@ class TaskRunner:
     def execute_task(self, task: dict | None) -> str:
         return self._execute_task(task)
 
+    def refill_task_form_from_cache(self, task: dict | None) -> str:
+        if not task:
+            self._notify("重填表单失败：任务为空", None)
+            return "no-task"
+        task_id = str(task["id"])
+        platform = self._task_platform(task)
+        if platform != "TIKTOK":
+            raise RuntimeError("当前只支持 TK 任务从本地缓存重填表单。")
+        download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
+        drama_title = self._drama_title(download_plan, task)
+        task_with_title = {**task, "dramaTitle": drama_title}
+        self._notify(f"重填TK表单：{drama_title}", task_id, task_with_title)
+        upload_items = self._cached_upload_items(download_plan, platform)
+        if not upload_items:
+            raise RuntimeError("没有找到本地 TK 上传缓存，请先完整执行一次任务生成 TK 合并视频。")
+        effective_download_plan = self._effective_download_plan(download_plan, upload_items)
+        contract_metadata = self._prepare_contract_materials(
+            effective_download_plan,
+            task_id,
+            drama_title,
+            platform=platform,
+        )
+        metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
+        metadata.update(contract_metadata)
+        publish_title = str(metadata.get("publishTitle") or drama_title)
+        publish_summary = metadata.get("publishSummary")
+        try:
+            self._publisher_for(task).publish(
+                [item.file for item in upload_items],
+                title=publish_title,
+                summary=str(publish_summary) if publish_summary else None,
+                metadata=metadata,
+            )
+        except PlatformPublishPaused as exception:
+            self._notify(str(exception) or "TK 表单已重填并停留在提交前", task_id, task_with_title)
+            return "ready-for-review"
+        self._notify("TK 表单重填完成", task_id, task_with_title)
+        return "succeeded"
+
     def _execute_task(self, task: dict | None) -> str:
         if not task:
             self._notify("空闲", None)
             return "no-task"
         task_id = task["id"]
+        platform = self._task_platform(task)
         self._notify("任务已领取", task_id, task)
         try:
             self._wait_for_task_preparation(task)
@@ -128,26 +178,34 @@ class TaskRunner:
             source_items = self._download(download_plan, task_id, drama_title)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "PROCESSING", 70)
+            source_items = self._prepare_source_items_for_platform(source_items, task_id, drama_title, platform)
             upload_items = self._prepare_media_files_for_upload(
                 source_items,
                 task_id,
                 drama_title,
                 original_episode_count=len(download_plan.get("episodes") or []),
+                platform=platform,
             )
+            upload_items = self._filter_upload_items_for_platform(upload_items, task_id, drama_title, platform)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             if not upload_items:
                 raise RuntimeError("没有可上传的剧集，整部剧分发失败。")
             effective_download_plan = self._effective_download_plan(download_plan, upload_items)
-            contract_metadata = self._prepare_contract_materials(effective_download_plan, task_id, drama_title)
+            contract_metadata = (
+                self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
+                if self._requires_contract_materials(platform)
+                else {}
+            )
             self._progress(task_id, "UPLOADING", 75)
             self._notify(f"发布：{drama_title}", task_id)
-            metadata = self._publish_metadata(effective_download_plan, upload_items)
+            metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
             metadata.update(contract_metadata)
-            publish_summary = effective_download_plan.get("aiSummary") or effective_download_plan.get("summary")
+            publish_title = str(metadata.get("publishTitle") or drama_title)
+            publish_summary = metadata.get("publishSummary")
             publish_id = self._publisher_for(task).publish(
                 [item.file for item in upload_items],
-                title=drama_title,
-                summary=publish_summary,
+                title=publish_title,
+                summary=str(publish_summary) if publish_summary else None,
                 metadata=metadata,
             )
             result_task = self.api.put(
@@ -236,10 +294,26 @@ class TaskRunner:
             return self.publisher_factory(str(media_account_id))
         return self.publisher
 
-    def _prepare_contract_materials(self, download_plan: dict, task_id: str, drama_title: str) -> dict[str, object]:
+    @staticmethod
+    def _task_platform(task: dict) -> str:
+        return str(task.get("platform") or task.get("mediaPlatform") or "WECHAT_VIDEO").strip() or "WECHAT_VIDEO"
+
+    @staticmethod
+    def _requires_contract_materials(platform: str) -> bool:
+        return platform in {"WECHAT_VIDEO", "TIKTOK"}
+
+    def _prepare_contract_materials(
+        self,
+        download_plan: dict,
+        task_id: str,
+        drama_title: str,
+        *,
+        platform: str,
+    ) -> dict[str, object]:
         if self.contract_templates is None:
             return {}
-        self._notify(f"生成合同材料：{drama_title}", task_id)
+        material_label = "TK合作协议" if platform == "TIKTOK" else "合同材料"
+        self._notify(f"生成{material_label}：{drama_title}", task_id)
         output_dir = (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
         sign_date = (date.today() - timedelta(days=1)).isoformat()
         start_date = generate_contract_start_date(sign_date)
@@ -258,13 +332,13 @@ class TaskRunner:
 
         bundle = render_contract_material_bundle(
             self.contract_templates,
-            self.contract_platform,
+            platform,
             output_dir,
             data_factory,
             image_converter=self.contract_image_converter,
             soffice_path=self.soffice_path,
         )
-        self._notify(f"合同材料已生成：{drama_title}", task_id)
+        self._notify(f"{material_label}已生成：{drama_title}", task_id)
         return bundle.metadata()
 
     def _contract_render_input(
@@ -376,12 +450,24 @@ class TaskRunner:
             self._notify(f"已跳过 {skipped_count} 集下载失败剧集，继续处理 {len(media_items)} 集", task_id)
         return media_items
 
+    def _prepare_source_items_for_platform(
+        self,
+        source_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+        platform: str,
+    ) -> list[EpisodeMediaFile]:
+        if platform == "TIKTOK" and len(source_items) > TIKTOK_MAX_EPISODE_COUNT:
+            return self._merge_tiktok_episode_items(source_items, task_id, drama_title)
+        return source_items
+
     def _prepare_media_files_for_upload(
         self,
         source_items: list[EpisodeMediaFile],
         task_id: str,
         drama_title: str,
         original_episode_count: int,
+        platform: str = "WECHAT_VIDEO",
     ) -> list[EpisodeMediaFile]:
         needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
         single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
@@ -390,18 +476,19 @@ class TaskRunner:
         cover_file = self._cover_file_for_sources([item.file for item in source_items])
         upload_items: list[EpisodeMediaFile] = []
         processed_count = 0
-        skipped_count = max(original_episode_count - len(source_items), 0)
+        skipped_count = self._covered_source_skipped_count(original_episode_count, source_items)
         last_skip_message: str | None = None
         for item in source_items:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             source_file = item.file
             episode_no = episode_number(item.episode, item.episode_index)
             duration_seconds = self._video_duration_seconds(source_file)
-            if duration_seconds is not None and duration_seconds < WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:
+            min_duration_seconds = self._platform_min_episode_duration_seconds(platform)
+            if duration_seconds is not None and min_duration_seconds and duration_seconds < min_duration_seconds:
                 skipped_count += 1
                 message = (
-                    f"第 {episode_no} 集视频时长 {duration_seconds:.1f} 秒，小于视频号要求的 "
-                    f"{WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:.0f} 秒，已跳过该集；"
+                    f"第 {episode_no} 集视频时长 {duration_seconds:.1f} 秒，小于"
+                    f"{self._platform_duration_rule_label(platform)}要求的 {min_duration_seconds:.0f} 秒，已跳过该集；"
                     f"已跳过 {skipped_count}/{self.max_skipped_episode_failures} 集"
                 )
                 last_skip_message = message
@@ -417,11 +504,11 @@ class TaskRunner:
                 upload_items.append(item)
                 continue
             processed_count += 1
-            target = self.output_dir() / source_file.parent.name / source_file.name
+            target = self._processed_media_target(source_file)
             signature = self._processed_media_signature(source_file, cover_file)
             target_needs_transcode = bool(needs_transcode(target)) if callable(needs_transcode) else False
             if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not target_needs_transcode:
-                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target))
+                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes))
                 continue
             action_parts = []
             if source_needs_transcode:
@@ -433,7 +520,7 @@ class TaskRunner:
             try:
                 processed_file = single_transcode(source_file, target, cover_path=cover_file)
                 self._write_processed_media_signature(processed_file, signature)
-                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file))
+                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file, item.source_episode_indexes))
             except Exception as exception:  # noqa: BLE001
                 self._cleanup_failed_media_file(target)
                 self._cleanup_failed_media_file(self._processed_media_signature_path(target))
@@ -457,14 +544,184 @@ class TaskRunner:
         return upload_items
 
     @staticmethod
+    def _covered_source_skipped_count(original_episode_count: int, source_items: list[EpisodeMediaFile]) -> int:
+        covered_indexes = {
+            source_index
+            for item in source_items
+            for source_index in (item.source_episode_indexes or (item.episode_index,))
+        }
+        return max(original_episode_count - len(covered_indexes), 0)
+
+    @staticmethod
+    def _platform_min_episode_duration_seconds(platform: str) -> float:
+        if platform == "TIKTOK":
+            return TIKTOK_MIN_EPISODE_DURATION_SECONDS
+        return WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS
+
+    @staticmethod
+    def _platform_duration_rule_label(platform: str) -> str:
+        if platform == "TIKTOK":
+            return "TK"
+        return "视频号"
+
+    def _filter_upload_items_for_platform(
+        self,
+        media_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+        platform: str,
+    ) -> list[EpisodeMediaFile]:
+        if platform != "TIKTOK":
+            return media_items
+        if len(media_items) > TIKTOK_MAX_EPISODE_COUNT:
+            media_items = self._merge_tiktok_episode_items(media_items, task_id, drama_title)
+        accepted: list[EpisodeMediaFile] = []
+        skipped = 0
+        last_reason = ""
+        for item in media_items:
+            size = item.file.stat().st_size if item.file.exists() else 0
+            if size < TIKTOK_MIN_VIDEO_SIZE_BYTES or size > TIKTOK_MAX_VIDEO_SIZE_BYTES:
+                skipped += 1
+                episode_no = episode_number(item.episode, item.episode_index)
+                size_mb = size / 1024 / 1024
+                if size < TIKTOK_MIN_VIDEO_SIZE_BYTES:
+                    last_reason = f"第 {episode_no} 集文件 {size_mb:.1f} MB，小于 TK 要求的 5 MB"
+                else:
+                    last_reason = f"第 {episode_no} 集文件 {size_mb:.1f} MB，超过 TK 要求的 4 GB"
+                self._notify(f"跳过：{drama_title} {last_reason}", task_id)
+                if skipped > self.max_skipped_episode_failures:
+                    raise RuntimeError(
+                        f"剧集失败超过 {self.max_skipped_episode_failures} 集，整部剧分发失败。最后错误：{last_reason}"
+                    )
+                continue
+            accepted.append(item)
+        if not accepted and last_reason:
+            raise RuntimeError(f"没有可上传的剧集：{last_reason}")
+        return accepted
+
+    def _merge_tiktok_episode_items(
+        self,
+        media_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+    ) -> list[EpisodeMediaFile]:
+        groups = self._tiktok_episode_merge_groups(media_items)
+        if len(groups) > TIKTOK_MAX_EPISODE_COUNT:
+            raise RuntimeError(
+                f"TK 单部短剧最多上传 {TIKTOK_MAX_EPISODE_COUNT} 个视频；"
+                f"当前 {len(media_items)} 集按两集合并后仍有 {len(groups)} 个视频。"
+            )
+        merge_videos = getattr(self.processor, "merge_videos_for_tiktok", None)
+        if not callable(merge_videos):
+            raise RuntimeError("当前 FFmpeg 处理器不支持 TK 剧集合并，请升级客户端后重试。")
+        source_dir = media_items[0].file.parent
+        target_dir = source_dir if source_dir.name == "TK" else source_dir / "TK"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        total_groups = len(groups)
+        merged_items: list[EpisodeMediaFile] = []
+        for output_index, group in enumerate(groups, start=1):
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            target = target_dir / self._tiktok_merged_episode_filename(drama_title, output_index)
+            signature = self._tiktok_episode_merge_signature(group)
+            if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature):
+                merged_file = target
+            else:
+                range_label = self._episode_range_label(group)
+                self._notify(f"合并TK剧集：{drama_title} 原第 {range_label} 集 -> 第 {output_index}/{total_groups} 集", task_id)
+                try:
+                    merged_file = merge_videos([item.file for item in group], target)
+                    self._write_processed_media_signature(merged_file, signature)
+                except Exception as exception:  # noqa: BLE001
+                    self._cleanup_failed_media_file(target)
+                    self._cleanup_failed_media_file(self._processed_media_signature_path(target))
+                    raise RuntimeError(f"TK 剧集合并失败：原第 {range_label} 集：{exception}") from exception
+            source_indexes = tuple(
+                source_index
+                for item in group
+                for source_index in (item.source_episode_indexes or (item.episode_index,))
+            )
+            merged_items.append(
+                EpisodeMediaFile(
+                    self._tiktok_merged_episode_metadata(group, output_index),
+                    group[0].episode_index,
+                    merged_file,
+                    source_indexes,
+                )
+            )
+        self._notify(f"TK剧集合并完成：{drama_title}（{len(media_items)} 集 -> {len(merged_items)} 集）", task_id)
+        return merged_items
+
+    @staticmethod
+    def _tiktok_episode_merge_groups(media_items: list[EpisodeMediaFile]) -> list[list[EpisodeMediaFile]]:
+        if len(media_items) <= TIKTOK_MAX_EPISODE_COUNT:
+            return [[item] for item in media_items]
+        groups: list[list[EpisodeMediaFile]] = []
+        pair_limit = len(media_items) - 3 if len(media_items) % 2 == 1 else len(media_items)
+        for index in range(0, pair_limit, 2):
+            groups.append(media_items[index : index + 2])
+        if len(media_items) % 2 == 1:
+            groups.append(media_items[-3:])
+        return groups
+
+    @staticmethod
+    def _tiktok_episode_merge_signature(group: list[EpisodeMediaFile]) -> dict[str, Any]:
+        sources = []
+        for item in group:
+            stat = item.file.stat()
+            sources.append(
+                {
+                    "path": str(item.file),
+                    "size": stat.st_size,
+                    "mtimeNs": stat.st_mtime_ns,
+                    "episodeIndex": item.episode_index,
+                    "sourceEpisodeIndexes": list(item.source_episode_indexes or (item.episode_index,)),
+                }
+            )
+        return {"version": TIKTOK_EPISODE_MERGE_VERSION, "sources": sources}
+
+    @staticmethod
+    def _tiktok_merged_episode_filename(drama_title: str, output_index: int) -> str:
+        drama_name = safe_episode_drama_name(drama_title) or "短剧"
+        return f"{drama_name}-TK第{output_index:03d}集.mp4"
+
+    @staticmethod
+    def _tiktok_merged_episode_metadata(group: list[EpisodeMediaFile], output_index: int) -> dict[str, Any]:
+        source_episode_numbers = [episode_number(item.episode, item.episode_index) for item in group]
+        source_range = TaskRunner._episode_range_label(group)
+        return {
+            **group[0].episode,
+            "episodeNo": output_index,
+            "title": f"第{source_range}集",
+            "sourceEpisodeNumbers": source_episode_numbers,
+            "sourceEpisodeRange": source_range,
+        }
+
+    @staticmethod
+    def _episode_range_label(group: list[EpisodeMediaFile]) -> str:
+        episode_numbers = [episode_number(item.episode, item.episode_index) for item in group]
+        if not episode_numbers:
+            return ""
+        if len(episode_numbers) == 1 or episode_numbers[0] == episode_numbers[-1]:
+            return str(episode_numbers[0])
+        return f"{episode_numbers[0]}-{episode_numbers[-1]}"
+
+    @staticmethod
     def _is_ready_upload_file(target: Path) -> bool:
         return target.exists() and target.is_file() and target.stat().st_size > 0
+
+    def _processed_media_target(self, source_file: Path) -> Path:
+        try:
+            source_parent = source_file.parent.relative_to(self.input_dir())
+        except ValueError:
+            source_parent = Path(source_file.parent.name)
+        return self.output_dir() / source_parent / source_file.name
 
     def _cover_file_for_sources(self, source_files: list[Path]) -> Path | None:
         if not source_files:
             return None
-        poster_cover = source_files[0].parent / "fengmian.jpg"
-        video_cover = source_files[0].parent / "video-cover.jpg"
+        asset_dir = self._source_asset_dir(source_files[0])
+        poster_cover = asset_dir / "fengmian.jpg"
+        video_cover = asset_dir / "video-cover.jpg"
         first_source = source_files[0]
         dimensions = self._video_dimensions(first_source)
         if dimensions:
@@ -473,6 +730,13 @@ class TaskRunner:
                 return video_cover if video_cover.exists() and video_cover.is_file() else self._existing_file(poster_cover)
             return self._existing_file(poster_cover)
         return self._existing_file(poster_cover) or self._existing_file(video_cover)
+
+    @staticmethod
+    def _source_asset_dir(source_file: Path) -> Path:
+        parent = source_file.parent
+        if parent.name == "TK" and parent.parent != parent:
+            return parent.parent
+        return parent
 
     def _video_dimensions(self, source_file: Path) -> tuple[int, int] | None:
         video_dimensions = getattr(self.processor, "video_dimensions", None)
@@ -578,12 +842,78 @@ class TaskRunner:
             items.append(EpisodeMediaFile(episode, episode_index, source_file))
         return sorted(items, key=lambda item: item.episode_index)
 
+    def _cached_upload_items(self, download_plan: dict, platform: str) -> list[EpisodeMediaFile]:
+        drama_id = str(download_plan["dramaId"])
+        if platform == "TIKTOK":
+            directories = [
+                self.output_dir() / drama_id / "TK",
+                self.input_dir() / drama_id / "TK",
+                self.output_dir() / drama_id,
+                self.input_dir() / drama_id,
+            ]
+        else:
+            directories = [self.output_dir() / drama_id, self.input_dir() / drama_id]
+        for directory in directories:
+            files = self._cached_video_files(directory)
+            if not files:
+                continue
+            if platform == "TIKTOK" and len(files) > TIKTOK_MAX_EPISODE_COUNT:
+                continue
+            return self._cached_episode_media_files(download_plan, files, platform)
+        return []
+
+    @staticmethod
+    def _cached_video_files(directory: Path) -> list[Path]:
+        if not directory.exists() or not directory.is_dir():
+            return []
+        files = [
+            path
+            for path in directory.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in {".mp4", ".mov", ".m4v"}
+            and not path.name.endswith(".part")
+        ]
+        return sorted(files, key=lambda path: path.name)
+
+    def _cached_episode_media_files(
+        self,
+        download_plan: dict,
+        files: list[Path],
+        platform: str,
+    ) -> list[EpisodeMediaFile]:
+        original_episodes = download_plan.get("episodes") or []
+        if platform == "TIKTOK" and len(original_episodes) > TIKTOK_MAX_EPISODE_COUNT:
+            source_items = [
+                EpisodeMediaFile(episode, index, files[0])
+                for index, episode in enumerate(original_episodes, start=1)
+            ]
+            groups = self._tiktok_episode_merge_groups(source_items)
+            if len(groups) == len(files):
+                return [
+                    EpisodeMediaFile(
+                        self._tiktok_merged_episode_metadata(group, output_index),
+                        group[0].episode_index,
+                        file,
+                        tuple(item.episode_index for item in group),
+                    )
+                    for output_index, (file, group) in enumerate(zip(files, groups, strict=False), start=1)
+                ]
+        items: list[EpisodeMediaFile] = []
+        for index, file in enumerate(files, start=1):
+            episode = original_episodes[index - 1] if index <= len(original_episodes) else {"episodeNo": index}
+            items.append(EpisodeMediaFile(episode, index, file))
+        return items
+
     @classmethod
     def _effective_download_plan(cls, download_plan: dict, media_items: list[EpisodeMediaFile]) -> dict:
         original_episodes = download_plan.get("episodes") or []
         effective_count = len(media_items)
         original_count = len(original_episodes)
-        downloaded_indexes = {item.episode_index for item in media_items}
+        downloaded_indexes = {
+            source_index
+            for item in media_items
+            for source_index in (item.source_episode_indexes or (item.episode_index,))
+        }
         skipped_episode_numbers = [
             episode_number(episode, index)
             for index, episode in enumerate(original_episodes, start=1)
@@ -611,23 +941,41 @@ class TaskRunner:
             return original_total_minutes
         return max(effective_count, round(original_total_minutes * effective_count / original_count))
 
-    def _publish_metadata(self, download_plan: dict, media_items: list[EpisodeMediaFile]) -> dict[str, Any]:
+    def _publish_metadata(
+        self,
+        download_plan: dict,
+        media_items: list[EpisodeMediaFile],
+        platform: str = "WECHAT_VIDEO",
+    ) -> dict[str, Any]:
         episodes = download_plan.get("episodes") or []
         cover_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian.jpg"
+        cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian-en.jpg"
+        tiktok_cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / TIKTOK_COVER_FILENAME
         video_cover_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover.jpg"
-        publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
+        video_cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover-en.jpg"
+        publish_title = self._platform_publish_title(download_plan, platform)
+        publish_summary = self._platform_publish_summary(download_plan, platform)
         return {
             "dramaId": download_plan.get("dramaId"),
+            "platform": platform,
             "title": download_plan.get("title"),
             "aiTitle": download_plan.get("aiTitle"),
-            "publishTitle": download_plan.get("aiTitle") or download_plan.get("title"),
+            "aiTitleEn": download_plan.get("aiTitleEn"),
+            "publishTitle": publish_title,
+            "publishSummary": publish_summary,
             "summary": publish_summary,
             "aiSummary": download_plan.get("aiSummary"),
+            "aiSummaryEn": download_plan.get("aiSummaryEn"),
             "originalSummary": download_plan.get("summary"),
             "coverFile": cover_file if cover_file.exists() else None,
+            "coverEnFile": cover_en_file if cover_en_file.exists() else None,
+            "tiktokCoverEnFile": tiktok_cover_en_file if tiktok_cover_en_file.exists() else None,
             "videoCoverFile": video_cover_file if video_cover_file.exists() else None,
+            "videoCoverEnFile": video_cover_en_file if video_cover_en_file.exists() else None,
             "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
             "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
+            "coverEnUrl": download_plan.get("aiCoverEnUrl"),
+            "videoCoverEnUrl": download_plan.get("aiVideoCoverEnUrl"),
             "rating": download_plan.get("rating"),
             "categoryIds": download_plan.get("categoryIds") or [],
             "totalMinutes": download_plan.get("totalMinutes"),
@@ -643,14 +991,45 @@ class TaskRunner:
             "skippedEpisodeCount": download_plan.get("skippedEpisodeCount") or 0,
             "skippedEpisodeNumbers": download_plan.get("skippedEpisodeNumbers") or [],
             "episodes": [
-                {
-                    "episodeNo": item.episode.get("episodeNo"),
-                    "title": item.episode.get("title"),
-                    "file": item.file,
-                }
+                self._episode_publish_metadata(item)
                 for item in media_items
             ],
         }
+
+    @staticmethod
+    def _episode_publish_metadata(item: EpisodeMediaFile) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "episodeNo": item.episode.get("episodeNo"),
+            "title": item.episode.get("title"),
+            "file": item.file,
+        }
+        source_numbers = item.episode.get("sourceEpisodeNumbers")
+        source_range = item.episode.get("sourceEpisodeRange")
+        if source_numbers:
+            payload["sourceEpisodeNumbers"] = source_numbers
+        if source_range:
+            payload["sourceEpisodeRange"] = source_range
+        return payload
+
+    @staticmethod
+    def _platform_publish_title(download_plan: dict[str, Any], platform: str) -> str:
+        if platform == "TIKTOK":
+            return str(
+                download_plan.get("aiTitleEn")
+                or download_plan.get("aiTitle")
+                or download_plan.get("title")
+                or download_plan.get("dramaId")
+                or ""
+            )
+        return str(download_plan.get("aiTitle") or download_plan.get("title") or download_plan.get("dramaId") or "")
+
+    @staticmethod
+    def _platform_publish_summary(download_plan: dict[str, Any], platform: str) -> str | None:
+        if platform == "TIKTOK":
+            value = download_plan.get("aiSummaryEn") or download_plan.get("aiSummary") or download_plan.get("summary")
+        else:
+            value = download_plan.get("aiSummary") or download_plan.get("summary")
+        return str(value) if value else None
 
     @classmethod
     def _free_episode_count(cls, download_plan: dict[str, Any], episode_count: int) -> int:
@@ -719,7 +1098,34 @@ def download_episodes(
         should_pause=should_pause,
         should_skip=should_skip,
     )
-    write_drama_metadata(download_plan, target_dir, cover_file, video_cover_file)
+    cover_en_file = download_english_cover(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+    tiktok_cover_en_file = prepare_tiktok_cover(cover_en_file, target_dir)
+    video_cover_en_file = download_english_video_cover(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+    write_drama_metadata(
+        download_plan,
+        target_dir,
+        cover_file,
+        video_cover_file,
+        cover_en_file,
+        video_cover_en_file,
+        tiktok_cover_en_file,
+    )
     episodes = download_plan["episodes"]
     total = len(episodes)
     if not episodes:
@@ -1038,6 +1444,101 @@ def download_video_cover(
     )
 
 
+def download_english_cover(
+    download_plan: dict,
+    target_dir: Path,
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> Path | None:
+    return download_plan_asset(
+        download_plan.get("aiCoverEnUrl"),
+        target_dir / "fengmian-en.jpg",
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+
+
+def download_english_video_cover(
+    download_plan: dict,
+    target_dir: Path,
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
+) -> Path | None:
+    return download_plan_asset(
+        download_plan.get("aiVideoCoverEnUrl"),
+        target_dir / "video-cover-en.jpg",
+        base_url,
+        headers=headers,
+        should_stop=should_stop,
+        should_pause=should_pause,
+        should_skip=should_skip,
+    )
+
+
+def prepare_tiktok_cover(cover_file: Path | None, target_dir: Path) -> Path | None:
+    if not cover_file or not cover_file.exists() or not cover_file.is_file():
+        return None
+    target = target_dir / TIKTOK_COVER_FILENAME
+    if is_ready_tiktok_cover(target, cover_file):
+        return target
+    try:
+        from PySide6.QtCore import QRect, Qt
+        from PySide6.QtGui import QImage
+    except ImportError:
+        return None
+    source = QImage(str(cover_file))
+    if source.isNull() or source.width() <= 0 or source.height() <= 0:
+        return None
+    crop_rect = tiktok_cover_crop_rect(source.width(), source.height(), QRect)
+    cropped = source.copy(crop_rect)
+    scaled = cropped.scaled(
+        TIKTOK_COVER_WIDTH,
+        TIKTOK_COVER_HEIGHT,
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    output = scaled.convertToFormat(QImage.Format.Format_RGB888)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for quality in (92, 86, 80, 74, 68):
+        if output.save(str(target), "JPEG", quality) and target.stat().st_size <= TIKTOK_COVER_MAX_BYTES:
+            return target
+    return target if target.exists() and target.is_file() else None
+
+
+def is_ready_tiktok_cover(target: Path, source: Path) -> bool:
+    if not target.exists() or not target.is_file() or target.stat().st_size <= 0:
+        return False
+    if target.stat().st_size > TIKTOK_COVER_MAX_BYTES or target.stat().st_mtime_ns < source.stat().st_mtime_ns:
+        return False
+    try:
+        from PySide6.QtGui import QImage
+    except ImportError:
+        return True
+    image = QImage(str(target))
+    return not image.isNull() and image.width() == TIKTOK_COVER_WIDTH and image.height() == TIKTOK_COVER_HEIGHT
+
+
+def tiktok_cover_crop_rect(width: int, height: int, rect_factory):
+    target_ratio = TIKTOK_COVER_WIDTH / TIKTOK_COVER_HEIGHT
+    source_ratio = width / height
+    if source_ratio > target_ratio:
+        crop_width = max(1, round(height * target_ratio))
+        x = max((width - crop_width) // 2, 0)
+        return rect_factory(x, 0, crop_width, height)
+    crop_height = max(1, round(width / target_ratio))
+    y = max((height - crop_height) // 2, 0)
+    return rect_factory(0, y, width, crop_height)
+
+
 def download_plan_asset(
     asset_url: object,
     target: Path,
@@ -1061,21 +1562,36 @@ def download_plan_asset(
     return target
 
 
-def write_drama_metadata(download_plan: dict, target_dir: Path, cover_file: Path | None, video_cover_file: Path | None = None) -> Path:
+def write_drama_metadata(
+    download_plan: dict,
+    target_dir: Path,
+    cover_file: Path | None,
+    video_cover_file: Path | None = None,
+    cover_en_file: Path | None = None,
+    video_cover_en_file: Path | None = None,
+    tiktok_cover_en_file: Path | None = None,
+) -> Path:
     episodes = download_plan.get("episodes") or []
     publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
     metadata = {
         "dramaId": download_plan.get("dramaId"),
         "title": download_plan.get("title"),
         "aiTitle": download_plan.get("aiTitle"),
+        "aiTitleEn": download_plan.get("aiTitleEn"),
         "publishTitle": download_plan.get("aiTitle") or download_plan.get("title"),
         "summary": publish_summary,
         "aiSummary": download_plan.get("aiSummary"),
+        "aiSummaryEn": download_plan.get("aiSummaryEn"),
         "originalSummary": download_plan.get("summary"),
         "coverFile": cover_file.name if cover_file else None,
+        "coverEnFile": cover_en_file.name if cover_en_file else None,
+        "tiktokCoverEnFile": tiktok_cover_en_file.name if tiktok_cover_en_file else None,
         "videoCoverFile": video_cover_file.name if video_cover_file else None,
+        "videoCoverEnFile": video_cover_en_file.name if video_cover_en_file else None,
         "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
         "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
+        "coverEnUrl": download_plan.get("aiCoverEnUrl"),
+        "videoCoverEnUrl": download_plan.get("aiVideoCoverEnUrl"),
         "rating": download_plan.get("rating"),
         "categoryIds": download_plan.get("categoryIds") or [],
         "totalMinutes": download_plan.get("totalMinutes"),

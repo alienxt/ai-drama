@@ -24,6 +24,32 @@ class FfmpegProcessor:
         command = self._transcode_with_cover_command(source, target, cover_path) if cover_path else self._transcode_command(source, target)
         return self._run_ffmpeg(command, target)
 
+    def merge_videos_for_tiktok(self, sources: list[Path], target: Path) -> Path:
+        if len(sources) < 2:
+            raise ValueError("TK 剧集合并至少需要 2 个视频")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        concat_file = target.with_name(f"{target.name}.concat.txt")
+        concat_file.write_text(self._concat_file_content(sources), encoding="utf-8")
+        command = [
+            self.ffmpeg_path,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            *self._wechat_video_output_args(),
+            str(target),
+        ]
+        try:
+            return self._run_ffmpeg(command, target)
+        finally:
+            try:
+                concat_file.unlink()
+            except OSError:
+                pass
+
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
@@ -87,6 +113,15 @@ class FfmpegProcessor:
             "attached_pic",
             str(target),
         ]
+
+    @classmethod
+    def _concat_file_content(cls, sources: list[Path]) -> str:
+        lines = [f"file '{cls._escape_concat_file_path(source)}'" for source in sources]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _escape_concat_file_path(source: Path) -> str:
+        return str(source.resolve()).replace("\\", "\\\\").replace("'", "\\'")
 
     @staticmethod
     def _wechat_video_output_args() -> list[str]:

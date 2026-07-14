@@ -4,6 +4,7 @@ from pathlib import Path
 
 from aidrama_desktop.browser.chrome import ChromeController
 from aidrama_desktop.platforms.base import PlatformPublisher
+from aidrama_desktop.platforms.tiktok import TikTokPublisher
 from aidrama_desktop.platforms.wechat_video import WeChatVideoPublisher
 
 
@@ -13,7 +14,7 @@ def platform_login_url(platform: str) -> str:
     if platform == "DOUYIN":
         return "https://creator.douyin.com/"
     if platform == "TIKTOK":
-        return "https://www.tiktok.com/upload"
+        return TikTokPublisher.login_url
     raise NotImplementedError(f"{platform} publisher is reserved for a later adapter")
 
 
@@ -25,4 +26,6 @@ def get_publisher(
 ) -> PlatformPublisher:
     if platform == "WECHAT_VIDEO":
         return WeChatVideoPublisher(chrome, account_id=account_id, profile_dir=profile_dir)
+    if platform == "TIKTOK":
+        return TikTokPublisher(chrome, account_id=account_id, profile_dir=profile_dir)
     raise NotImplementedError(f"{platform} publisher is reserved for a later adapter")

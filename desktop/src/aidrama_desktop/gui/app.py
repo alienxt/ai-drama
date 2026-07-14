@@ -54,6 +54,7 @@ from aidrama_desktop.browser.chrome import ChromeController, find_chrome
 from aidrama_desktop.config.settings import Settings, load_settings
 from aidrama_desktop.contracts import (
     ContractConfigStore,
+    CONTRACT_TEMPLATE_TYPES,
     ContractRenderInput,
     build_contract_output_path,
     build_contract_template_download_path,
@@ -751,6 +752,7 @@ class DesktopWindow(QMainWindow):
         type_row = QHBoxLayout()
         self.contract_platform_input = QComboBox()
         self.contract_platform_input.addItem("视频号", "WECHAT_VIDEO")
+        self.contract_platform_input.addItem("TikTok", "TIKTOK")
         self.contract_platform_input.setMinimumHeight(34)
         self.contract_platform_input.setMinimumWidth(140)
         self.contract_platform_input.setMaximumWidth(200)
@@ -769,7 +771,9 @@ class DesktopWindow(QMainWindow):
         self.contract_seller_input.setMinimumHeight(34)
         self.contract_seller_input.textChanged.connect(self.update_contract_generate_button)
         self.contract_seller_input.editingFinished.connect(self.save_contract_party_config)
-        party_row = QHBoxLayout()
+        self.contract_party_widget = QWidget()
+        party_row = QHBoxLayout(self.contract_party_widget)
+        party_row.setContentsMargins(0, 0, 0, 0)
         party_row.setSpacing(8)
         party_row.addWidget(QLabel("买方/甲方"))
         party_row.addWidget(self.contract_buyer_input, 1)
@@ -777,12 +781,17 @@ class DesktopWindow(QMainWindow):
         party_row.addWidget(self.contract_seller_input, 1)
 
         self.contract_template_path_inputs: dict[str, QLineEdit] = {}
+        self.contract_template_label_widgets: dict[str, QLabel] = {}
+        self.contract_template_row_widgets: dict[str, QWidget] = {}
         self.contract_template_rows_layout = QVBoxLayout()
         self.contract_template_rows_layout.setSpacing(8)
-        for contract_type, label in required_contract_template_types("WECHAT_VIDEO"):
-            row = QHBoxLayout()
+        for contract_type in CONTRACT_TEMPLATE_TYPES:
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
             path_input = QLineEdit()
             path_input.setReadOnly(True)
+            label_widget = QLabel(self.contract_type_name(contract_type))
             choose_template = QPushButton("选择")
             choose_template.clicked.connect(lambda _checked=False, key=contract_type: self.choose_contract_template(key))
             download_template = QPushButton("下载系统模版")
@@ -791,14 +800,16 @@ class DesktopWindow(QMainWindow):
             open_template.clicked.connect(lambda _checked=False, key=contract_type: self.open_contract_template(key))
             clear_template = QPushButton("清空")
             clear_template.clicked.connect(lambda _checked=False, key=contract_type: self.clear_contract_template(key))
-            row.addWidget(QLabel(label))
+            row.addWidget(label_widget)
             row.addWidget(path_input, 1)
             row.addWidget(download_template)
             row.addWidget(choose_template)
             row.addWidget(open_template)
             row.addWidget(clear_template)
             self.contract_template_path_inputs[contract_type] = path_input
-            self.contract_template_rows_layout.addLayout(row)
+            self.contract_template_label_widgets[contract_type] = label_widget
+            self.contract_template_row_widgets[contract_type] = row_widget
+            self.contract_template_rows_layout.addWidget(row_widget)
 
         template_note = QLabel(
             "1. 下载并打开系统模版，将主体的盖章和法人签名（透明底图片），添加到指定的位置上；\n"
@@ -809,7 +820,7 @@ class DesktopWindow(QMainWindow):
         template_layout.addLayout(template_header)
         template_layout.addLayout(type_row)
         template_layout.addWidget(template_note)
-        template_layout.addLayout(party_row)
+        template_layout.addWidget(self.contract_party_widget)
         template_layout.addLayout(self.contract_template_rows_layout)
         template_layout.addStretch(1)
 
@@ -989,7 +1000,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.setColumnWidth(3, 380)
         self.task_history_table.setColumnWidth(5, 150)
         self.task_history_table.setColumnWidth(6, 150)
-        self.task_history_table.setColumnWidth(7, 142)
+        self.task_history_table.setColumnWidth(7, 220)
         self.align_table_header_left(self.task_history_table)
         self.task_history_table.itemSelectionChanged.connect(self.on_task_history_selection_changed)
         history_layout.addWidget(self.task_history_table, 1)
@@ -1171,7 +1182,6 @@ class DesktopWindow(QMainWindow):
 
     def runner(self) -> TaskRunner:
         chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
-        contract_platform = self.current_contract_platform()
         return TaskRunner(
             api=self.api(),
             processor=FfmpegProcessor(self.settings.ffmpeg_path),
@@ -1188,9 +1198,9 @@ class DesktopWindow(QMainWindow):
             download_concurrency=self.settings.download_concurrency,
             contract_templates=dict(self.contract_templates),
             contracts_dir=self.settings.contracts_dir,
-            contract_platform=contract_platform,
-            contract_buyer=self.contract_party_value(contract_platform, "buyer"),
-            contract_seller=self.contract_party_value(contract_platform, "seller"),
+            contract_platform="WECHAT_VIDEO",
+            contract_buyer=self.contract_party_value("WECHAT_VIDEO", "buyer"),
+            contract_seller=self.contract_party_value("WECHAT_VIDEO", "seller"),
             soffice_path=self.settings.soffice_path,
         )
 
@@ -1270,15 +1280,17 @@ class DesktopWindow(QMainWindow):
         if title == "自动执行任务":
             self.auto_task_busy = False
             self.update_task_progress("任务失败：自动执行请求失败", self.current_task_id)
-        if title in {"检查发布条件", "发布下一条", "检查重试条件", "重试任务"}:
+        if title in {"检查发布条件", "发布下一条", "检查重试条件", "重试任务", "检查重填条件", "重填TK表单"}:
             self.set_manual_publish_busy(False)
             if title == "检查发布条件":
                 self.update_task_progress("发布未启动：服务请求失败", None)
             elif title == "检查重试条件":
                 self.update_task_progress("重试未启动：服务请求失败", None)
+            elif title == "检查重填条件":
+                self.update_task_progress("重填未启动：服务请求失败", None)
             else:
                 self.update_task_progress("任务失败：发布执行异常", self.current_task_id)
-            if title in {"检查重试条件", "重试任务"} and hasattr(self, "task_history_table"):
+            if title in {"检查重试条件", "重试任务", "检查重填条件", "重填TK表单"} and hasattr(self, "task_history_table"):
                 self.load_task_history(page=self.task_history_page)
         QMessageBox.critical(self, title, self.clean_error_message(error))
 
@@ -1475,6 +1487,11 @@ class DesktopWindow(QMainWindow):
         layout = QHBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        refill = QPushButton("重填")
+        refill.setToolTip("仅重填 TK 表单，复用本地缓存，跳过下载、合并和转码")
+        refill.setEnabled(self.is_task_form_refillable(task) and not self.is_current_task_running(str(task.get("id") or "")))
+        refill.clicked.connect(lambda _=False, item=task: self.refill_distribution_task_form(item))
+        layout.addWidget(refill)
         retry = QPushButton("重试")
         retry.setEnabled(self.is_task_retryable(task) and not self.is_current_task_running(str(task.get("id") or "")))
         retry.clicked.connect(lambda _=False, item=task: self.retry_distribution_task(item))
@@ -1486,6 +1503,49 @@ class DesktopWindow(QMainWindow):
         layout.addWidget(force_stop)
         layout.addStretch(1)
         return wrapper
+
+    def refill_distribution_task_form(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            QMessageBox.warning(self, "重填TK表单", "任务 ID 为空，无法重填。")
+            return
+        if not self.is_task_form_refillable(task):
+            QMessageBox.information(self, "重填TK表单", "只有 TK 历史任务可以重填表单。")
+            return
+        if self.is_current_task_running(task_id):
+            QMessageBox.information(self, "重填TK表单", "这个任务正在本机执行中，请先暂停或跳过后再重填。")
+            return
+        if self.manual_publish_busy or self.auto_task_busy:
+            QMessageBox.information(self, "重填TK表单", "已有发布任务在执行中，请等待当前任务结束。")
+            return
+        self.set_manual_publish_busy(True)
+        self.task_cancel_event.clear()
+        self.task_pause_event.clear()
+        self.task_skip_event.clear()
+        self.task_paused = False
+        self.update_task_progress("正在检查重填条件", task_id, task)
+        self.run_async(
+            "检查重填条件",
+            lambda: self.api().get("/desktop/media-accounts"),
+            lambda media_accounts: self.refill_task_form_if_ready(task, media_accounts),
+            log_result=False,
+        )
+
+    def refill_task_form_if_ready(self, task: dict[str, Any], media_accounts: list[dict[str, Any]]) -> None:
+        self.media_accounts = media_accounts
+        block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
+        task_id = str(task.get("id") or "")
+        if block_reason:
+            self.set_manual_publish_busy(False)
+            QMessageBox.warning(self, "重填TK表单", block_reason)
+            self.update_task_progress("重填未启动", task_id, task)
+            return
+        self.update_task_progress("重填请求已受理，正在打开 TK 表单", task_id, task)
+        self.run_async(
+            "重填TK表单",
+            lambda: self.runner().refill_task_form_from_cache(task),
+            self.handle_refill_task_form_done,
+        )
 
     def force_stop_distribution_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")
@@ -1583,6 +1643,20 @@ class DesktopWindow(QMainWindow):
         }
 
     @staticmethod
+    def is_task_form_refillable(task: dict[str, Any]) -> bool:
+        platform = str(task.get("platform") or task.get("mediaPlatform") or "").strip()
+        if platform != "TIKTOK":
+            return False
+        return str(task.get("status") or "") in {
+            "FAILED",
+            "CANCELLED",
+            "CLAIMED",
+            "DOWNLOADING",
+            "PROCESSING",
+            "UPLOADING",
+        }
+
+    @staticmethod
     def is_task_force_stoppable(task: dict[str, Any]) -> bool:
         return str(task.get("status") or "") in {
             "CLAIMED",
@@ -1631,6 +1705,19 @@ class DesktopWindow(QMainWindow):
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
+        self.load_task_history(page=self.task_history_page)
+
+    def handle_refill_task_form_done(self, result: str) -> None:
+        self.set_manual_publish_busy(False)
+        if result == "ready-for-review":
+            self.update_task_progress("TK 表单已重填，停留在提交前", self.current_task_id)
+            QMessageBox.information(self, "重填TK表单", "TK 表单已重填完成，已停留在提交前，等待人工核验。")
+        elif result == "succeeded":
+            self.update_task_progress("TK 表单重填完成", self.current_task_id)
+            QMessageBox.information(self, "重填TK表单", "TK 表单重填完成。")
+        else:
+            self.update_task_progress("TK 表单重填结束", self.current_task_id)
+            QMessageBox.information(self, "重填TK表单", f"重填结束：{result}")
         self.load_task_history(page=self.task_history_page)
 
     @staticmethod
@@ -2507,9 +2594,8 @@ class DesktopWindow(QMainWindow):
             return "视频号"
         return self.contract_platform_input.currentText() or "视频号"
 
-    @staticmethod
-    def contract_type_name(contract_type: str) -> str:
-        for key, label in required_contract_template_types("WECHAT_VIDEO"):
+    def contract_type_name(self, contract_type: str) -> str:
+        for key, label in required_contract_template_types(self.current_contract_platform()):
             if key == contract_type:
                 return label
         return "购买合同"
@@ -2544,6 +2630,9 @@ class DesktopWindow(QMainWindow):
         self.load_selected_contract_template()
 
     def load_selected_contract_template(self) -> None:
+        required_types = dict(required_contract_template_types(self.current_contract_platform()))
+        if hasattr(self, "contract_party_widget"):
+            self.contract_party_widget.setVisible(bool(required_contract_party_fields(self.current_contract_platform())))
         if hasattr(self, "contract_buyer_input") and hasattr(self, "contract_seller_input"):
             self.contract_buyer_input.setText(
                 str(self.contract_templates.get(self.current_contract_party_key("buyer")) or "")
@@ -2551,7 +2640,11 @@ class DesktopWindow(QMainWindow):
             self.contract_seller_input.setText(
                 str(self.contract_templates.get(self.current_contract_party_key("seller")) or "")
             )
-        for contract_type, _label in required_contract_template_types(self.current_contract_platform()):
+        for contract_type, row_widget in getattr(self, "contract_template_row_widgets", {}).items():
+            row_widget.setVisible(contract_type in required_types)
+        for contract_type, label in required_types.items():
+            if contract_type in getattr(self, "contract_template_label_widgets", {}):
+                self.contract_template_label_widgets[contract_type].setText(label)
             template = self.current_contract_template_path(contract_type)
             display = str(template) if template else "未配置，请选择 .docx Word 模板"
             if contract_type in getattr(self, "contract_template_path_inputs", {}):
@@ -3069,13 +3162,16 @@ class DesktopWindow(QMainWindow):
         return None
 
     def contract_task_block_reason(self, media_accounts: list[dict[str, Any]]) -> str | None:
-        if not self.has_active_platform(media_accounts, "WECHAT_VIDEO"):
+        missing_parts = []
+        for platform, label in (("WECHAT_VIDEO", "视频号"), ("TIKTOK", "TikTok")):
+            if not self.has_active_platform(media_accounts, platform):
+                continue
+            missing_labels = self.missing_contract_config_labels(platform)
+            if missing_labels:
+                missing_parts.append(f"{label}所需的{'、'.join(missing_labels)}")
+        if not missing_parts:
             return None
-        missing_labels = self.missing_contract_config_labels("WECHAT_VIDEO")
-        if not missing_labels:
-            return None
-        missing_text = "、".join(missing_labels)
-        return f"请先在“合同配置”中配置视频号所需的{missing_text}。"
+        return f"请先在“合同配置”中配置{'；'.join(missing_parts)}。"
 
     def missing_contract_config_labels(self, platform: str) -> list[str]:
         return self.missing_contract_party_labels(platform) + self.missing_contract_template_labels(platform)

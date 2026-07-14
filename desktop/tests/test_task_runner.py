@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from aidrama_desktop.tasks.runner import TaskRunner, download_episodes, episode_video_filename
+from aidrama_desktop.tasks.runner import EpisodeMediaFile, TaskRunner, download_episodes, episode_video_filename
 
 
 class FakeApi:
@@ -58,6 +58,7 @@ class FakeApi:
 class FakeProcessor:
     def __init__(self):
         self.calls = []
+        self.merge_calls = []
         self.dimensions = {}
         self.durations = {}
 
@@ -75,6 +76,12 @@ class FakeProcessor:
 
     def video_duration_seconds(self, source: Path):
         return self.durations.get(source.name)
+
+    def merge_videos_for_tiktok(self, sources: list[Path], target: Path) -> Path:
+        self.merge_calls.append((sources, target))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"merged-video")
+        return target
 
 
 class LowBitrateProcessor(FakeProcessor):
@@ -114,6 +121,14 @@ class DraftPausedPublisher:
         from aidrama_desktop.platforms.base import PlatformPublishPaused
 
         raise PlatformPublishPaused("剧目提审第一步表单已填好，暂未进入下一步或提交。")
+
+
+class CapturingPausedPublisher(FakePublisher):
+    def publish(self, media_files, title, summary=None, metadata=None):
+        super().publish(media_files, title, summary=summary, metadata=metadata)
+        from aidrama_desktop.platforms.base import PlatformPublishPaused
+
+        raise PlatformPublishPaused("TK 表单已填写并停留在提交前，等待人工核验后手动提交。")
 
 
 def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeypatch):
@@ -237,10 +252,12 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     publisher = FakePublisher()
     processor = FakeProcessor()
     cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
+    cover_en_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian-en.jpg"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         cover_file.parent.mkdir(parents=True, exist_ok=True)
         cover_file.write_text("cover")
+        cover_en_file.write_text("cover-en")
         targets = []
         for episode in download_plan["episodes"]:
             target = target_dir / f"{episode['episodeNo']:03d}.mp4"
@@ -263,6 +280,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["dramaId"] == "drama-1"
     assert publisher.metadata["publishTitle"] == "神医归来"
     assert publisher.metadata["coverFile"] == cover_file
+    assert publisher.metadata["coverEnFile"] == cover_en_file
     assert publisher.metadata["totalMinutes"] == 20
     assert publisher.metadata["costAmountWan"] == 3
     assert publisher.metadata["productionCostWan"] == 3
@@ -429,6 +447,321 @@ def test_publish_once_skips_short_video_episode_and_uploads_remaining(tmp_path, 
     assert publisher.metadata["skippedEpisodeCount"] == 1
     assert publisher.metadata["skippedEpisodeNumbers"] == [1]
     assert any("第 1 集视频时长 29.4 秒，小于视频号要求的 30 秒" in stage for stage, _task_id in progress_events)
+
+
+def test_tiktok_task_uses_english_metadata_and_tiktok_duration_rule(tmp_path, monkeypatch):
+    from docx import Document
+
+    api = FakeApi()
+    publisher = FakePublisher()
+    processor = FakeProcessor()
+    processor.durations = {"001.mp4": 20.0}
+    template = tmp_path / "tiktok_purchase.docx"
+    document = Document()
+    document.add_paragraph("{{contractType}} {{dramaTitle}} {{episodeCount}}")
+    document.save(template)
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        return {}
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return {
+            "dramaId": "drama-1",
+            "title": "中文剧名",
+            "aiTitle": "中文AI剧名",
+            "aiTitleEn": "English AI Title",
+            "summary": "中文简介",
+            "aiSummary": "中文AI简介",
+            "aiSummaryEn": "English AI summary.",
+            "episodes": [{"episodeNo": 1, "downloadUrl": "/files/1.mp4"}],
+        }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"0" * (6 * 1024 * 1024))
+        return [target]
+
+    def fake_image_converter(docx_path: Path, image_dir: Path, image_stem: str | None = None):
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image = image_dir / f"{image_stem or docx_path.stem}.png"
+        image.write_bytes(b"png")
+        return [image]
+
+    api.post = post
+    api.get = get
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        contract_templates={"tiktok:purchase": template},
+        contracts_dir=tmp_path / "contracts",
+        contract_image_converter=fake_image_converter,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.title == "English AI Title"
+    assert publisher.summary == "English AI summary."
+    assert publisher.metadata["platform"] == "TIKTOK"
+    assert publisher.metadata["publishTitle"] == "English AI Title"
+    assert publisher.metadata["publishSummary"] == "English AI summary."
+    assert publisher.metadata["purchaseContractDocx"].exists()
+    assert len(publisher.metadata["purchaseContractImages"]) == 1
+
+
+def test_tiktok_task_merges_episode_pairs_when_upload_limit_exceeded(tmp_path, monkeypatch):
+    from docx import Document
+
+    api = FakeApi()
+    publisher = FakePublisher()
+    processor = FakeProcessor()
+    template = tmp_path / "tiktok_purchase.docx"
+    document = Document()
+    document.add_paragraph("{{episodeCount}} {{episodeMinutes}}")
+    document.save(template)
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        return {}
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return {
+            "dramaId": "drama-1",
+            "title": "轮回苟到天荒",
+            "aiTitleEn": "Endless Reincarnation",
+            "aiSummaryEn": "A fantasy drama.",
+            "episodeCount": 168,
+            "totalMinutes": 168,
+            "episodes": [
+                {"episodeNo": episode_no, "downloadUrl": f"/files/{episode_no}.mp4"}
+                for episode_no in range(1, 169)
+            ],
+        }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"video")
+            files.append(target)
+        return files
+
+    def fake_image_converter(docx_path: Path, image_dir: Path, image_stem: str | None = None):
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image = image_dir / f"{image_stem or docx_path.stem}.png"
+        image.write_bytes(b"png")
+        return [image]
+
+    api.post = post
+    api.get = get
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.TIKTOK_MIN_VIDEO_SIZE_BYTES", 1)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        contract_templates={"tiktok:purchase": template},
+        contracts_dir=tmp_path / "contracts",
+        contract_image_converter=fake_image_converter,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    tiktok_dir = tmp_path / "dramas" / "downloads" / "drama-1" / "TK"
+    assert len(processor.merge_calls) == 84
+    assert len(publisher.files) == 84
+    assert all(path.parent == tiktok_dir for path in publisher.files)
+    assert [path.name for path in publisher.files[:2]] == [
+        "轮回苟到天荒-TK第001集.mp4",
+        "轮回苟到天荒-TK第002集.mp4",
+    ]
+    assert processor.merge_calls[0][0] == [
+        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+        tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+    ]
+    assert processor.merge_calls[-1][0] == [
+        tmp_path / "dramas" / "downloads" / "drama-1" / "167.mp4",
+        tmp_path / "dramas" / "downloads" / "drama-1" / "168.mp4",
+    ]
+    assert publisher.metadata["episodeCount"] == 84
+    assert publisher.metadata["totalMinutes"] == 84
+    assert publisher.metadata["originalEpisodeCount"] == 168
+    assert publisher.metadata["skippedEpisodeCount"] == 0
+    assert publisher.metadata["episodes"][0]["episodeNo"] == 1
+    assert publisher.metadata["episodes"][0]["sourceEpisodeNumbers"] == [1, 2]
+    assert publisher.metadata["episodes"][-1]["episodeNo"] == 84
+    assert publisher.metadata["episodes"][-1]["sourceEpisodeNumbers"] == [167, 168]
+    assert Document(publisher.metadata["purchaseContractDocx"]).paragraphs[0].text == "84 84"
+
+
+def test_tiktok_task_merges_before_transcoding_when_upload_limit_exceeded(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+
+    class AlwaysTranscodeProcessor(FakeProcessor):
+        def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
+            return True
+
+    processor = AlwaysTranscodeProcessor()
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        return {}
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return {
+            "dramaId": "drama-1",
+            "title": "轮回苟到天荒",
+            "episodeCount": 168,
+            "totalMinutes": 168,
+            "episodes": [
+                {"episodeNo": episode_no, "downloadUrl": f"/files/{episode_no}.mp4"}
+                for episode_no in range(1, 169)
+            ],
+        }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"video")
+            files.append(target)
+        return files
+
+    api.post = post
+    api.get = get
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.TIKTOK_MIN_VIDEO_SIZE_BYTES", 1)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    merged_dir = tmp_path / "dramas" / "downloads" / "drama-1" / "TK"
+    processed_merged_dir = tmp_path / "dramas" / "processed" / "drama-1" / "TK"
+    assert len(processor.merge_calls) == 84
+    assert len(processor.calls) == 84
+    assert all(call[0].parent == merged_dir for call in processor.calls)
+    assert all(call[1].parent == processed_merged_dir for call in processor.calls)
+    assert len(publisher.files) == 84
+    assert all(path.parent == processed_merged_dir for path in publisher.files)
+    assert publisher.metadata["episodeCount"] == 84
+    assert publisher.metadata["skippedEpisodeCount"] == 0
+
+
+def test_tiktok_task_merges_last_three_when_episode_count_is_odd(tmp_path, monkeypatch):
+    processor = FakeProcessor()
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-odd"
+    items = []
+    for episode_no in range(1, 122):
+        target = source_dir / f"{episode_no:03d}.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"video")
+        items.append(EpisodeMediaFile({"episodeNo": episode_no}, episode_no, target))
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.TIKTOK_MIN_VIDEO_SIZE_BYTES", 1)
+    merged_items = runner._filter_upload_items_for_platform(items, "task-1", "奇数短剧", "TIKTOK")
+
+    assert len(merged_items) == 60
+    assert len(processor.merge_calls) == 60
+    assert processor.merge_calls[-1][0] == [
+        source_dir / "119.mp4",
+        source_dir / "120.mp4",
+        source_dir / "121.mp4",
+    ]
+    assert merged_items[-1].episode["episodeNo"] == 60
+    assert merged_items[-1].episode["sourceEpisodeNumbers"] == [119, 120, 121]
+    assert merged_items[-1].source_episode_indexes == (119, 120, 121)
+
+
+def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_path):
+    api = FakeApi()
+    publisher = CapturingPausedPublisher()
+    processor = LowBitrateProcessor()
+    cached_dir = tmp_path / "dramas" / "processed" / "drama-1" / "TK"
+    cached_dir.mkdir(parents=True)
+    cached_files = []
+    for episode_no in range(1, 85):
+        target = cached_dir / f"轮回苟到天荒-TK第{episode_no:03d}集.mp4"
+        target.write_bytes(b"merged")
+        cached_files.append(target)
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return {
+            "dramaId": "drama-1",
+            "title": "轮回苟到天荒",
+            "aiTitleEn": "Endless Reincarnation",
+            "aiSummaryEn": "A fantasy drama.",
+            "episodeCount": 168,
+            "totalMinutes": 168,
+            "episodes": [
+                {"episodeNo": episode_no, "downloadUrl": f"/files/{episode_no}.mp4"}
+                for episode_no in range(1, 169)
+            ],
+        }
+
+    api.get = get
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    result = runner.refill_task_form_from_cache(
+        {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
+    )
+
+    assert result == "ready-for-review"
+    assert publisher.files == cached_files
+    assert publisher.title == "Endless Reincarnation"
+    assert publisher.summary == "A fantasy drama."
+    assert publisher.metadata["episodeCount"] == 84
+    assert publisher.metadata["totalMinutes"] == 84
+    assert publisher.metadata["originalEpisodeCount"] == 168
+    assert publisher.metadata["skippedEpisodeCount"] == 0
+    assert publisher.metadata["episodes"][0]["sourceEpisodeNumbers"] == [1, 2]
+    assert publisher.metadata["episodes"][-1]["sourceEpisodeNumbers"] == [167, 168]
+    assert processor.calls == []
+    assert processor.merge_calls == []
 
 
 def test_publish_once_fails_when_all_video_episodes_are_too_short(tmp_path, monkeypatch):
@@ -925,6 +1258,10 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
             return FakeResponse(b"cover")
         if request.full_url.endswith("/uploads/covers/video.jpg"):
             return FakeResponse(b"video-cover")
+        if request.full_url.endswith("/uploads/covers/drama-en.jpg"):
+            return FakeResponse(b"cover-en")
+        if request.full_url.endswith("/uploads/covers/video-en.jpg"):
+            return FakeResponse(b"video-cover-en")
         return FakeResponse(b"video")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -936,6 +1273,10 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
         "aiSummary": "AI简介...",
         "effectiveCoverUrl": "/uploads/covers/drama.jpg",
         "aiVideoCoverUrl": "/uploads/covers/video.jpg",
+        "aiTitleEn": "English Title",
+        "aiSummaryEn": "English summary.",
+        "aiCoverEnUrl": "/uploads/covers/drama-en.jpg",
+        "aiVideoCoverEnUrl": "/uploads/covers/video-en.jpg",
         "rating": 5,
         "categoryIds": ["urban"],
         "episodes": [
@@ -949,22 +1290,94 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert files == [episode_file]
     assert (tmp_path / "drama-1" / "fengmian.jpg").read_bytes() == b"cover"
     assert (tmp_path / "drama-1" / "video-cover.jpg").read_bytes() == b"video-cover"
+    assert (tmp_path / "drama-1" / "fengmian-en.jpg").read_bytes() == b"cover-en"
+    assert (tmp_path / "drama-1" / "video-cover-en.jpg").read_bytes() == b"video-cover-en"
     assert episode_file.read_bytes() == b"video"
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
     assert metadata["title"] == "神医归来"
+    assert metadata["aiTitleEn"] == "English Title"
     assert metadata["publishTitle"] == "神医归来AI"
     assert metadata["summary"] == "AI简介..."
     assert metadata["aiSummary"] == "AI简介..."
+    assert metadata["aiSummaryEn"] == "English summary."
     assert metadata["originalSummary"] == "简介"
     assert metadata["coverFile"] == "fengmian.jpg"
+    assert metadata["coverEnFile"] == "fengmian-en.jpg"
     assert metadata["videoCoverFile"] == "video-cover.jpg"
+    assert metadata["videoCoverEnFile"] == "video-cover-en.jpg"
     assert metadata["videoCoverUrl"] == "/uploads/covers/video.jpg"
+    assert metadata["coverEnUrl"] == "/uploads/covers/drama-en.jpg"
+    assert metadata["videoCoverEnUrl"] == "/uploads/covers/video-en.jpg"
     assert metadata["episodeCount"] == 1
     assert metadata["episodes"][0]["fileName"] == "神医归来AI-第1集.mp4"
     assert metadata["episodes"][0]["size"] is None
     assert opened_urls == [
         "http://server/uploads/covers/drama.jpg",
         "http://server/uploads/covers/video.jpg",
+        "http://server/uploads/covers/drama-en.jpg",
+        "http://server/uploads/covers/video-en.jpg",
+        "http://server/files/1.mp4",
+    ]
+
+
+def test_download_episodes_prepares_tiktok_cover_from_english_cover(tmp_path, monkeypatch):
+    from PySide6.QtGui import QColor, QImage
+
+    source_cover = tmp_path / "source-cover.jpg"
+    image = QImage(1024, 1536, QImage.Format.Format_RGB32)
+    image.fill(QColor("red"))
+    image.save(str(source_cover), "JPEG")
+    cover_bytes = source_cover.read_bytes()
+    opened_urls = []
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset >= len(self.body):
+                return b""
+            chunk = self.body[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def fake_urlopen(request):
+        opened_urls.append(request.full_url)
+        if request.full_url.endswith("/uploads/covers/drama-en.jpg"):
+            return FakeResponse(cover_bytes)
+        return FakeResponse(b"video")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "TK封面短剧",
+        "aiCoverEnUrl": "/uploads/covers/drama-en.jpg",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    download_episodes(download_plan, tmp_path / "drama-1", "http://server/api")
+
+    tiktok_cover = tmp_path / "drama-1" / "tiktok-cover-en.jpg"
+    assert tiktok_cover.exists()
+    prepared = QImage(str(tiktok_cover))
+    assert prepared.width() == 768
+    assert prepared.height() == 1024
+    assert tiktok_cover.stat().st_size < 10 * 1024 * 1024
+    metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
+    assert metadata["coverEnFile"] == "fengmian-en.jpg"
+    assert metadata["tiktokCoverEnFile"] == "tiktok-cover-en.jpg"
+    assert opened_urls == [
+        "http://server/uploads/covers/drama-en.jpg",
         "http://server/files/1.mp4",
     ]
 

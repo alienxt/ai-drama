@@ -125,6 +125,39 @@ def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_
     assert ffmpeg_command[ffmpeg_command.index("-disposition:v:1") + 1] == "attached_pic"
 
 
+def test_ffmpeg_processor_merges_tiktok_videos_with_concat_file(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    target = tmp_path / "TK" / "merged.mp4"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    commands = []
+    concat_files = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        concat_path = Path(command[command.index("-i") + 1])
+        concat_files.append(concat_path)
+        content = concat_path.read_text(encoding="utf-8")
+        assert f"file '{source_1}'" in content
+        assert f"file '{source_2}'" in content
+        target.write_text("merged")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.merge_videos_for_tiktok([source_1, source_2], target) == target
+
+    assert target.read_text() == "merged"
+    ffmpeg_command = commands[-1]
+    assert ffmpeg_command[:7] == ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i"]
+    assert ffmpeg_command[-1] == str(target)
+    assert ffmpeg_command[ffmpeg_command.index("-x264-params") + 1] == "nal-hrd=cbr:filler=1"
+    assert not concat_files[0].exists()
+
+
 def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"
