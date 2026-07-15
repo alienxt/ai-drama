@@ -366,6 +366,9 @@ class DesktopWindow(QMainWindow):
         self.auto_task_timer = QTimer(self)
         self.auto_task_timer.setInterval(30_000)
         self.auto_task_timer.timeout.connect(self.run_auto_task_cycle)
+        self.list_refresh_timer = QTimer(self)
+        self.list_refresh_timer.setInterval(30_000)
+        self.list_refresh_timer.timeout.connect(self.refresh_visible_list)
 
         self.setWindowTitle(f"AI Drama Desktop {__version__}")
         self.resize(1120, 720)
@@ -1099,6 +1102,28 @@ class DesktopWindow(QMainWindow):
             self.load_contract_dramas()
         self.refresh_status()
 
+    def current_page_key(self) -> str | None:
+        if not hasattr(self, "nav"):
+            return None
+        index = self.nav.currentRow()
+        items = desktop_nav_items()
+        if index < 0 or index >= len(items):
+            return None
+        return items[index].key
+
+    def refresh_visible_list(self) -> None:
+        if not hasattr(self, "stack") or self.stack.currentWidget() != self.main_page:
+            return
+        page_key = self.current_page_key()
+        if page_key == "dramas" and hasattr(self, "drama_table"):
+            self.load_dramas(page=self.drama_page, silent=True)
+        elif page_key == "tasks" and hasattr(self, "task_history_table"):
+            self.load_task_history(page=self.task_history_page, silent=True)
+
+    def handle_silent_refresh_failed(self, error: str) -> None:
+        message = self.clean_error_message(error)
+        self.statusBar().showMessage(f"自动刷新失败：{message}", 5000)
+
     def on_logged_in(self) -> None:
         self.settings = update_settings(self.settings)
         self.agent.settings = self.settings
@@ -1107,10 +1132,12 @@ class DesktopWindow(QMainWindow):
         self.append_log("登录成功。")
         self.stack.setCurrentWidget(self.main_page)
         self.show_page(self.nav.currentRow())
+        self.list_refresh_timer.start()
         self.refresh_status()
         QTimer.singleShot(600, self.check_for_updates)
 
     def logout(self) -> None:
+        self.list_refresh_timer.stop()
         self.token_store.clear()
         self.current_username = ""
         self.update_current_username_label()
@@ -1123,6 +1150,7 @@ class DesktopWindow(QMainWindow):
             self.current_username_label.setText(f"当前登录：{self.current_username or '未登录'}")
 
     def quit_app(self) -> None:
+        self.list_refresh_timer.stop()
         if self.agent.running:
             self.agent.stop()
         QApplication.instance().quit()
@@ -1229,12 +1257,18 @@ class DesktopWindow(QMainWindow):
         on_done: Callable[[Any], None] | None = None,
         *,
         log_result: bool = True,
+        log_activity: bool = True,
         on_failed: Callable[[str], None] | None = None,
     ) -> None:
-        self.append_log(f"开始：{title}")
+        if log_activity:
+            self.append_log(f"开始：{title}")
         worker = Worker(task)
-        worker.signals.done.connect(lambda result: self._task_done(title, result, on_done, log_result=log_result))
-        worker.signals.failed.connect(lambda error: self._task_failed(title, error, on_failed=on_failed))
+        worker.signals.done.connect(
+            lambda result: self._task_done(title, result, on_done, log_result=log_result, log_activity=log_activity)
+        )
+        worker.signals.failed.connect(
+            lambda error: self._task_failed(title, error, on_failed=on_failed, log_activity=log_activity)
+        )
         worker.signals.done.connect(lambda _: self._release_worker(worker))
         worker.signals.failed.connect(lambda _: self._release_worker(worker))
         self.active_workers.append(worker)
@@ -1251,11 +1285,13 @@ class DesktopWindow(QMainWindow):
         on_done: Callable[[Any], None] | None,
         *,
         log_result: bool = True,
+        log_activity: bool = True,
     ) -> None:
-        if log_result and result is not None:
-            self.append_log(f"完成：{title} {self.summarize_task_result(result)}")
-        else:
-            self.append_log(f"完成：{title}")
+        if log_activity:
+            if log_result and result is not None:
+                self.append_log(f"完成：{title} {self.summarize_task_result(result)}")
+            else:
+                self.append_log(f"完成：{title}")
         if on_done:
             on_done(result)
 
@@ -1272,8 +1308,16 @@ class DesktopWindow(QMainWindow):
                 return f"共 {len(content)} 条"
         return str(result)
 
-    def _task_failed(self, title: str, error: str, on_failed: Callable[[str], None] | None = None) -> None:
-        self.append_log(f"失败：{title}\n{error}")
+    def _task_failed(
+        self,
+        title: str,
+        error: str,
+        on_failed: Callable[[str], None] | None = None,
+        *,
+        log_activity: bool = True,
+    ) -> None:
+        if log_activity:
+            self.append_log(f"失败：{title}\n{error}")
         if on_failed:
             on_failed(error)
             return
@@ -1308,7 +1352,7 @@ class DesktopWindow(QMainWindow):
             params.append(("status", status))
         return f"/desktop/tasks?{urlencode(params, safe=',')}"
 
-    def load_task_history(self, page: int = 0) -> None:
+    def load_task_history(self, page: int = 0, *, silent: bool = False) -> None:
         if not hasattr(self, "task_history_table"):
             return
         keyword = self.task_history_keyword.text().strip() if hasattr(self, "task_history_keyword") else ""
@@ -1327,7 +1371,14 @@ class DesktopWindow(QMainWindow):
             )
             self.task_history_page_label.setText(page_text)
 
-        self.run_async("加载任务历史", lambda: self.api().get(path), render, log_result=False)
+        self.run_async(
+            "加载任务历史",
+            lambda: self.api().get(path),
+            render,
+            log_result=False,
+            log_activity=not silent,
+            on_failed=self.handle_silent_refresh_failed if silent else None,
+        )
 
     def render_task_history_table(self, rows: list[dict[str, Any]]) -> None:
         self.task_history_rows = rows
@@ -1747,7 +1798,7 @@ class DesktopWindow(QMainWindow):
             hints.append("等待变现类型控件失败")
         return " / ".join(hints) if hints else None
 
-    def load_dramas(self, page: int = 0) -> None:
+    def load_dramas(self, page: int = 0, *, silent: bool = False) -> None:
         filter_value = self.current_drama_download_filter()
         keyword = self.current_drama_keyword()
         request_page = 0
@@ -1775,7 +1826,14 @@ class DesktopWindow(QMainWindow):
                 f"共 {self.drama_total_elements} 条 · 第 {self.drama_page + 1}/{self.drama_total_pages} 页"
             )
 
-        self.run_async("加载短剧库", lambda: self.api().get(path), render, log_result=False)
+        self.run_async(
+            "加载短剧库",
+            lambda: self.api().get(path),
+            render,
+            log_result=False,
+            log_activity=not silent,
+            on_failed=self.handle_silent_refresh_failed if silent else None,
+        )
 
     @classmethod
     def filter_recent_dramas(cls, rows: list[Any], days: int = 7) -> list[dict[str, Any]]:

@@ -22,6 +22,40 @@ def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
     assert path == "/desktop/dramas?page=2&size=10&sort=updatedAt,desc"
 
 
+def test_refresh_visible_list_refreshes_current_drama_page():
+    window = DesktopWindow.__new__(DesktopWindow)
+    main_page = object()
+    window.main_page = main_page
+    window.stack = SimpleNamespace(currentWidget=lambda: main_page)
+    window.nav = SimpleNamespace(currentRow=lambda: 0)
+    window.drama_table = object()
+    window.drama_page = 2
+    calls = []
+    window.load_dramas = lambda page, silent=False: calls.append(("dramas", page, silent))
+    window.load_task_history = lambda page, silent=False: calls.append(("tasks", page, silent))
+
+    DesktopWindow.refresh_visible_list(window)
+
+    assert calls == [("dramas", 2, True)]
+
+
+def test_refresh_visible_list_refreshes_current_task_page():
+    window = DesktopWindow.__new__(DesktopWindow)
+    main_page = object()
+    window.main_page = main_page
+    window.stack = SimpleNamespace(currentWidget=lambda: main_page)
+    window.nav = SimpleNamespace(currentRow=lambda: 3)
+    window.task_history_table = object()
+    window.task_history_page = 4
+    calls = []
+    window.load_dramas = lambda page, silent=False: calls.append(("dramas", page, silent))
+    window.load_task_history = lambda page, silent=False: calls.append(("tasks", page, silent))
+
+    DesktopWindow.refresh_visible_list(window)
+
+    assert calls == [("tasks", 4, True)]
+
+
 def test_login_page_hides_fixed_service_address(tmp_path):
     QApplication.instance() or QApplication([])
     settings = Settings(

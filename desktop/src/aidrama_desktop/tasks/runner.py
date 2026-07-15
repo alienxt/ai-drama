@@ -521,6 +521,8 @@ class TaskRunner:
                 action_parts.append("提升码率")
             if source_needs_resolution_transcode:
                 action_parts.append("提升分辨率")
+            elif source_needs_transcode:
+                action_parts.append("规范分辨率")
             if should_add_cover_frame:
                 action_parts.append("添加封面帧")
             action = "、".join(action_parts) or "统一转码"
