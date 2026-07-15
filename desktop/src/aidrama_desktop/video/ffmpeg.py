@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 WECHAT_VIDEO_MIN_BITRATE_BPS = 4_000_000
+WECHAT_VIDEO_MIN_WIDTH = 720
+WECHAT_VIDEO_MIN_HEIGHT = 1280
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
-WECHAT_VIDEO_COVER_FRAME_VERSION = "wechat-video-cover-frame-v6"
+WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v7"
+WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
 
 
 class FfmpegError(RuntimeError):
@@ -66,22 +69,26 @@ class FfmpegProcessor:
         return target
 
     def _transcode_command(self, source: Path, target: Path) -> list[str]:
-        return [
+        command = [
             self.ffmpeg_path,
             "-y",
             "-i",
             str(source),
-            *self._wechat_video_output_args(),
-            str(target),
         ]
+        output_dimensions = self._wechat_video_output_dimensions(source)
+        if output_dimensions:
+            command.extend(["-vf", self._wechat_video_frame_filter(*output_dimensions)])
+        command.extend([*self._wechat_video_output_args(), str(target)])
+        return command
 
     def _transcode_with_cover_command(self, source: Path, target: Path, cover_path: Path | None) -> list[str]:
         dimensions = self.video_dimensions(source)
         if not cover_path or not cover_path.exists() or not dimensions:
             return self._transcode_command(source, target)
-        width, height = dimensions
+        width, height = self._wechat_video_output_dimensions(source) or dimensions
+        main_filter = self._wechat_video_frame_filter(width, height)
         filter_complex = (
-            f"[0:v]scale={width}:{height},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[mainv];"
+            f"[0:v]{main_filter},setpts=PTS-STARTPTS[mainv];"
             "[1:v]split=2[coverbgsrc][coverfgsrc];"
             f"[coverbgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},boxblur=24:2,eq=brightness=-0.08:saturation=0.85,"
@@ -113,6 +120,23 @@ class FfmpegProcessor:
             "attached_pic",
             str(target),
         ]
+
+    def _wechat_video_output_dimensions(self, source: Path) -> tuple[int, int] | None:
+        dimensions = self.video_dimensions(source)
+        if not dimensions:
+            return None
+        width, height = dimensions
+        if self._is_below_wechat_video_minimum(width, height):
+            return WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT
+        return width, height
+
+    @staticmethod
+    def _wechat_video_frame_filter(width: int, height: int) -> str:
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1,format=yuv420p"
+        )
 
     @classmethod
     def _concat_file_content(cls, sources: list[Path]) -> str:
@@ -157,6 +181,25 @@ class FfmpegProcessor:
     ) -> bool:
         bitrate = self.video_bitrate_bps(source)
         return bitrate is not None and bitrate < min_bitrate_bps
+
+    def needs_wechat_video_resolution_transcode(
+        self,
+        source: Path,
+        min_width: int = WECHAT_VIDEO_MIN_WIDTH,
+        min_height: int = WECHAT_VIDEO_MIN_HEIGHT,
+    ) -> bool:
+        dimensions = self.video_dimensions(source)
+        if not dimensions:
+            return False
+        width, height = dimensions
+        return width < min_width or height < min_height
+
+    def needs_wechat_video_transcode(self, source: Path) -> bool:
+        return self.needs_wechat_video_bitrate_transcode(source) or self.needs_wechat_video_resolution_transcode(source)
+
+    @staticmethod
+    def _is_below_wechat_video_minimum(width: int, height: int) -> bool:
+        return width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT
 
     def video_bitrate_bps(self, source: Path) -> int | None:
         command = [

@@ -185,7 +185,6 @@ class WeChatVideoPublisher(PlatformPublisher):
             pass
 
         self._set_default_playlet_options(page, timeout_error)
-        self._set_monetization_type(page, str(metadata.get("monetizationLabel") or "IAA广告变现"), timeout_error)
         self._wait_for_page(page, 800)
 
         self._fill_playlet_field(
@@ -1858,24 +1857,6 @@ class WeChatVideoPublisher(PlatformPublisher):
                 if self._is_page_closed_error(exception):
                     raise RuntimeError(f"浏览器页面已关闭，选择视频号表单选项失败：{pattern.pattern}") from exception
         return False
-
-    def _set_monetization_type(self, page, label: str, timeout_error) -> None:
-        try:
-            page.get_by_text(re.compile("变现类型|收益类型|付费类型")).first.click(timeout=3000)
-        except timeout_error:
-            pass
-        except Exception as exception:  # noqa: BLE001
-            if self._is_page_closed_error(exception):
-                raise RuntimeError("浏览器页面已关闭，等待视频号剧集变现类型控件失败") from exception
-            raise RuntimeError("等待视频号剧集变现类型控件失败") from exception
-        try:
-            page.get_by_text(re.compile(re.escape(label))).first.click(timeout=5000)
-        except timeout_error as exception:
-            raise RuntimeError(f"未找到视频号剧集变现类型选项：{label}") from exception
-        except Exception as exception:  # noqa: BLE001
-            if self._is_page_closed_error(exception):
-                raise RuntimeError(f"浏览器页面已关闭，选择视频号剧集变现类型失败：{label}") from exception
-            raise RuntimeError(f"选择视频号剧集变现类型失败：{label}") from exception
 
     @staticmethod
     def _is_page_closed_error(exception: Exception) -> bool:

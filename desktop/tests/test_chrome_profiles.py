@@ -627,9 +627,8 @@ def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path
     assert uploaded_pages == [fallback_context.pages[0]]
 
 
-def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count(tmp_path: Path, monkeypatch):
+def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp_path: Path, monkeypatch):
     fills = []
-    monetization = []
     files = []
     material_uploads = []
     weui_summary_fields = []
@@ -728,11 +727,6 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     )
     monkeypatch.setattr(
         publisher,
-        "_set_monetization_type",
-        lambda page, value, timeout_error: events.append("monetization") or monetization.append(value),
-    )
-    monkeypatch.setattr(
-        publisher,
         "_ensure_playlet_form_fields",
         lambda page, title, summary, episode_count, free_episode_count, producer_name, production_cost, timeout_error: final_ensures.append(
             (title, summary, episode_count, free_episode_count, producer_name, production_cost)
@@ -781,7 +775,6 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
         TimeoutError,
     )
 
-    assert monetization == ["IAA广告变现"]
     assert agreement_clicks == [3000]
     assert entry_clicks == [5000]
     assert any(value == "神医归来AI" and "剧目名称" in labels for field, labels, value, required in field_fills)
@@ -801,8 +794,6 @@ def test_wechat_video_publisher_sets_playlet_monetization_and_free_episode_count
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
     assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
     assert "^其他微短剧$" in option_clicks
-    assert events.index("monetization") > events.index("option:^其他微短剧$")
-    assert events.index("field:剧目名称") > events.index("monetization")
     assert events.index("field:剧目名称") > events.index("option:^其他微短剧$")
     assert events.index("summary") > events.index("option:^其他微短剧$")
     assert material_uploads == [

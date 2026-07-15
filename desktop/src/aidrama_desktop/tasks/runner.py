@@ -23,7 +23,12 @@ from aidrama_desktop.contracts import (
     render_contract_material_bundle,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
-from aidrama_desktop.video.ffmpeg import FfmpegProcessor, WECHAT_VIDEO_COVER_FRAME_VERSION
+from aidrama_desktop.video.ffmpeg import (
+    FfmpegProcessor,
+    WECHAT_VIDEO_COVER_FRAME_VERSION,
+    WECHAT_VIDEO_MIN_HEIGHT,
+    WECHAT_VIDEO_MIN_WIDTH,
+)
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -469,7 +474,6 @@ class TaskRunner:
         original_episode_count: int,
         platform: str = "WECHAT_VIDEO",
     ) -> list[EpisodeMediaFile]:
-        needs_transcode = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
         single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
         if not callable(single_transcode):
             return source_items
@@ -498,7 +502,9 @@ class TaskRunner:
                     )
                 self._notify(f"跳过：{drama_title} {message}", task_id)
                 continue
-            source_needs_transcode = bool(needs_transcode(source_file)) if callable(needs_transcode) else False
+            source_needs_transcode = self._needs_wechat_video_transcode(source_file)
+            source_needs_bitrate_transcode = self._needs_wechat_video_bitrate_transcode(source_file)
+            source_needs_resolution_transcode = self._needs_wechat_video_resolution_transcode(source_file)
             should_add_cover_frame = cover_file is not None
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
@@ -506,13 +512,15 @@ class TaskRunner:
             processed_count += 1
             target = self._processed_media_target(source_file)
             signature = self._processed_media_signature(source_file, cover_file)
-            target_needs_transcode = bool(needs_transcode(target)) if callable(needs_transcode) else False
+            target_needs_transcode = self._needs_wechat_video_transcode(target)
             if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not target_needs_transcode:
                 upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes))
                 continue
             action_parts = []
-            if source_needs_transcode:
+            if source_needs_bitrate_transcode:
                 action_parts.append("提升码率")
+            if source_needs_resolution_transcode:
+                action_parts.append("提升分辨率")
             if should_add_cover_frame:
                 action_parts.append("添加封面帧")
             action = "、".join(action_parts) or "统一转码"
@@ -539,9 +547,40 @@ class TaskRunner:
         if not upload_items and last_skip_message:
             raise RuntimeError(f"没有可上传的剧集：{last_skip_message}")
         if processed_count:
-            label = "视频码率和封面帧处理完成" if cover_file else "视频码率处理完成"
+            label = "视频转码和封面帧处理完成" if cover_file else "视频转码处理完成"
             self._notify(f"{label}：{drama_title}（{processed_count} 集）", task_id)
         return upload_items
+
+    def _needs_wechat_video_transcode(self, source_file: Path) -> bool:
+        needs_transcode = getattr(self.processor, "needs_wechat_video_transcode", None)
+        if callable(needs_transcode):
+            try:
+                return bool(needs_transcode(source_file))
+            except Exception:  # noqa: BLE001
+                return False
+        return self._needs_wechat_video_bitrate_transcode(source_file) or self._needs_wechat_video_resolution_transcode(source_file)
+
+    def _needs_wechat_video_bitrate_transcode(self, source_file: Path) -> bool:
+        needs_bitrate = getattr(self.processor, "needs_wechat_video_bitrate_transcode", None)
+        if not callable(needs_bitrate):
+            return False
+        try:
+            return bool(needs_bitrate(source_file))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _needs_wechat_video_resolution_transcode(self, source_file: Path) -> bool:
+        needs_resolution = getattr(self.processor, "needs_wechat_video_resolution_transcode", None)
+        if callable(needs_resolution):
+            try:
+                return bool(needs_resolution(source_file))
+            except Exception:  # noqa: BLE001
+                return False
+        dimensions = self._video_dimensions(source_file)
+        if not dimensions:
+            return False
+        width, height = dimensions
+        return width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT
 
     @staticmethod
     def _covered_source_skipped_count(original_episode_count: int, source_items: list[EpisodeMediaFile]) -> int:
@@ -776,6 +815,8 @@ class TaskRunner:
         source_stat = source_file.stat()
         signature: dict[str, Any] = {
             "version": WECHAT_VIDEO_COVER_FRAME_VERSION,
+            "minWidth": WECHAT_VIDEO_MIN_WIDTH,
+            "minHeight": WECHAT_VIDEO_MIN_HEIGHT,
             "source": str(source_file),
             "sourceSize": source_stat.st_size,
             "sourceMtimeNs": source_stat.st_mtime_ns,

@@ -64,6 +64,50 @@ def test_ffmpeg_processor_ignores_unreadable_bitrate(monkeypatch, tmp_path):
     assert processor.needs_wechat_video_bitrate_transcode(source) is False
 
 
+def test_ffmpeg_processor_detects_low_wechat_video_resolution(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if "stream=width,height" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 540, "height": 960}]}),
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"streams": [{"bit_rate": "4500000"}]}),
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.video_dimensions(source) == (540, 960)
+    assert processor.needs_wechat_video_resolution_transcode(source) is True
+    assert processor.needs_wechat_video_transcode(source) is True
+
+
+def test_ffmpeg_processor_keeps_compliant_wechat_video_resolution(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"streams": [{"width": 720, "height": 1280}]}),
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.needs_wechat_video_resolution_transcode(source) is False
+
+
 def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     source.write_text("video")
@@ -81,6 +125,37 @@ def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
     assert processor.video_duration_seconds(source) == 29.42
 
 
+def test_ffmpeg_processor_transcodes_low_resolution_to_wechat_video_minimum(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 540, "height": 960}]}),
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.transcode_for_wechat_video(source, target) == target
+
+    ffmpeg_command = commands[-1]
+    assert "-vf" in ffmpeg_command
+    video_filter = ffmpeg_command[ffmpeg_command.index("-vf") + 1]
+    assert "scale=720:1280:force_original_aspect_ratio=decrease" in video_filter
+    assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" in video_filter
+    assert "setsar=1,format=yuv420p" in video_filter
+    assert ffmpeg_command[-1] == str(target)
+
+
 def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"
@@ -95,7 +170,7 @@ def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout=json.dumps({"streams": [{"width": 1281, "height": 721}]}),
+                stdout=json.dumps({"streams": [{"width": 721, "height": 1281}]}),
             )
         return subprocess.CompletedProcess(command, 0)
 
@@ -112,7 +187,8 @@ def test_ffmpeg_processor_transcodes_with_cover_opening_second(monkeypatch, tmp_
     assert "-filter_complex" in ffmpeg_command
     assert ffmpeg_command[ffmpeg_command.index("-x264-params") + 1] == "nal-hrd=cbr:filler=1"
     filter_complex = ffmpeg_command[ffmpeg_command.index("-filter_complex") + 1]
-    assert "scale=1280:720" in filter_complex
+    assert "scale=720:1280:force_original_aspect_ratio=decrease" in filter_complex
+    assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" in filter_complex
     assert "boxblur=24:2" in filter_complex
     assert "force_original_aspect_ratio=decrease" in filter_complex
     assert "overlay=(W-w)/2:(H-h)/2" in filter_complex

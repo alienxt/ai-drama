@@ -798,6 +798,43 @@ def test_publish_once_fails_when_all_video_episodes_are_too_short(tmp_path, monk
     assert publisher.files == []
 
 
+def test_publish_once_transcodes_low_resolution_video(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FakeProcessor()
+    processor.dimensions = {"001.mp4": (540, 960), "002.mp4": (720, 1280)}
+    publisher = FakePublisher()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("video")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    source_1 = tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
+    source_2 = tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
+    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    assert processor.calls == [(source_1, processed_1, None)]
+    assert publisher.files == [processed_1, source_2]
+    marker = processed_1.with_name("001.mp4.aidrama.json")
+    signature = json.loads(marker.read_text(encoding="utf-8"))
+    assert signature["minWidth"] == 720
+    assert signature["minHeight"] == 1280
+
+
 def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = FakePublisher()
