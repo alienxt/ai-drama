@@ -52,6 +52,7 @@ public class DistributionService {
     private static final String PREPARATION_FAILURE_PREFIX = "AI 素材生成失败：";
     private static final String FORCE_STOP_FAILURE_REASON = "用户强制停止任务";
     private static final int DAILY_PUBLISH_LIMIT = 10;
+    private static final Duration DAILY_LIMIT_RECENT_RETRY_WINDOW = Duration.ofHours(24);
     private static final ZoneId DAILY_PUBLISH_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
             DistributionTaskStatus.CLAIMED,
@@ -510,9 +511,16 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
-        assertDailyPublishLimitAvailable(mediaAccountIds);
+        if (!isRecentRetryTask(task)) {
+            assertDailyPublishLimitAvailable(mediaAccountIds);
+        }
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation);
+    }
+
+    private boolean isRecentRetryTask(DistributionTask task) {
+        Instant createdAt = task.getCreatedAt();
+        return createdAt != null && !createdAt.isBefore(Instant.now().minus(DAILY_LIMIT_RECENT_RETRY_WINDOW));
     }
 
     private void assertDailyPublishLimitAvailable(List<String> mediaAccountIds) {

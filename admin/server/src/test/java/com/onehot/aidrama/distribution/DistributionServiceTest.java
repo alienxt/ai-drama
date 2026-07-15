@@ -935,6 +935,7 @@ class DistributionServiceTest {
         failed.setStatus(DistributionTaskStatus.FAILED);
         failed.setFailureReason("upload failed");
         failed.setFinishedAt(Instant.now());
+        failed.setCreatedAt(Instant.now().minusSeconds(25 * 60 * 60));
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
                 .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
@@ -949,6 +950,35 @@ class DistributionServiceTest {
                 .hasMessageContaining("今日发布次数已达 10 次");
 
         verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void desktopRetryBypassesDailyPublishLimitForTasksCreatedWithin24Hours() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask failed = new DistributionTask();
+        failed.setId("task-1");
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setFailureReason("upload failed");
+        failed.setFinishedAt(Instant.now());
+        failed.setCreatedAt(Instant.now().minusSeconds(23 * 60 * 60));
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
+        when(taskRepository.save(failed)).thenReturn(failed);
+
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
+
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
+        assertThat(task.getFailureReason()).isNull();
+        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(any(), any(), any());
     }
 
     @Test
