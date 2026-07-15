@@ -562,8 +562,8 @@ class DesktopWindow(QMainWindow):
         filters.addStretch(1)
         list_layout.addLayout(filters)
 
-        self.drama_table = QTableWidget(0, 11)
-        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "AI简介", "评分", "分类", "集数", "成本金额", "下载状态", "已下载集数", "上架时间", "操作"])
+        self.drama_table = QTableWidget(0, 12)
+        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "AI简介", "评分", "分类", "集数", "成本金额", "素材状态", "下载状态", "已下载集数", "上架时间", "操作"])
         self.align_table_header_left(self.drama_table)
         self.drama_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -576,6 +576,7 @@ class DesktopWindow(QMainWindow):
         self.drama_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Fixed)
+        self.drama_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Fixed)
         self.drama_table.setColumnWidth(0, 82)
         self.drama_table.setColumnWidth(3, 64)
         self.drama_table.setColumnWidth(4, 120)
@@ -583,8 +584,9 @@ class DesktopWindow(QMainWindow):
         self.drama_table.setColumnWidth(6, 90)
         self.drama_table.setColumnWidth(7, 110)
         self.drama_table.setColumnWidth(8, 110)
-        self.drama_table.setColumnWidth(9, 165)
-        self.drama_table.setColumnWidth(10, 170)
+        self.drama_table.setColumnWidth(9, 110)
+        self.drama_table.setColumnWidth(10, 165)
+        self.drama_table.setColumnWidth(11, 170)
         self.drama_table.verticalHeader().setVisible(False)
         self.drama_table.setAlternatingRowColors(True)
         self.drama_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1874,13 +1876,13 @@ class DesktopWindow(QMainWindow):
             self.drama_table.setCellWidget(row_index, 0, self.drama_cover_widget(cover_url))
             values = self.drama_row_values(drama)
             download_status, downloaded_count, _ = self.drama_download_info(drama)
-            values[6] = download_status
-            values[7] = str(downloaded_count)
+            values[7] = download_status
+            values[8] = str(downloaded_count)
             for column, value in enumerate(values, start=1):
                 item = self.left_aligned_table_item(value)
                 item.setToolTip(value)
                 self.drama_table.setItem(row_index, column, item)
-            self.drama_table.setCellWidget(row_index, 10, self.drama_actions_widget(drama))
+            self.drama_table.setCellWidget(row_index, 11, self.drama_actions_widget(drama))
             self.drama_table.setRowHeight(row_index, 86)
 
     def show_drama_detail(self, row: int, _: int = 0) -> None:
@@ -1923,6 +1925,7 @@ class DesktopWindow(QMainWindow):
         info.addWidget(QLabel(f"评分：{self.format_rating(drama.get('rating'))}"))
         info.addWidget(QLabel(f"集数：{total_count}"))
         info.addWidget(QLabel(f"成本金额：{self.format_cost_amount_wan(drama)}"))
+        info.addWidget(QLabel(f"素材状态：{self.drama_preparation_status_label(drama)}"))
         info.addWidget(QLabel(f"下载状态：{status}"))
         info.addWidget(QLabel(f"已下载集数：{downloaded_count}/{total_count}"))
         info.addWidget(QLabel(f"上架时间：{self.format_datetime(str(drama.get('createdAt') or ''))}"))
@@ -1978,10 +1981,21 @@ class DesktopWindow(QMainWindow):
             categories or "-",
             str(cls.drama_episode_count(drama)),
             cls.format_cost_amount_wan(drama),
+            cls.drama_preparation_status_label(drama),
             "-",
             "-",
             cls.format_datetime(str(drama.get("createdAt") or "")),
         ]
+
+    @classmethod
+    def drama_preparation_status_label(cls, drama: dict[str, Any]) -> str:
+        preparation_status = str(drama.get("preparationStatus") or "").strip().upper()
+        status = str(drama.get("status") or "").strip().upper()
+        if preparation_status == "PENDING_AI_ASSETS" or status == "DRAFT":
+            return "待生成素材"
+        if preparation_status == "READY" or status == "READY":
+            return "可分发"
+        return cls.drama_status_label(status)
 
     @classmethod
     def format_cost_amount_wan(cls, drama: dict[str, Any]) -> str:

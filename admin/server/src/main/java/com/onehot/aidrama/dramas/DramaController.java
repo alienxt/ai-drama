@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @RestController
@@ -193,17 +194,14 @@ public class DramaController {
             Pageable pageable
     ) {
         Instant listedFrom = Instant.now().minus(7, ChronoUnit.DAYS);
-        MongoPageQuery query = new MongoPageQuery()
-                .containsAny(keyword, "title", "aiTitle", "aiTitleEn", "aiSummary", "aiSummaryEn")
-                .eq("status", DramaStatus.READY)
-                .range("updatedAt", listedFrom, null);
-        long total = mongoTemplate.count(query.toQuery(), Drama.class);
+        Query query = desktopDramaListQuery(keyword, listedFrom);
+        long total = mongoTemplate.count(query, Drama.class);
         Pageable effectivePageable = pageable.isPaged()
                 ? PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), Sort.by(Sort.Direction.DESC, "updatedAt"))
                 : pageable;
-        Query pageQuery = query.toQuery().with(effectivePageable);
+        Query pageQuery = Query.of(query).with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "createdAt", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
+                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "createdAt", "updatedAt", "status", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -237,6 +235,8 @@ public class DramaController {
                             intValue(document, "totalMinutes"),
                             costAmountWan(document, id),
                             instantValue(document, "createdAt"),
+                            instantValue(document, "updatedAt"),
+                            dramaStatus(document),
                             prioritizedDramaIds.contains(id)
                     );
                 })
@@ -248,6 +248,56 @@ public class DramaController {
                 new PageResult<>(content, total, totalPages, pageNumber, pageSize),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
+    }
+
+    private Query desktopDramaListQuery(String keyword, Instant listedFrom) {
+        Query query = new Query();
+        Criteria visible = new Criteria().orOperator(
+                Criteria.where("status").is(DramaStatus.READY).and("updatedAt").gte(listedFrom),
+                draftPreparableCriteria(listedFrom)
+        );
+        keywordCriteria(keyword).ifPresentOrElse(
+                keywordFilter -> query.addCriteria(new Criteria().andOperator(keywordFilter, visible)),
+                () -> query.addCriteria(visible)
+        );
+        return query;
+    }
+
+    private Criteria draftPreparableCriteria(Instant listedFrom) {
+        Instant retryAfter = Instant.now().minus(10, ChronoUnit.MINUTES);
+        return new Criteria().andOperator(
+                Criteria.where("status").is(DramaStatus.DRAFT),
+                Criteria.where("createdAt").gte(listedFrom),
+                new Criteria().orOperator(
+                        Criteria.where("source").is(DramaSources.BAIDU_PAN),
+                        Criteria.where("source").exists(false),
+                        Criteria.where("source").is(null),
+                        Criteria.where("source").is("")
+                ),
+                Criteria.where("sourcePath").exists(true).nin(null, ""),
+                Criteria.where("episodes.0").exists(true),
+                Criteria.where("aiCoverGenerating").ne(true),
+                new Criteria().orOperator(
+                        Criteria.where("aiPreparationFailedAt").exists(false),
+                        Criteria.where("aiPreparationFailedAt").is(null),
+                        Criteria.where("aiPreparationFailedAt").lte(retryAfter)
+                )
+        );
+    }
+
+    private Optional<Criteria> keywordCriteria(String keyword) {
+        if (keyword == null || keyword.isBlank()) {
+            return Optional.empty();
+        }
+        Pattern pattern = Pattern.compile(Pattern.quote(keyword.trim()), Pattern.CASE_INSENSITIVE);
+        return Optional.of(new Criteria().orOperator(
+                Criteria.where("title").regex(pattern),
+                Criteria.where("aiTitle").regex(pattern),
+                Criteria.where("aiTitleEn").regex(pattern),
+                Criteria.where("summary").regex(pattern),
+                Criteria.where("aiSummary").regex(pattern),
+                Criteria.where("aiSummaryEn").regex(pattern)
+        ));
     }
 
     @GetMapping("/api/admin/dramas/{id}")
@@ -769,6 +819,21 @@ public class DramaController {
             return episodes.size();
         }
         return intValue(document, "episodeCount");
+    }
+
+    private DramaStatus dramaStatus(Document document) {
+        Object value = document.get("status");
+        if (value instanceof DramaStatus status) {
+            return status;
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return DramaStatus.valueOf(text);
+            } catch (IllegalArgumentException ignored) {
+                return DramaStatus.DRAFT;
+            }
+        }
+        return DramaStatus.DRAFT;
     }
 
     private Instant instantValue(Document document, String field) {

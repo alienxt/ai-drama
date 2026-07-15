@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import inspect
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -42,6 +43,7 @@ TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
 MAX_SKIPPED_EPISODE_FAILURES = 3
 WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS = 30.0
 TIKTOK_MIN_EPISODE_DURATION_SECONDS = 15.0
+TIKTOK_MAX_EPISODE_DURATION_SECONDS = 20 * 60.0
 TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
@@ -50,6 +52,15 @@ TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 TIKTOK_COVER_WIDTH = 768
 TIKTOK_COVER_HEIGHT = 1024
 TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
+TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON = "TK表单上传待时间。"
+DRAMA_ASSET_FILENAMES = (
+    "fengmian.jpg",
+    "video-cover.jpg",
+    "fengmian-en.jpg",
+    "video-cover-en.jpg",
+    TIKTOK_COVER_FILENAME,
+    "meta.json",
+)
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
     "Referer": "https://pan.baidu.com/",
@@ -141,7 +152,7 @@ class TaskRunner:
         self._notify(f"重填TK表单：{drama_title}", task_id, task_with_title)
         upload_items = self._cached_upload_items(download_plan, platform)
         if not upload_items:
-            raise RuntimeError("没有找到本地 TK 上传缓存，请先完整执行一次任务生成 TK 合并视频。")
+            raise RuntimeError("没有找到本地可用于 TK 上传的视频缓存，请先完整执行一次任务生成处理后的视频。")
         effective_download_plan = self._effective_download_plan(download_plan, upload_items)
         contract_metadata = self._prepare_contract_materials(
             effective_download_plan,
@@ -195,6 +206,8 @@ class TaskRunner:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             if not upload_items:
                 raise RuntimeError("没有可上传的剧集，整部剧分发失败。")
+            if platform == "TIKTOK":
+                return self._stop_tiktok_task_before_upload(task_id, task_with_title, drama_title)
             effective_download_plan = self._effective_download_plan(download_plan, upload_items)
             contract_metadata = (
                 self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
@@ -255,6 +268,22 @@ class TaskRunner:
                 return "cancelled"
             self._notify(f"任务失败：{exception}", task_id, task)
             return "failed"
+
+    def _stop_tiktok_task_before_upload(self, task_id: str, task: dict, drama_title: str) -> str:
+        self._progress(task_id, "UPLOADING", 75)
+        result_task = self.api.put(
+            f"/desktop/tasks/{task_id}/result",
+            {
+                "success": False,
+                "platformPublishId": None,
+                "failureReason": TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON,
+            },
+        )
+        if self._is_cancelled_result(result_task):
+            self._notify("任务已停止，可重新分发", task_id, task)
+            return "cancelled"
+        self._notify(f"上传失败：{TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON}", task_id, task)
+        return "failed"
 
     def _claim_payload(self) -> dict[str, Any]:
         return {"deviceId": self.device_id, "asyncPreparation": True}
@@ -389,7 +418,7 @@ class TaskRunner:
         return str(download_plan.get("title") or task["dramaId"])
 
     def _download(self, download_plan: dict, task_id: str, drama_title: str) -> list[EpisodeMediaFile]:
-        target_dir = self.input_dir() / download_plan["dramaId"]
+        target_dir = self._drama_download_dir(download_plan)
         progress_lock = threading.Lock()
         downloaded_by_episode: dict[int, int] = {}
         total_by_episode = {
@@ -449,11 +478,29 @@ class TaskRunner:
             kwargs["max_skipped_episodes"] = self.max_skipped_episode_failures
             kwargs["skip_callback"] = report_skipped
         source_files = download_episodes(download_plan, target_dir, self.api.base_url, **kwargs)
+        self._sync_download_assets_to_processed(target_dir, task_id, drama_title)
         media_items = self._episode_media_files_from_paths(download_plan, source_files)
         skipped_count = len(download_plan.get("episodes") or []) - len(media_items)
         if skipped_count > 0:
             self._notify(f"已跳过 {skipped_count} 集下载失败剧集，继续处理 {len(media_items)} 集", task_id)
         return media_items
+
+    def _sync_download_assets_to_processed(self, download_dir: Path, task_id: str, drama_title: str) -> None:
+        processed_dir = self._processed_media_target(download_dir / ".asset-anchor").parent
+        copied = 0
+        try:
+            processed_dir.mkdir(parents=True, exist_ok=True)
+            for filename in DRAMA_ASSET_FILENAMES:
+                source = download_dir / filename
+                if not source.exists() or not source.is_file():
+                    continue
+                shutil.copy2(source, processed_dir / filename)
+                copied += 1
+        except OSError as exception:
+            self._notify(f"资料同步失败：{drama_title}（{exception}）", task_id)
+            return
+        if copied:
+            self._notify(f"资料已同步到处理目录：{drama_title}（{copied} 个）", task_id)
 
     def _prepare_source_items_for_platform(
         self,
@@ -486,6 +533,11 @@ class TaskRunner:
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             source_file = item.file
             episode_no = episode_number(item.episode, item.episode_index)
+            if platform == "TIKTOK":
+                reusable_processed_item = self._reusable_tiktok_processed_item(item)
+                if reusable_processed_item is not None:
+                    upload_items.append(reusable_processed_item)
+                    continue
             duration_seconds = self._video_duration_seconds(source_file)
             min_duration_seconds = self._platform_min_episode_duration_seconds(platform)
             if duration_seconds is not None and min_duration_seconds and duration_seconds < min_duration_seconds:
@@ -505,6 +557,8 @@ class TaskRunner:
             source_needs_transcode = self._needs_wechat_video_transcode(source_file)
             source_needs_bitrate_transcode = self._needs_wechat_video_bitrate_transcode(source_file)
             source_needs_resolution_transcode = self._needs_wechat_video_resolution_transcode(source_file)
+            source_needs_tiktok_upload_transcode = self._needs_tiktok_upload_transcode(source_file) if platform == "TIKTOK" else False
+            source_needs_transcode = source_needs_transcode or source_needs_tiktok_upload_transcode
             should_add_cover_frame = cover_file is not None
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
@@ -513,16 +567,24 @@ class TaskRunner:
             target = self._processed_media_target(source_file)
             signature = self._processed_media_signature(source_file, cover_file)
             target_needs_transcode = self._needs_wechat_video_transcode(target)
-            if self._is_ready_upload_file(target) and self._processed_media_signature_matches(target, signature) and not target_needs_transcode:
-                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes))
+            target_item = EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes)
+            if (
+                self._is_ready_upload_file(target)
+                and self._processed_media_signature_matches(target, signature)
+                and not target_needs_transcode
+                and self._platform_upload_item_rejection_reason(target_item, platform) is None
+            ):
+                upload_items.append(target_item)
                 continue
             action_parts = []
             if source_needs_bitrate_transcode:
                 action_parts.append("提升码率")
             if source_needs_resolution_transcode:
                 action_parts.append("提升分辨率")
-            elif source_needs_transcode:
+            elif source_needs_transcode and not source_needs_tiktok_upload_transcode:
                 action_parts.append("规范分辨率")
+            if source_needs_tiktok_upload_transcode:
+                action_parts.append("满足TK格式和大小")
             if should_add_cover_frame:
                 action_parts.append("添加封面帧")
             action = "、".join(action_parts) or "统一转码"
@@ -605,6 +667,65 @@ class TaskRunner:
             return "TK"
         return "视频号"
 
+    def _reusable_tiktok_processed_item(self, item: EpisodeMediaFile) -> EpisodeMediaFile | None:
+        target = self._processed_media_target(item.file)
+        if target == item.file or not self._is_ready_upload_file(target):
+            return None
+        target_item = EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes)
+        if self._needs_wechat_video_transcode(target):
+            return None
+        if self._tiktok_upload_rejection_reason(target_item):
+            return None
+        return target_item
+
+    def _platform_upload_item_rejection_reason(self, item: EpisodeMediaFile, platform: str) -> str | None:
+        if platform != "TIKTOK":
+            return None
+        return self._tiktok_upload_rejection_reason(item)
+
+    def _tiktok_upload_rejection_reason(self, item: EpisodeMediaFile) -> str | None:
+        path = item.file
+        if not path.exists() or not path.is_file():
+            return "文件不存在"
+        if path.suffix.lower() != ".mp4":
+            return f"文件格式为 {path.suffix or '未知'}，不符合 TK 推荐的 MP4 格式"
+        size = path.stat().st_size
+        size_mb = size / 1024 / 1024
+        if size < TIKTOK_MIN_VIDEO_SIZE_BYTES:
+            return f"文件 {size_mb:.1f} MB，小于 TK 要求的 5 MB"
+        if size > TIKTOK_MAX_VIDEO_SIZE_BYTES:
+            return f"文件 {size_mb:.1f} MB，超过 TK 要求的 4 GB"
+        duration_seconds = self._video_duration_seconds(path)
+        if duration_seconds is not None:
+            if duration_seconds < TIKTOK_MIN_EPISODE_DURATION_SECONDS:
+                return f"视频时长 {duration_seconds:.1f} 秒，小于 TK 要求的 {TIKTOK_MIN_EPISODE_DURATION_SECONDS:.0f} 秒"
+            if duration_seconds > TIKTOK_MAX_EPISODE_DURATION_SECONDS:
+                return f"视频时长 {duration_seconds / 60:.1f} 分钟，超过 TK 要求的 20 分钟"
+        dimensions = self._video_dimensions(path)
+        if dimensions:
+            width, height = dimensions
+            if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
+                return f"分辨率 {width}x{height}，低于 TK 建议的 {WECHAT_VIDEO_MIN_WIDTH}x{WECHAT_VIDEO_MIN_HEIGHT}"
+        return None
+
+    def _needs_tiktok_upload_transcode(self, source_file: Path) -> bool:
+        if not source_file.exists() or not source_file.is_file():
+            return False
+        if source_file.suffix.lower() != ".mp4":
+            return True
+        size = source_file.stat().st_size
+        if 0 < size < TIKTOK_MIN_VIDEO_SIZE_BYTES:
+            return True
+        dimensions = self._video_dimensions(source_file)
+        if dimensions:
+            width, height = dimensions
+            if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
+                return True
+        return False
+
+    def _all_items_satisfy_tiktok_upload_rules(self, media_items: list[EpisodeMediaFile]) -> bool:
+        return bool(media_items) and all(self._tiktok_upload_rejection_reason(item) is None for item in media_items)
+
     def _filter_upload_items_for_platform(
         self,
         media_items: list[EpisodeMediaFile],
@@ -620,15 +741,11 @@ class TaskRunner:
         skipped = 0
         last_reason = ""
         for item in media_items:
-            size = item.file.stat().st_size if item.file.exists() else 0
-            if size < TIKTOK_MIN_VIDEO_SIZE_BYTES or size > TIKTOK_MAX_VIDEO_SIZE_BYTES:
+            rejection_reason = self._tiktok_upload_rejection_reason(item)
+            if rejection_reason:
                 skipped += 1
                 episode_no = episode_number(item.episode, item.episode_index)
-                size_mb = size / 1024 / 1024
-                if size < TIKTOK_MIN_VIDEO_SIZE_BYTES:
-                    last_reason = f"第 {episode_no} 集文件 {size_mb:.1f} MB，小于 TK 要求的 5 MB"
-                else:
-                    last_reason = f"第 {episode_no} 集文件 {size_mb:.1f} MB，超过 TK 要求的 4 GB"
+                last_reason = f"第 {episode_no} 集{rejection_reason}"
                 self._notify(f"跳过：{drama_title} {last_reason}", task_id)
                 if skipped > self.max_skipped_episode_failures:
                     raise RuntimeError(
@@ -886,23 +1003,36 @@ class TaskRunner:
         return sorted(items, key=lambda item: item.episode_index)
 
     def _cached_upload_items(self, download_plan: dict, platform: str) -> list[EpisodeMediaFile]:
-        drama_id = str(download_plan["dramaId"])
+        processed_dirs = self._drama_dir_candidates(self.output_dir(), download_plan)
+        download_dirs = self._drama_dir_candidates(self.input_dir(), download_plan)
         if platform == "TIKTOK":
-            directories = [
-                self.output_dir() / drama_id / "TK",
-                self.input_dir() / drama_id / "TK",
-                self.output_dir() / drama_id,
-                self.input_dir() / drama_id,
-            ]
+            original_episode_count = len(download_plan.get("episodes") or [])
+            if original_episode_count > TIKTOK_MAX_EPISODE_COUNT:
+                directories = [
+                    *(directory / "TK" for directory in processed_dirs),
+                    *(directory / "TK" for directory in download_dirs),
+                    *processed_dirs,
+                    *download_dirs,
+                ]
+            else:
+                directories = [
+                    *processed_dirs,
+                    *download_dirs,
+                    *(directory / "TK" for directory in processed_dirs),
+                    *(directory / "TK" for directory in download_dirs),
+                ]
         else:
-            directories = [self.output_dir() / drama_id, self.input_dir() / drama_id]
+            directories = [*processed_dirs, *download_dirs]
         for directory in directories:
             files = self._cached_video_files(directory)
             if not files:
                 continue
             if platform == "TIKTOK" and len(files) > TIKTOK_MAX_EPISODE_COUNT:
                 continue
-            return self._cached_episode_media_files(download_plan, files, platform)
+            media_items = self._cached_episode_media_files(download_plan, files, platform)
+            if platform == "TIKTOK" and not self._all_items_satisfy_tiktok_upload_rules(media_items):
+                continue
+            return media_items
         return []
 
     @staticmethod
@@ -991,11 +1121,12 @@ class TaskRunner:
         platform: str = "WECHAT_VIDEO",
     ) -> dict[str, Any]:
         episodes = download_plan.get("episodes") or []
-        cover_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian.jpg"
-        cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / "fengmian-en.jpg"
-        tiktok_cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / TIKTOK_COVER_FILENAME
-        video_cover_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover.jpg"
-        video_cover_en_file = self.input_dir() / str(download_plan["dramaId"]) / "video-cover-en.jpg"
+        asset_dir = self._drama_download_dir(download_plan)
+        cover_file = asset_dir / "fengmian.jpg"
+        cover_en_file = asset_dir / "fengmian-en.jpg"
+        tiktok_cover_en_file = asset_dir / TIKTOK_COVER_FILENAME
+        video_cover_file = asset_dir / "video-cover.jpg"
+        video_cover_en_file = asset_dir / "video-cover-en.jpg"
         publish_title = self._platform_publish_title(download_plan, platform)
         publish_summary = self._platform_publish_summary(download_plan, platform)
         return {
@@ -1090,6 +1221,25 @@ class TaskRunner:
 
     def output_dir(self) -> Path:
         return self.processed_dir or self.work_dir / "dramas" / "processed"
+
+    def _drama_download_dir(self, download_plan: dict[str, Any]) -> Path:
+        return self._drama_existing_or_preferred_dir(self.input_dir(), download_plan)
+
+    def _drama_existing_or_preferred_dir(self, base_dir: Path, download_plan: dict[str, Any]) -> Path:
+        candidates = self._drama_dir_candidates(base_dir, download_plan)
+        preferred = candidates[0]
+        for directory in candidates:
+            if directory.is_dir() and any(directory.iterdir()):
+                return directory
+        return preferred
+
+    def _drama_dir_candidates(self, base_dir: Path, download_plan: dict[str, Any]) -> list[Path]:
+        preferred = base_dir / drama_directory_name(download_plan)
+        legacy = base_dir / str(download_plan["dramaId"])
+        directories = [preferred]
+        if legacy != preferred:
+            directories.append(legacy)
+        return directories
 
     @staticmethod
     def _download_stage(
@@ -1375,6 +1525,18 @@ def safe_episode_drama_name(value: object) -> str:
     clean = INVALID_FILENAME_CHARS_RE.sub("", str(value or "").strip())
     clean = re.sub(r"\s+", "", clean).strip(FILENAME_EDGE_CHARS)
     return clean or "短剧"
+
+
+def drama_directory_name(download_plan: dict[str, Any]) -> str:
+    drama_id = safe_episode_drama_name(download_plan.get("dramaId"))
+    title = safe_episode_drama_name(
+        download_plan.get("title")
+        or download_plan.get("aiTitle")
+        or download_plan.get("publishTitle")
+        or download_plan.get("name")
+    )
+    title = title[:80].strip(FILENAME_EDGE_CHARS) or "短剧"
+    return f"{title}-{drama_id}" if drama_id else title
 
 
 def cleanup_part_file(part_file: Path) -> None:

@@ -214,7 +214,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
         }
     )
 
-    assert values == ["新剧名", "AI一段简介...", "4分", "科幻", "2", "3万", "-", "-", "2026-06-14 16:42:03"]
+    assert values == ["新剧名", "AI一段简介...", "4分", "科幻", "2", "3万", "可分发", "-", "-", "2026-06-14 16:42:03"]
 
 
 def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
@@ -245,6 +245,22 @@ def test_desktop_drama_row_values_defaults_missing_rating_to_five():
     )
 
     assert values[2] == "5分"
+
+
+def test_desktop_drama_row_values_marks_draft_as_pending_ai_assets():
+    values = DesktopWindow.drama_row_values(
+        {
+            "title": "原剧名",
+            "summary": "一段简介",
+            "categoryNames": ["科幻"],
+            "episodeCount": 12,
+            "status": "DRAFT",
+            "preparationStatus": "PENDING_AI_ASSETS",
+            "createdAt": "2026-06-14T16:42:03Z",
+        }
+    )
+
+    assert values[6] == "待生成素材"
 
 
 def test_drama_download_info_counts_only_completed_episodes(tmp_path):

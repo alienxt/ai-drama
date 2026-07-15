@@ -135,7 +135,9 @@ class DramaControllerTest {
                         : drama.getEpisodes().stream()
                                 .map(episode -> new Document("episodeNo", episode.getEpisodeNo()))
                                 .toList())
-                .append("createdAt", drama.getCreatedAt());
+                .append("createdAt", drama.getCreatedAt())
+                .append("updatedAt", drama.getUpdatedAt())
+                .append("status", drama.getStatus());
     }
 
     private DramaEpisode episode(int episodeNo) {
@@ -260,7 +262,7 @@ class DramaControllerTest {
     }
 
     @Test
-    void desktopListReturnsReadyDramasUpdatedInLastSevenDaysWithoutRequiringAiAssets() {
+    void desktopListReturnsReadyAndPreparableDraftDramasWithoutRequiringAiAssets() {
         MongoTemplate mongoTemplate = mock(MongoTemplate.class);
         DramaController controller = controller(mongoTemplate);
         when(mongoTemplate.find(org.mockito.ArgumentMatchers.any(Query.class), eq(Document.class), eq("dramas"))).thenReturn(List.of());
@@ -270,8 +272,13 @@ class DramaControllerTest {
         ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
         verify(mongoTemplate).count(query.capture(), eq(Drama.class));
         String queryJson = query.getValue().getQueryObject().toString();
-        assertThat(queryJson).contains("status=READY");
+        assertThat(queryJson).contains("READY");
+        assertThat(queryJson).contains("DRAFT");
         assertThat(queryJson).contains("updatedAt");
+        assertThat(queryJson).contains("createdAt");
+        assertThat(queryJson).contains("sourcePath");
+        assertThat(queryJson).contains("episodes.0");
+        assertThat(queryJson).contains("aiCoverGenerating");
         assertThat(queryJson).contains("$gte");
         assertThat(queryJson).doesNotContain("aiTitle");
         assertThat(queryJson).doesNotContain("aiSummary");
@@ -389,6 +396,22 @@ class DramaControllerTest {
         DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
 
         assertThat(row.totalMinutes()).isEqualTo(123);
+    }
+
+    @Test
+    void desktopListMarksDraftRowsAsPendingAiAssets() {
+        MongoTemplate mongoTemplate = mock(MongoTemplate.class);
+        DramaController controller = controller(mongoTemplate);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setTitle("短剧");
+        drama.setStatus(DramaStatus.DRAFT);
+        mockDesktopDocuments(mongoTemplate, drama);
+
+        DramaDtos.DesktopDramaResponse row = controller.desktopList(desktopPrincipal(), null, PageRequest.of(0, 10)).data().content().getFirst();
+
+        assertThat(row.status()).isEqualTo(DramaStatus.DRAFT);
+        assertThat(row.preparationStatus()).isEqualTo("PENDING_AI_ASSETS");
     }
 
     @Test

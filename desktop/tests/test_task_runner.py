@@ -8,7 +8,28 @@ from pathlib import Path
 
 import pytest
 
-from aidrama_desktop.tasks.runner import EpisodeMediaFile, TaskRunner, download_episodes, episode_video_filename
+from aidrama_desktop.tasks.runner import (
+    EpisodeMediaFile,
+    TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON,
+    TaskRunner,
+    download_episodes,
+    drama_directory_name,
+    episode_video_filename,
+)
+
+
+def drama_download_dir(tmp_path: Path, title: str = "神医归来", drama_id: str = "drama-1") -> Path:
+    return tmp_path / "dramas" / "downloads" / drama_directory_name({"title": title, "dramaId": drama_id})
+
+
+def drama_processed_dir(tmp_path: Path, title: str = "神医归来", drama_id: str = "drama-1") -> Path:
+    return tmp_path / "dramas" / "processed" / drama_directory_name({"title": title, "dramaId": drama_id})
+
+
+def last_task_result_payload(api) -> dict:
+    result_calls = [payload for method, path, payload in api.calls if method == "PUT" and path.endswith("/result")]
+    assert result_calls
+    return result_calls[-1]
 
 
 class FakeApi:
@@ -168,13 +189,52 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("GET", "/desktop/dramas/drama-1/download-plan", None) in api.calls
     assert publisher.title == "神医归来"
     assert publisher.files == [
-        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
-        tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+        drama_download_dir(tmp_path) / "001.mp4",
+        drama_download_dir(tmp_path) / "002.mp4",
     ]
     assert processor.calls == []
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
+
+
+def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypatch):
+    api = FakeApi()
+    progress_events = []
+    assets = {
+        "fengmian.jpg": b"cover",
+        "video-cover.jpg": b"video-cover",
+        "fengmian-en.jpg": b"cover-en",
+        "video-cover-en.jpg": b"video-cover-en",
+        "tiktok-cover-en.jpg": b"tiktok-cover-en",
+        "meta.json": b'{"title":"asset metadata"}',
+    }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for filename, body in assets.items():
+            (target_dir / filename).write_bytes(body)
+        target = target_dir / "001.mp4"
+        target.write_bytes(b"video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    processed_dir = drama_processed_dir(tmp_path)
+    for filename, body in assets.items():
+        assert (processed_dir / filename).read_bytes() == body
+    assert ("资料已同步到处理目录：神医归来（6 个）", "task-1") in progress_events
 
 
 def test_publish_once_waits_for_async_preparation_before_download(tmp_path, monkeypatch):
@@ -251,10 +311,10 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     api = FakeApi()
     publisher = FakePublisher()
     processor = FakeProcessor()
-    cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
-    cover_en_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian-en.jpg"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        cover_file = target_dir / "fengmian.jpg"
+        cover_en_file = target_dir / "fengmian-en.jpg"
         cover_file.parent.mkdir(parents=True, exist_ok=True)
         cover_file.write_text("cover")
         cover_en_file.write_text("cover-en")
@@ -279,8 +339,8 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.summary == "AI简介..."
     assert publisher.metadata["dramaId"] == "drama-1"
     assert publisher.metadata["publishTitle"] == "神医归来"
-    assert publisher.metadata["coverFile"] == cover_file
-    assert publisher.metadata["coverEnFile"] == cover_en_file
+    assert publisher.metadata["coverFile"] == drama_download_dir(tmp_path) / "fengmian.jpg"
+    assert publisher.metadata["coverEnFile"] == drama_download_dir(tmp_path) / "fengmian-en.jpg"
     assert publisher.metadata["totalMinutes"] == 20
     assert publisher.metadata["costAmountWan"] == 3
     assert publisher.metadata["productionCostWan"] == 3
@@ -295,12 +355,12 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
         {
             "episodeNo": 1,
             "title": None,
-            "file": tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4",
+            "file": drama_processed_dir(tmp_path) / "001.mp4",
         },
         {
             "episodeNo": 2,
             "title": None,
-            "file": tmp_path / "dramas" / "processed" / "drama-1" / "002.mp4",
+            "file": drama_processed_dir(tmp_path) / "002.mp4",
         },
     ]
 
@@ -330,13 +390,13 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
 
     assert runner.publish_once() == "succeeded"
 
-    processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
-    untouched_file = tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
+    processed_file = drama_processed_dir(tmp_path) / "001.mp4"
+    untouched_file = drama_download_dir(tmp_path) / "002.mp4"
     assert ("PUT", "/desktop/tasks/task-1/progress", {"status": "PROCESSING", "progress": 70}) in api.calls
     assert publisher.files == [processed_file, untouched_file]
     assert processor.calls == [
         (
-            tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+            drama_download_dir(tmp_path) / "001.mp4",
             processed_file,
             None,
         )
@@ -350,7 +410,7 @@ def test_publish_once_cleans_failed_transcode_cache_for_retry(tmp_path, monkeypa
     api = FakeApi()
     processor = FailingTranscodeProcessor()
     publisher = FakePublisher()
-    source_file = tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
+    source_file = drama_download_dir(tmp_path) / "001.mp4"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         source_file.parent.mkdir(parents=True, exist_ok=True)
@@ -368,7 +428,7 @@ def test_publish_once_cleans_failed_transcode_cache_for_retry(tmp_path, monkeypa
 
     assert runner.publish_once() == "failed"
 
-    processed_file = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    processed_file = drama_processed_dir(tmp_path) / "001.mp4"
     result_calls = [call for call in api.calls if call[0] == "PUT" and call[1] == "/desktop/tasks/task-1/result"]
     assert result_calls
     assert "没有可上传的剧集" in result_calls[-1][2]["failureReason"]
@@ -401,7 +461,7 @@ def test_publish_once_skips_failed_transcode_episode_and_uploads_remaining(tmp_p
 
     assert runner.publish_once() == "succeeded"
 
-    assert publisher.files == [tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
+    assert publisher.files == [drama_download_dir(tmp_path) / "002.mp4"]
     assert publisher.metadata["episodeCount"] == 1
     assert publisher.metadata["skippedEpisodeCount"] == 1
     assert publisher.metadata["skippedEpisodeNumbers"] == [1]
@@ -409,7 +469,7 @@ def test_publish_once_skips_failed_transcode_episode_and_uploads_remaining(tmp_p
         {
             "episodeNo": 2,
             "title": None,
-            "file": tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+            "file": drama_download_dir(tmp_path) / "002.mp4",
         },
     ]
 
@@ -442,14 +502,14 @@ def test_publish_once_skips_short_video_episode_and_uploads_remaining(tmp_path, 
 
     assert runner.publish_once() == "succeeded"
 
-    assert publisher.files == [tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"]
+    assert publisher.files == [drama_download_dir(tmp_path) / "002.mp4"]
     assert publisher.metadata["episodeCount"] == 1
     assert publisher.metadata["skippedEpisodeCount"] == 1
     assert publisher.metadata["skippedEpisodeNumbers"] == [1]
     assert any("第 1 集视频时长 29.4 秒，小于视频号要求的 30 秒" in stage for stage, _task_id in progress_events)
 
 
-def test_tiktok_task_uses_english_metadata_and_tiktok_duration_rule(tmp_path, monkeypatch):
+def test_tiktok_task_stops_before_upload_after_processing(tmp_path, monkeypatch):
     from docx import Document
 
     api = FakeApi()
@@ -508,15 +568,77 @@ def test_tiktok_task_uses_english_metadata_and_tiktok_duration_rule(tmp_path, mo
         contract_image_converter=fake_image_converter,
     )
 
-    assert runner.publish_once() == "succeeded"
+    assert runner.publish_once() == "failed"
 
-    assert publisher.title == "English AI Title"
-    assert publisher.summary == "English AI summary."
-    assert publisher.metadata["platform"] == "TIKTOK"
-    assert publisher.metadata["publishTitle"] == "English AI Title"
-    assert publisher.metadata["publishSummary"] == "English AI summary."
-    assert publisher.metadata["purchaseContractDocx"].exists()
-    assert len(publisher.metadata["purchaseContractImages"]) == 1
+    assert publisher.title is None
+    assert publisher.files == []
+    result_payload = last_task_result_payload(api)
+    assert result_payload == {
+        "success": False,
+        "platformPublishId": None,
+        "failureReason": TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON,
+    }
+    assert ("PUT", "/desktop/tasks/task-1/progress", {"status": "UPLOADING", "progress": 75}) in api.calls
+
+
+def test_tiktok_task_reuses_regular_processed_files_when_they_satisfy_upload_rules(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+
+    class DownloadOnlyTranscodeProcessor(FakeProcessor):
+        def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
+            return "downloads" in source.parts
+
+    processor = DownloadOnlyTranscodeProcessor()
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        return {}
+
+    def get(path):
+        api.calls.append(("GET", path, None))
+        return {
+            "dramaId": "drama-1",
+            "title": "复用短剧",
+            "aiTitleEn": "Reusable Drama",
+            "aiSummaryEn": "A ready processed drama.",
+            "episodes": [{"episodeNo": 1, "downloadUrl": "/files/1.mp4"}],
+        }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"source-video")
+        return [target]
+
+    processed_file = drama_processed_dir(tmp_path, "复用短剧") / "001.mp4"
+    processed_file.parent.mkdir(parents=True, exist_ok=True)
+    processed_file.write_bytes(b"processed-video")
+
+    api.post = post
+    api.get = get
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.TIKTOK_MIN_VIDEO_SIZE_BYTES", 1)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "failed"
+
+    assert publisher.files == []
+    assert processed_file.exists()
+    assert last_task_result_payload(api)["failureReason"] == TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON
+    assert processor.calls == []
+    assert processor.merge_calls == []
+    assert not (drama_processed_dir(tmp_path, "复用短剧") / "TK").exists()
 
 
 def test_tiktok_task_merges_episode_pairs_when_upload_limit_exceeded(tmp_path, monkeypatch):
@@ -583,33 +705,26 @@ def test_tiktok_task_merges_episode_pairs_when_upload_limit_exceeded(tmp_path, m
         contract_image_converter=fake_image_converter,
     )
 
-    assert runner.publish_once() == "succeeded"
+    assert runner.publish_once() == "failed"
 
-    tiktok_dir = tmp_path / "dramas" / "downloads" / "drama-1" / "TK"
+    tiktok_dir = drama_download_dir(tmp_path, "轮回苟到天荒") / "TK"
     assert len(processor.merge_calls) == 84
-    assert len(publisher.files) == 84
-    assert all(path.parent == tiktok_dir for path in publisher.files)
-    assert [path.name for path in publisher.files[:2]] == [
+    merged_files = sorted(tiktok_dir.glob("*.mp4"))
+    assert len(merged_files) == 84
+    assert [path.name for path in merged_files[:2]] == [
         "轮回苟到天荒-TK第001集.mp4",
         "轮回苟到天荒-TK第002集.mp4",
     ]
     assert processor.merge_calls[0][0] == [
-        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
-        tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+        drama_download_dir(tmp_path, "轮回苟到天荒") / "001.mp4",
+        drama_download_dir(tmp_path, "轮回苟到天荒") / "002.mp4",
     ]
     assert processor.merge_calls[-1][0] == [
-        tmp_path / "dramas" / "downloads" / "drama-1" / "167.mp4",
-        tmp_path / "dramas" / "downloads" / "drama-1" / "168.mp4",
+        drama_download_dir(tmp_path, "轮回苟到天荒") / "167.mp4",
+        drama_download_dir(tmp_path, "轮回苟到天荒") / "168.mp4",
     ]
-    assert publisher.metadata["episodeCount"] == 84
-    assert publisher.metadata["totalMinutes"] == 84
-    assert publisher.metadata["originalEpisodeCount"] == 168
-    assert publisher.metadata["skippedEpisodeCount"] == 0
-    assert publisher.metadata["episodes"][0]["episodeNo"] == 1
-    assert publisher.metadata["episodes"][0]["sourceEpisodeNumbers"] == [1, 2]
-    assert publisher.metadata["episodes"][-1]["episodeNo"] == 84
-    assert publisher.metadata["episodes"][-1]["sourceEpisodeNumbers"] == [167, 168]
-    assert Document(publisher.metadata["purchaseContractDocx"]).paragraphs[0].text == "84 84"
+    assert publisher.files == []
+    assert last_task_result_payload(api)["failureReason"] == TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON
 
 
 def test_tiktok_task_merges_before_transcoding_when_upload_limit_exceeded(tmp_path, monkeypatch):
@@ -664,18 +779,17 @@ def test_tiktok_task_merges_before_transcoding_when_upload_limit_exceeded(tmp_pa
         device_id="device-1",
     )
 
-    assert runner.publish_once() == "succeeded"
+    assert runner.publish_once() == "failed"
 
-    merged_dir = tmp_path / "dramas" / "downloads" / "drama-1" / "TK"
-    processed_merged_dir = tmp_path / "dramas" / "processed" / "drama-1" / "TK"
+    merged_dir = drama_download_dir(tmp_path, "轮回苟到天荒") / "TK"
+    processed_merged_dir = drama_processed_dir(tmp_path, "轮回苟到天荒") / "TK"
     assert len(processor.merge_calls) == 84
     assert len(processor.calls) == 84
     assert all(call[0].parent == merged_dir for call in processor.calls)
     assert all(call[1].parent == processed_merged_dir for call in processor.calls)
-    assert len(publisher.files) == 84
-    assert all(path.parent == processed_merged_dir for path in publisher.files)
-    assert publisher.metadata["episodeCount"] == 84
-    assert publisher.metadata["skippedEpisodeCount"] == 0
+    assert len(list(processed_merged_dir.glob("*.mp4"))) == 84
+    assert publisher.files == []
+    assert last_task_result_payload(api)["failureReason"] == TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON
 
 
 def test_tiktok_task_merges_last_three_when_episode_count_is_odd(tmp_path, monkeypatch):
@@ -710,7 +824,7 @@ def test_tiktok_task_merges_last_three_when_episode_count_is_odd(tmp_path, monke
     assert merged_items[-1].source_episode_indexes == (119, 120, 121)
 
 
-def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_path):
+def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = CapturingPausedPublisher()
     processor = LowBitrateProcessor()
@@ -738,6 +852,7 @@ def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_pat
         }
 
     api.get = get
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.TIKTOK_MIN_VIDEO_SIZE_BYTES", 1)
     runner = TaskRunner(
         api=api,
         processor=processor,
@@ -824,9 +939,9 @@ def test_publish_once_transcodes_low_resolution_video(tmp_path, monkeypatch):
 
     assert runner.publish_once() == "succeeded"
 
-    source_1 = tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
-    source_2 = tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4"
-    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    source_1 = drama_download_dir(tmp_path) / "001.mp4"
+    source_2 = drama_download_dir(tmp_path) / "002.mp4"
+    processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
     assert processor.calls == [(source_1, processed_1, None)]
     assert publisher.files == [processed_1, source_2]
     marker = processed_1.with_name("001.mp4.aidrama.json")
@@ -840,9 +955,9 @@ def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch
     publisher = FakePublisher()
     processor = LowBitrateProcessor()
     processor.dimensions = {"001.mp4": (720, 1280)}
-    cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        cover_file = target_dir / "fengmian.jpg"
         cover_file.parent.mkdir(parents=True, exist_ok=True)
         cover_file.write_text("cover")
         files = []
@@ -863,17 +978,18 @@ def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch
 
     assert runner.publish_once() == "succeeded"
 
-    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
-    processed_2 = tmp_path / "dramas" / "processed" / "drama-1" / "002.mp4"
+    cover_file = drama_download_dir(tmp_path) / "fengmian.jpg"
+    processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
+    processed_2 = drama_processed_dir(tmp_path) / "002.mp4"
     assert publisher.files == [processed_1, processed_2]
     assert processor.calls == [
         (
-            tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+            drama_download_dir(tmp_path) / "001.mp4",
             processed_1,
             cover_file,
         ),
         (
-            tmp_path / "dramas" / "downloads" / "drama-1" / "002.mp4",
+            drama_download_dir(tmp_path) / "002.mp4",
             processed_2,
             cover_file,
         ),
@@ -881,7 +997,7 @@ def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch
     marker = processed_1.with_name("001.mp4.aidrama.json")
     assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(cover_file)
     assert json.loads(marker.read_text(encoding="utf-8"))["source"] == str(
-        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4"
+        drama_download_dir(tmp_path) / "001.mp4"
     )
 
 
@@ -890,10 +1006,10 @@ def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypat
     publisher = FakePublisher()
     processor = LowBitrateProcessor()
     processor.dimensions = {"001.mp4": (1280, 720)}
-    cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "fengmian.jpg"
-    video_cover_file = tmp_path / "dramas" / "downloads" / "drama-1" / "video-cover.jpg"
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        cover_file = target_dir / "fengmian.jpg"
+        video_cover_file = target_dir / "video-cover.jpg"
         cover_file.parent.mkdir(parents=True, exist_ok=True)
         cover_file.write_text("poster-cover")
         video_cover_file.write_text("video-cover")
@@ -915,9 +1031,10 @@ def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypat
 
     assert runner.publish_once() == "succeeded"
 
-    processed_1 = tmp_path / "dramas" / "processed" / "drama-1" / "001.mp4"
+    video_cover_file = drama_download_dir(tmp_path) / "video-cover.jpg"
+    processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
     assert processor.calls[0] == (
-        tmp_path / "dramas" / "downloads" / "drama-1" / "001.mp4",
+        drama_download_dir(tmp_path) / "001.mp4",
         processed_1,
         video_cover_file,
     )

@@ -94,6 +94,9 @@ public class DramaDtos {
             int totalMinutes,
             int costAmountWan,
             Instant createdAt,
+            Instant updatedAt,
+            DramaStatus status,
+            String preparationStatus,
             boolean prioritized
     ) {
         public static DesktopDramaResponse from(
@@ -116,8 +119,11 @@ public class DramaDtos {
                 int totalMinutes,
                 int costAmountWan,
                 Instant createdAt,
+                Instant updatedAt,
+                DramaStatus status,
                 boolean prioritized
         ) {
+            DramaStatus effectiveStatus = status == null ? DramaStatus.DRAFT : status;
             return new DesktopDramaResponse(
                     id,
                     effectiveTitle(title, aiTitle),
@@ -138,6 +144,9 @@ public class DramaDtos {
                     totalMinutes,
                     costAmountWan,
                     createdAt,
+                    updatedAt,
+                    effectiveStatus,
+                    preparationStatus(effectiveStatus),
                     prioritized
             );
         }
@@ -154,6 +163,10 @@ public class DramaDtos {
                 return aiCoverUrl;
             }
             return coverUrl;
+        }
+
+        private static String preparationStatus(DramaStatus status) {
+            return status == DramaStatus.READY ? "READY" : "PENDING_AI_ASSETS";
         }
     }
 }

@@ -450,11 +450,11 @@ public class DistributionService {
     }
 
     public Optional<DistributionTask> claimForOwner(String ownerAccountId, String deviceId, boolean asyncPreparation) {
-        List<String> mediaAccountIds = claimableOwnerMediaAccountIds(ownerAccountId);
-        if (mediaAccountIds.isEmpty()) {
+        List<MediaAccount> mediaAccounts = claimableOwnerMediaAccounts(ownerAccountId);
+        if (mediaAccounts.isEmpty()) {
             return Optional.empty();
         }
-        assertDailyPublishLimitAvailable(mediaAccountIds);
+        List<String> mediaAccountIds = mediaAccountIdsWithDailyPublishLimitAvailable(mediaAccounts);
         return taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
                         DistributionTaskStatus.PENDING,
                         mediaAccountIds
@@ -477,7 +477,9 @@ public class DistributionService {
 
     private Optional<DistributionTask> generateNextTaskForOwner(String ownerAccountId) {
         var dramas = recentTaskCandidateDramas();
-        var mediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
+        var mediaAccounts = mediaAccountsWithDailyPublishLimitAvailable(
+                claimableOwnerMediaAccounts(ownerAccountId)
+        );
         for (var drama : dramas) {
             for (var media : mediaAccounts) {
                 if (hasSavedLoginState(media)
@@ -495,7 +497,8 @@ public class DistributionService {
     }
 
     public DistributionTask retryAndClaimForOwner(String ownerAccountId, String taskId, String deviceId, boolean asyncPreparation) {
-        List<String> mediaAccountIds = ownerMediaAccountIds(ownerAccountId);
+        List<MediaAccount> mediaAccounts = ownerMediaAccounts(ownerAccountId);
+        List<String> mediaAccountIds = mediaAccountIds(mediaAccounts);
         DistributionTask task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
         if (!mediaAccountIds.contains(task.getMediaAccountId())) {
@@ -512,7 +515,7 @@ public class DistributionService {
             throw activeTaskStillRunningException();
         }
         if (!isRecentRetryTask(task)) {
-            assertDailyPublishLimitAvailable(mediaAccountIds);
+            assertDailyPublishLimitAvailable(mediaAccountIdsForTaskPlatform(mediaAccounts, task));
         }
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation);
@@ -523,19 +526,44 @@ public class DistributionService {
         return createdAt != null && !createdAt.isBefore(Instant.now().minus(DAILY_LIMIT_RECENT_RETRY_WINDOW));
     }
 
+    private List<MediaAccount> mediaAccountsWithDailyPublishLimitAvailable(List<MediaAccount> mediaAccounts) {
+        List<MediaAccount> available = new ArrayList<>();
+        for (var platformMediaAccounts : mediaAccountsByPlatform(mediaAccounts).values()) {
+            if (isDailyPublishLimitAvailable(mediaAccountIds(platformMediaAccounts))) {
+                available.addAll(platformMediaAccounts);
+            }
+        }
+        if (mediaAccounts.isEmpty() || !available.isEmpty()) {
+            return available;
+        }
+        throw dailyPublishLimitReachedException();
+    }
+
+    private List<String> mediaAccountIdsWithDailyPublishLimitAvailable(List<MediaAccount> mediaAccounts) {
+        return mediaAccountIds(mediaAccountsWithDailyPublishLimitAvailable(mediaAccounts));
+    }
+
     private void assertDailyPublishLimitAvailable(List<String> mediaAccountIds) {
+        if (!isDailyPublishLimitAvailable(mediaAccountIds)) {
+            throw dailyPublishLimitReachedException();
+        }
+    }
+
+    private boolean isDailyPublishLimitAvailable(List<String> mediaAccountIds) {
         long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
                 mediaAccountIds,
                 publishLimitDayStart(),
                 DAILY_PUBLISH_COUNT_STATUSES
         );
-        if (todayCount >= DAILY_PUBLISH_LIMIT) {
-            throw new BusinessException(
-                    "DAILY_PUBLISH_LIMIT_REACHED",
-                    "今日发布次数已达 " + DAILY_PUBLISH_LIMIT + " 次，请明天再发布。",
-                    HttpStatus.TOO_MANY_REQUESTS
-            );
-        }
+        return todayCount < DAILY_PUBLISH_LIMIT;
+    }
+
+    private BusinessException dailyPublishLimitReachedException() {
+        return new BusinessException(
+                "DAILY_PUBLISH_LIMIT_REACHED",
+                "今日发布次数已达 " + DAILY_PUBLISH_LIMIT + " 次，请明天再发布。",
+                HttpStatus.TOO_MANY_REQUESTS
+        );
     }
 
     private Instant publishLimitDayStart() {
@@ -822,14 +850,41 @@ public class DistributionService {
     }
 
     private List<String> ownerMediaAccountIds(String ownerAccountId) {
+        return mediaAccountIds(ownerMediaAccounts(ownerAccountId));
+    }
+
+    private List<MediaAccount> ownerMediaAccounts(String ownerAccountId) {
+        return mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
+    }
+
+    private List<MediaAccount> claimableOwnerMediaAccounts(String ownerAccountId) {
         return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
+                .filter(media -> media.getStatus() == MediaAccountStatus.ACTIVE)
+                .toList();
+    }
+
+    private List<String> mediaAccountIds(List<MediaAccount> mediaAccounts) {
+        return mediaAccounts.stream()
                 .map(MediaAccount::getId)
                 .toList();
     }
 
-    private List<String> claimableOwnerMediaAccountIds(String ownerAccountId) {
-        return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
-                .filter(media -> media.getStatus() == MediaAccountStatus.ACTIVE)
+    private Map<MediaPlatform, List<MediaAccount>> mediaAccountsByPlatform(List<MediaAccount> mediaAccounts) {
+        Map<MediaPlatform, List<MediaAccount>> byPlatform = new LinkedHashMap<>();
+        for (MediaAccount media : mediaAccounts) {
+            byPlatform.computeIfAbsent(taskPlatform(media), ignored -> new ArrayList<>()).add(media);
+        }
+        return byPlatform;
+    }
+
+    private List<String> mediaAccountIdsForTaskPlatform(List<MediaAccount> mediaAccounts, DistributionTask task) {
+        MediaPlatform platform = mediaAccounts.stream()
+                .filter(media -> media.getId().equals(task.getMediaAccountId()))
+                .findFirst()
+                .map(this::taskPlatform)
+                .orElseGet(() -> resolveTaskPlatform(task));
+        return mediaAccounts.stream()
+                .filter(media -> taskPlatform(media) == platform)
                 .map(MediaAccount::getId)
                 .toList();
     }
