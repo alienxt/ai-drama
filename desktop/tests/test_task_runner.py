@@ -1757,12 +1757,17 @@ def test_download_episodes_skips_allowed_failures(tmp_path, monkeypatch):
         max_concurrent_downloads=1,
         episode_retry_count=1,
         retry_delay_seconds=0,
-        max_skipped_episodes=3,
+        max_skipped_episodes=5,
         skip_callback=lambda index, total, episode, exception: skipped.append((index, str(exception))),
     )
 
-    assert [file.name for file in files] == ["允许跳集-第1集.mp4", "允许跳集-第3集.mp4", "允许跳集-第4集.mp4"]
+    assert [file.name for file in files] == ["允许跳集-第1集.mp4", "允许跳集-第2集.mp4", "允许跳集-第3集.mp4"]
     assert skipped == [(2, "第 2 集下载失败：红果播放接口没有返回可下载视频（HONGGUO_VIDEO_EMPTY）")]
+    metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
+    assert metadata["episodeCount"] == 3
+    assert metadata["skippedEpisodeNumbers"] == [2]
+    assert [episode["episodeNo"] for episode in metadata["episodes"]] == [1, 2, 3]
+    assert metadata["episodes"][1]["originalEpisodeNo"] == 3
 
 
 def test_download_episodes_fails_when_skipped_failures_exceed_limit(tmp_path, monkeypatch):
@@ -1780,10 +1785,8 @@ def test_download_episodes_fails_when_skipped_failures_exceed_limit(tmp_path, mo
         "dramaId": "drama-1",
         "title": "超过跳集",
         "episodes": [
-            {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
-            {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
-            {"episodeNo": 3, "downloadUrl": "/files/3.mp4"},
-            {"episodeNo": 4, "downloadUrl": "/files/4.mp4"},
+            {"episodeNo": episode_no, "downloadUrl": f"/files/{episode_no}.mp4"}
+            for episode_no in range(1, 7)
         ],
     }
 
@@ -1795,10 +1798,10 @@ def test_download_episodes_fails_when_skipped_failures_exceed_limit(tmp_path, mo
             max_concurrent_downloads=1,
             episode_retry_count=1,
             retry_delay_seconds=0,
-            max_skipped_episodes=3,
+            max_skipped_episodes=5,
         )
 
-    assert "剧集下载失败超过 3 集" in str(error.value)
+    assert "剧集下载失败超过 5 集" in str(error.value)
 
 
 def test_download_resources_use_baidu_download_headers(tmp_path, monkeypatch):

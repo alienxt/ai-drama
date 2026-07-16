@@ -1,6 +1,6 @@
 [project]
 name = "ai-drama-desktop"
-version = "0.1.6"
+version = "0.1.7"
 description = "Desktop agent for AI drama distribution"
 requires-python = ">=3.11"
 dependencies = [

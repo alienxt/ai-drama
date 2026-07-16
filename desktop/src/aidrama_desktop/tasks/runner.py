@@ -40,7 +40,7 @@ NON_RETRYABLE_DOWNLOAD_ERROR_CODES = {"HONGGUO_VIDEO_EMPTY"}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
-MAX_SKIPPED_EPISODE_FAILURES = 3
+MAX_SKIPPED_EPISODE_FAILURES = 5
 WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS = 30.0
 TIKTOK_MIN_EPISODE_DURATION_SECONDS = 15.0
 TIKTOK_MAX_EPISODE_DURATION_SECONDS = 20 * 60.0
@@ -49,6 +49,7 @@ TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
 TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
+DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
 TIKTOK_COVER_WIDTH = 768
 TIKTOK_COVER_HEIGHT = 1024
 TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
@@ -60,6 +61,7 @@ DRAMA_ASSET_FILENAMES = (
     "video-cover-en.jpg",
     TIKTOK_COVER_FILENAME,
     "meta.json",
+    DOWNLOAD_EPISODE_MANIFEST_FILENAME,
 )
 BAIDU_DOWNLOAD_HEADERS = {
     "User-Agent": "pan.baidu.com",
@@ -981,6 +983,9 @@ class TaskRunner:
 
     @staticmethod
     def _episode_media_files_from_paths(download_plan: dict, source_files: list[Path]) -> list[EpisodeMediaFile]:
+        manifest_items = TaskRunner._episode_media_files_from_manifest(source_files)
+        if manifest_items:
+            return manifest_items
         episodes = download_plan.get("episodes") or []
         by_filename: dict[str, tuple[dict[str, Any], int]] = {}
         for index, episode in enumerate(episodes, start=1):
@@ -1000,6 +1005,47 @@ class TaskRunner:
                 continue
             used_indexes.add(episode_index)
             items.append(EpisodeMediaFile(episode, episode_index, source_file))
+        return sorted(items, key=lambda item: item.episode_index)
+
+    @staticmethod
+    def _episode_media_files_from_manifest(files: list[Path]) -> list[EpisodeMediaFile]:
+        if not files:
+            return []
+        manifest = read_download_episode_manifest(files[0].parent)
+        entries = manifest.get("files")
+        if not isinstance(entries, list):
+            return []
+        by_name = {
+            str(entry.get("file")): entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("file")
+        }
+        items: list[EpisodeMediaFile] = []
+        for position, file in enumerate(files, start=1):
+            entry = by_name.get(file.name)
+            if not isinstance(entry, dict):
+                return []
+            episode = entry.get("episode")
+            if not isinstance(episode, dict):
+                return []
+            source_indexes = entry.get("sourceEpisodeIndexes")
+            if isinstance(source_indexes, list):
+                source_episode_indexes = tuple(
+                    int(value)
+                    for value in source_indexes
+                    if isinstance(value, int) or (isinstance(value, str) and value.isdigit())
+                )
+            else:
+                source_episode_indexes = ()
+            episode_index = TaskRunner._int_value(entry.get("episodeIndex"), position)
+            items.append(
+                EpisodeMediaFile(
+                    episode,
+                    episode_index,
+                    file,
+                    source_episode_indexes or (episode_index,),
+                )
+            )
         return sorted(items, key=lambda item: item.episode_index)
 
     def _cached_upload_items(self, download_plan: dict, platform: str) -> list[EpisodeMediaFile]:
@@ -1054,6 +1100,9 @@ class TaskRunner:
         files: list[Path],
         platform: str,
     ) -> list[EpisodeMediaFile]:
+        manifest_items = self._episode_media_files_from_manifest(files)
+        if manifest_items:
+            return manifest_items
         original_episodes = download_plan.get("episodes") or []
         if platform == "TIKTOK" and len(original_episodes) > TIKTOK_MAX_EPISODE_COUNT:
             source_items = [
@@ -1310,18 +1359,18 @@ def download_episodes(
         should_pause=should_pause,
         should_skip=should_skip,
     )
-    write_drama_metadata(
-        download_plan,
-        target_dir,
-        cover_file,
-        video_cover_file,
-        cover_en_file,
-        video_cover_en_file,
-        tiktok_cover_en_file,
-    )
     episodes = download_plan["episodes"]
     total = len(episodes)
     if not episodes:
+        write_drama_metadata(
+            download_plan,
+            target_dir,
+            cover_file,
+            video_cover_file,
+            cover_en_file,
+            video_cover_en_file,
+            tiktok_cover_en_file,
+        )
         return []
 
     worker_count = max(1, min(max_concurrent_downloads, total))
@@ -1366,7 +1415,135 @@ def download_episodes(
                         f"剧集下载失败超过 {max_skipped_episodes} 集，整部剧分发失败。"
                         f"最近失败：{exception}"
                     ) from exception
-    return [file for file in files if file is not None]
+    compacted_files = compact_downloaded_episode_files(download_plan, target_dir, episodes, files)
+    manifest = read_download_episode_manifest(target_dir)
+    effective_plan = {
+        **download_plan,
+        "episodes": [
+            entry["episode"]
+            for entry in manifest.get("files", [])
+            if isinstance(entry, dict) and isinstance(entry.get("episode"), dict)
+        ],
+        "episodeCount": len(compacted_files),
+        "originalEpisodeCount": len(episodes),
+        "skippedEpisodeCount": len(manifest.get("skippedEpisodeNumbers") or []),
+        "skippedEpisodeNumbers": manifest.get("skippedEpisodeNumbers") or [],
+    }
+    write_drama_metadata(
+        effective_plan,
+        target_dir,
+        cover_file,
+        video_cover_file,
+        cover_en_file,
+        video_cover_en_file,
+        tiktok_cover_en_file,
+    )
+    return compacted_files
+
+
+def compact_downloaded_episode_files(
+    download_plan: dict,
+    target_dir: Path,
+    episodes: list[dict],
+    files: list[Path | None],
+) -> list[Path]:
+    successful: list[tuple[int, dict, Path]] = [
+        (source_index, episode, file)
+        for source_index, (episode, file) in enumerate(zip(episodes, files, strict=False), start=1)
+        if file is not None and file.exists()
+    ]
+    staged: list[tuple[int, dict, Path]] = []
+    for source_index, episode, source_file in successful:
+        temp_file = target_dir / f".compact-{source_index}-{time.time_ns()}{source_file.suffix or '.mp4'}"
+        source_file.replace(temp_file)
+        staged.append((source_index, episode, temp_file))
+
+    final_files: list[Path] = []
+    manifest_entries: list[dict[str, Any]] = []
+    for effective_index, (source_index, source_episode, temp_file) in enumerate(staged, start=1):
+        effective_episode = effective_episode_metadata(source_episode, effective_index, source_index)
+        final_file = target_dir / episode_video_filename(download_plan, effective_episode, effective_index)
+        if final_file.exists():
+            final_file.unlink()
+        temp_file.replace(final_file)
+        final_files.append(final_file)
+        manifest_entries.append(
+            {
+                "file": final_file.name,
+                "episodeIndex": effective_index,
+                "episode": effective_episode,
+                "sourceEpisodeIndexes": [source_index],
+                "sourceEpisodeNumbers": [episode_number(source_episode, source_index)],
+            }
+        )
+
+    cleanup_obsolete_episode_files(download_plan, target_dir, episodes, final_files)
+    skipped_episode_numbers = [
+        episode_number(episode, index)
+        for index, episode in enumerate(episodes, start=1)
+        if files[index - 1] is None
+    ]
+    write_download_episode_manifest(
+        target_dir,
+        {
+            "version": 1,
+            "dramaId": download_plan.get("dramaId"),
+            "originalEpisodeCount": len(episodes),
+            "episodeCount": len(final_files),
+            "skippedEpisodeCount": len(skipped_episode_numbers),
+            "skippedEpisodeNumbers": skipped_episode_numbers,
+            "files": manifest_entries,
+        },
+    )
+    return final_files
+
+
+def effective_episode_metadata(source_episode: dict, effective_index: int, source_index: int) -> dict[str, Any]:
+    source_episode_no = episode_number(source_episode, source_index)
+    effective = dict(source_episode)
+    effective["episodeNo"] = effective_index
+    effective["sourceEpisodeNumbers"] = [source_episode_no]
+    effective["sourceEpisodeRange"] = str(source_episode_no)
+    if source_episode_no != effective_index:
+        effective["originalEpisodeNo"] = source_episode_no
+    return effective
+
+
+def cleanup_obsolete_episode_files(
+    download_plan: dict,
+    target_dir: Path,
+    episodes: list[dict],
+    final_files: list[Path],
+) -> None:
+    final_paths = {path.resolve() for path in final_files if path.exists()}
+    candidate_names: set[str] = set()
+    for index, episode in enumerate(episodes, start=1):
+        candidate_names.add(episode_video_filename(download_plan, episode, index))
+        candidate_names.add(legacy_episode_video_filename(episode, index))
+    for name in candidate_names:
+        path = target_dir / name
+        try:
+            if path.exists() and path.resolve() not in final_paths:
+                path.unlink()
+        except OSError:
+            pass
+
+
+def write_download_episode_manifest(target_dir: Path, manifest: dict[str, Any]) -> Path:
+    target = target_dir / DOWNLOAD_EPISODE_MANIFEST_FILENAME
+    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def read_download_episode_manifest(directory: Path) -> dict[str, Any]:
+    manifest_path = directory / DOWNLOAD_EPISODE_MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return {}
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def download_episode(
@@ -1802,9 +1979,15 @@ def write_drama_metadata(
         "totalMinutes": download_plan.get("totalMinutes"),
         "costAmountWan": download_plan.get("costAmountWan"),
         "episodeCount": len(episodes),
+        "originalEpisodeCount": download_plan.get("originalEpisodeCount"),
+        "skippedEpisodeCount": download_plan.get("skippedEpisodeCount") or 0,
+        "skippedEpisodeNumbers": download_plan.get("skippedEpisodeNumbers") or [],
         "episodes": [
             {
                 "episodeNo": episode.get("episodeNo"),
+                "originalEpisodeNo": episode.get("originalEpisodeNo"),
+                "sourceEpisodeNumbers": episode.get("sourceEpisodeNumbers"),
+                "sourceEpisodeRange": episode.get("sourceEpisodeRange"),
                 "title": episode.get("title"),
                 "sourcePath": episode.get("sourcePath"),
                 "size": episode.get("size"),
