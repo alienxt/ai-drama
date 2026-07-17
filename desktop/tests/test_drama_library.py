@@ -171,6 +171,30 @@ def test_downloading_task_can_be_retried():
     assert DesktopWindow.is_task_retryable({"status": "PENDING"}) is False
 
 
+def test_upload_step_task_retries_from_upload_cache():
+    assert DesktopWindow.should_retry_from_upload_cache({"status": "FAILED", "progress": 75}) is True
+    assert DesktopWindow.should_retry_from_upload_cache({"status": "UPLOADING", "progress": 0}) is True
+    assert DesktopWindow.should_retry_from_upload_cache({"status": "FAILED", "progress": 70}) is False
+    assert DesktopWindow.should_retry_from_upload_cache({"status": "SUCCEEDED", "progress": 100}) is False
+
+
+def test_task_history_actions_hide_refill_button():
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.current_task_id = ""
+    window.manual_publish_busy = False
+    window.auto_task_busy = False
+
+    widget = DesktopWindow.task_history_actions_widget(
+        window,
+        {"id": "task-1", "status": "FAILED", "progress": 75},
+    )
+
+    button_texts = [button.text() for button in widget.findChildren(QPushButton)]
+    assert "重填" not in button_texts
+    assert button_texts == ["重试", "强停"]
+
+
 def test_pending_task_can_be_force_stopped_to_cancel_queueing():
     assert DesktopWindow.is_task_force_stoppable({"status": "PENDING"}) is True
     assert DesktopWindow.is_task_force_stoppable({"status": "DOWNLOADING"}) is True
@@ -433,6 +457,37 @@ def test_task_done_can_hide_update_check_payload_from_log():
 
     assert logs == ["完成：检查桌面端更新"]
     assert handled == [payload]
+
+
+def test_settings_page_has_manual_update_button(tmp_path):
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = Settings(
+        work_dir=tmp_path / "work",
+        browser_profile_dir=tmp_path / "profiles",
+        token_file=tmp_path / "token",
+    )
+
+    page = DesktopWindow._settings_page(window)
+
+    button_texts = [button.text() for button in page.findChildren(QPushButton)]
+    assert "检查更新" in button_texts
+
+
+def test_manual_update_check_tells_user_when_current_version_is_latest(monkeypatch):
+    window = DesktopWindow.__new__(DesktopWindow)
+    logs = []
+    messages = []
+    window.append_log = logs.append
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, title, body: messages.append((title, body)))
+
+    DesktopWindow.handle_update_check(
+        window,
+        ("MAC", {"updateAvailable": False, "downloadUrl": None}, True),
+    )
+
+    assert logs == [f"当前已是最新版本：{gui_app.__version__}"]
+    assert messages == [("检查更新", f"当前已是最新版本：{gui_app.__version__}")]
 
 
 def test_create_media_account_opens_browser_for_created_account(tmp_path, monkeypatch):

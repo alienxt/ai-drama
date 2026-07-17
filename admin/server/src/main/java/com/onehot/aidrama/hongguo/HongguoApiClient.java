@@ -23,6 +23,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -41,6 +42,7 @@ public class HongguoApiClient {
     private static final ZoneId CHINA_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final int FILTER_IDS_BASE64_THRESHOLD = 1200;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final SystemConfigService configService;
@@ -69,13 +71,28 @@ public class HongguoApiClient {
     }
 
     public HongguoApiModels.MangaSearchPage fetchNewDramas(int page, Instant since) {
+        return fetchNewDramas(page, LocalDate.ofInstant(since, CHINA_ZONE));
+    }
+
+    public HongguoApiModels.MangaSearchPage fetchNewDramas(int page, LocalDate date) {
         int effectivePage = Math.max(page, 1);
         JsonNode data = get("/hg_new_play", Map.of(
                 "type", "detail",
-                "date", formatChinaDate(since),
+                "date", DATE_FORMATTER.format(date),
                 "page", String.valueOf(effectivePage)
         ));
         return new HongguoApiModels.MangaSearchPage("红果新剧", effectivePage, parseMangaSearchItems(data));
+    }
+
+    public HongguoApiModels.MangaSearchPage fetchAiPlayletNewTopDramas(int page) {
+        int effectivePage = Math.max(page, 1);
+        JsonNode data = get("/hg_new_top", Map.of(
+                "type", "list",
+                "cell_id", "ai_playlet",
+                "sub_cell_id", "ai_playlet_new_rank",
+                "page", String.valueOf(effectivePage)
+        ));
+        return new HongguoApiModels.MangaSearchPage("AI剧新剧榜", effectivePage, parseMangaSearchItems(data));
     }
 
     public HongguoApiModels.MangaSearchPage fetchScreenedAiMangaNewDramas(int page) {
@@ -89,6 +106,7 @@ public class HongguoApiClient {
         params.put("genre", "ai_series");
         params.put("online_time", "days_7");
         params.put("duration", "duration_60_120");
+        params.put("sort", "online_time");
         if (effectivePage > 1 && sessionId != null && !sessionId.isBlank()) {
             params.put("session_id", sessionId.trim());
         }
@@ -469,7 +487,14 @@ public class HongguoApiClient {
                 .map(String::trim)
                 .distinct()
                 .toList();
-        return values.isEmpty() ? null : String.join(",", values);
+        if (values.isEmpty()) {
+            return null;
+        }
+        String joined = String.join(",", values);
+        if (joined.length() <= FILTER_IDS_BASE64_THRESHOLD) {
+            return joined;
+        }
+        return Base64.getEncoder().encodeToString(joined.getBytes(StandardCharsets.UTF_8));
     }
 
     private List<String> providerDramaIds(List<HongguoApiModels.MangaSearchItem> items) {

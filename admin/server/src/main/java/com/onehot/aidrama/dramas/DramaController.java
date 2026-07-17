@@ -201,7 +201,7 @@ public class DramaController {
                 : pageable;
         Query pageQuery = Query.of(query).with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "createdAt", "updatedAt", "status", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
+                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "publishedAt", "createdAt", "updatedAt", "status", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -234,6 +234,7 @@ public class DramaController {
                             episodeCount(document),
                             intValue(document, "totalMinutes"),
                             costAmountWan(document, id),
+                            instantValue(document, "publishedAt"),
                             instantValue(document, "createdAt"),
                             instantValue(document, "updatedAt"),
                             dramaStatus(document),

@@ -18,6 +18,10 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             DistributionTaskStatus status,
             List<String> mediaAccountIds
     );
+    List<DistributionTask> findByStatusAndMediaAccountIdIn(
+            DistributionTaskStatus status,
+            List<String> mediaAccountIds
+    );
     Optional<DistributionTask> findFirstByDramaIdAndStatusAndMediaAccountIdInOrderByCreatedAtAsc(
             String dramaId,
             DistributionTaskStatus status,

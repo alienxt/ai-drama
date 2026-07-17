@@ -33,6 +33,7 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -455,10 +456,7 @@ public class DistributionService {
             return Optional.empty();
         }
         List<String> mediaAccountIds = mediaAccountIdsWithDailyPublishLimitAvailable(mediaAccounts);
-        return taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
-                        DistributionTaskStatus.PENDING,
-                        mediaAccountIds
-                )
+        return nextPendingTask(mediaAccountIds)
                 .map(task -> prepareAndClaim(task, deviceId, asyncPreparation));
     }
 
@@ -795,7 +793,60 @@ public class DistributionService {
                 Sort.by(Sort.Direction.DESC, "createdAt")
         ).stream()
                 .filter(this::canEnterTaskQueue)
+                .sorted(dramaClaimOrder())
                 .toList();
+    }
+
+    private Optional<DistributionTask> nextPendingTask(List<String> mediaAccountIds) {
+        List<DistributionTask> pendingTasks = taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                mediaAccountIds
+        );
+        if (pendingTasks == null || pendingTasks.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Drama> dramasById = claimDramasById(pendingTasks.stream()
+                .map(DistributionTask::getDramaId)
+                .filter(this::hasText)
+                .distinct()
+                .toList());
+        return pendingTasks.stream()
+                .sorted(pendingTaskClaimOrder(dramasById))
+                .findFirst();
+    }
+
+    private Map<String, Drama> claimDramasById(List<String> dramaIds) {
+        if (dramaIds == null || dramaIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Drama> dramas = dramaRepository.findAllById(dramaIds);
+        if (dramas == null || dramas.isEmpty()) {
+            return Map.of();
+        }
+        return dramas.stream()
+                .collect(Collectors.toMap(Drama::getId, Function.identity(), (left, right) -> left));
+    }
+
+    private Comparator<DistributionTask> pendingTaskClaimOrder(Map<String, Drama> dramasById) {
+        return Comparator.comparingInt(DistributionTask::getPriority).reversed()
+                .thenComparing(
+                        task -> dramaClaimSortTime(dramasById.get(task.getDramaId())),
+                        Comparator.nullsLast(Comparator.reverseOrder())
+                )
+                .thenComparing(DistributionTask::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()));
+    }
+
+    private Comparator<Drama> dramaClaimOrder() {
+        return Comparator
+                .comparing(this::dramaClaimSortTime, Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(Drama::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder()));
+    }
+
+    private Instant dramaClaimSortTime(Drama drama) {
+        if (drama == null) {
+            return null;
+        }
+        return drama.getPublishedAt() != null ? drama.getPublishedAt() : drama.getCreatedAt();
     }
 
     private boolean canEnterTaskQueue(com.onehot.aidrama.dramas.Drama drama) {

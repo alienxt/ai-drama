@@ -4,7 +4,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
@@ -76,6 +76,9 @@ from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.tasks.runner import TaskRunner
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
+
+
+CHINA_TIMEZONE = timezone(timedelta(hours=8))
 
 
 class WorkerSignals(QObject):
@@ -324,6 +327,7 @@ class DesktopWindow(QMainWindow):
         self.token_store = TokenStore(settings.token_file)
         self.token_store.clear()
         self.current_username = ""
+        self.update_check_manual = False
         self.thread_pool = QThreadPool.globalInstance()
         self.agent = AgentController(settings)
         self.agent.log.connect(self.append_log)
@@ -393,6 +397,7 @@ class DesktopWindow(QMainWindow):
         app_menu.addAction(quit_action)
 
         service_menu = self.menuBar().addMenu("服务")
+        service_menu.addAction("检查更新", lambda: self.check_for_updates(manual=True))
         service_menu.addAction("打开视频号", lambda: self.open_platform("WECHAT_VIDEO"))
         service_menu.addAction("发送心跳", self.heartbeat)
 
@@ -1035,6 +1040,14 @@ class DesktopWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         panel, panel_layout = self._panel("运行配置")
+        update_row = QHBoxLayout()
+        update_hint = QLabel(f"当前版本：{__version__}")
+        update_hint.setObjectName("mutedText")
+        self.update_check_button = QPushButton("检查更新")
+        self.update_check_button.clicked.connect(lambda _checked=False: self.check_for_updates(manual=True))
+        update_row.addWidget(update_hint)
+        update_row.addStretch(1)
+        update_row.addWidget(self.update_check_button)
         rows = settings_rows(self.settings)
         table = QTableWidget(len(rows), 3)
         table.setObjectName("settingsTable")
@@ -1066,6 +1079,7 @@ class DesktopWindow(QMainWindow):
         table.setMinimumHeight(560)
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
+        panel_layout.addLayout(update_row)
         panel_layout.addWidget(note)
         panel_layout.addWidget(table, 1)
         layout.addWidget(panel, 1)
@@ -1160,25 +1174,40 @@ class DesktopWindow(QMainWindow):
     def api(self) -> ApiClient:
         return ApiClient(self.settings.server_url, self.token_store)
 
-    def check_for_updates(self) -> None:
+    def check_for_updates(self, manual: bool = False) -> None:
         platform = detect_platform()
         if not platform:
             self.append_log("当前平台暂不支持自动更新检查。")
+            if manual:
+                QMessageBox.information(self, "检查更新", "当前平台暂不支持自动更新检查。")
             return
+        self.update_check_manual = manual
+        if manual:
+            self.set_update_check_busy(True)
         self.run_async(
             "检查桌面端更新",
-            lambda: (platform, self.api().check_update(platform, __version__)),
+            lambda: (platform, self.api().check_update(platform, __version__), manual),
             self.handle_update_check,
             log_result=False,
         )
 
-    def handle_update_check(self, result: tuple[str, dict[str, Any]]) -> None:
-        platform, payload = result
+    def handle_update_check(self, result: tuple[str, dict[str, Any]] | tuple[str, dict[str, Any], bool]) -> None:
+        platform, payload, manual = result if len(result) == 3 else (*result, getattr(self, "update_check_manual", False))
+        self.set_update_check_busy(False)
+        self.update_check_manual = False
         update = UpdateInfo.from_api(payload)
         if not update:
             self.append_log(f"当前已是最新版本：{__version__}")
+            if manual:
+                QMessageBox.information(self, "检查更新", f"当前已是最新版本：{__version__}")
             return
         self.prompt_update(platform, update)
+
+    def set_update_check_busy(self, busy: bool) -> None:
+        if not hasattr(self, "update_check_button"):
+            return
+        self.update_check_button.setEnabled(not busy)
+        self.update_check_button.setText("检查中..." if busy else "检查更新")
 
     def prompt_update(self, platform: str, update: UpdateInfo) -> None:
         message = QMessageBox(self)
@@ -1323,20 +1352,21 @@ class DesktopWindow(QMainWindow):
         if on_failed:
             on_failed(error)
             return
+        if title == "检查桌面端更新":
+            self.set_update_check_busy(False)
+            self.update_check_manual = False
         if title == "自动执行任务":
             self.auto_task_busy = False
             self.update_task_progress("任务失败：自动执行请求失败", self.current_task_id)
-        if title in {"检查发布条件", "发布下一条", "检查重试条件", "重试任务", "检查重填条件", "重填TK表单"}:
+        if title in {"检查发布条件", "发布下一条", "检查重试条件", "重试任务"}:
             self.set_manual_publish_busy(False)
             if title == "检查发布条件":
                 self.update_task_progress("发布未启动：服务请求失败", None)
             elif title == "检查重试条件":
                 self.update_task_progress("重试未启动：服务请求失败", None)
-            elif title == "检查重填条件":
-                self.update_task_progress("重填未启动：服务请求失败", None)
             else:
                 self.update_task_progress("任务失败：发布执行异常", self.current_task_id)
-            if title in {"检查重试条件", "重试任务", "检查重填条件", "重填TK表单"} and hasattr(self, "task_history_table"):
+            if title in {"检查重试条件", "重试任务"} and hasattr(self, "task_history_table"):
                 self.load_task_history(page=self.task_history_page)
         QMessageBox.critical(self, title, self.clean_error_message(error))
 
@@ -1540,12 +1570,9 @@ class DesktopWindow(QMainWindow):
         layout = QHBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        refill = QPushButton("重填")
-        refill.setToolTip("仅重填 TK 表单，复用本地缓存，跳过下载、合并和转码")
-        refill.setEnabled(self.is_task_form_refillable(task) and not self.is_current_task_running(str(task.get("id") or "")))
-        refill.clicked.connect(lambda _=False, item=task: self.refill_distribution_task_form(item))
-        layout.addWidget(refill)
         retry = QPushButton("重试")
+        if self.should_retry_from_upload_cache(task):
+            retry.setToolTip("从上传阶段继续，复用本地已处理视频")
         retry.setEnabled(self.is_task_retryable(task) and not self.is_current_task_running(str(task.get("id") or "")))
         retry.clicked.connect(lambda _=False, item=task: self.retry_distribution_task(item))
         layout.addWidget(retry)
@@ -1556,49 +1583,6 @@ class DesktopWindow(QMainWindow):
         layout.addWidget(force_stop)
         layout.addStretch(1)
         return wrapper
-
-    def refill_distribution_task_form(self, task: dict[str, Any]) -> None:
-        task_id = str(task.get("id") or "")
-        if not task_id:
-            QMessageBox.warning(self, "重填TK表单", "任务 ID 为空，无法重填。")
-            return
-        if not self.is_task_form_refillable(task):
-            QMessageBox.information(self, "重填TK表单", "只有 TK 历史任务可以重填表单。")
-            return
-        if self.is_current_task_running(task_id):
-            QMessageBox.information(self, "重填TK表单", "这个任务正在本机执行中，请先暂停或跳过后再重填。")
-            return
-        if self.manual_publish_busy or self.auto_task_busy:
-            QMessageBox.information(self, "重填TK表单", "已有发布任务在执行中，请等待当前任务结束。")
-            return
-        self.set_manual_publish_busy(True)
-        self.task_cancel_event.clear()
-        self.task_pause_event.clear()
-        self.task_skip_event.clear()
-        self.task_paused = False
-        self.update_task_progress("正在检查重填条件", task_id, task)
-        self.run_async(
-            "检查重填条件",
-            lambda: self.api().get("/desktop/media-accounts"),
-            lambda media_accounts: self.refill_task_form_if_ready(task, media_accounts),
-            log_result=False,
-        )
-
-    def refill_task_form_if_ready(self, task: dict[str, Any], media_accounts: list[dict[str, Any]]) -> None:
-        self.media_accounts = media_accounts
-        block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
-        task_id = str(task.get("id") or "")
-        if block_reason:
-            self.set_manual_publish_busy(False)
-            QMessageBox.warning(self, "重填TK表单", block_reason)
-            self.update_task_progress("重填未启动", task_id, task)
-            return
-        self.update_task_progress("重填请求已受理，正在打开 TK 表单", task_id, task)
-        self.run_async(
-            "重填TK表单",
-            lambda: self.runner().refill_task_form_from_cache(task),
-            self.handle_refill_task_form_done,
-        )
 
     def force_stop_distribution_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")
@@ -1665,13 +1649,14 @@ class DesktopWindow(QMainWindow):
         self.run_async(
             "检查重试条件",
             lambda: self.api().get("/desktop/media-accounts"),
-            lambda media_accounts: self.retry_task_if_ready(task_id, media_accounts),
+            lambda media_accounts: self.retry_task_if_ready(task, media_accounts),
             log_result=False,
         )
 
-    def retry_task_if_ready(self, task_id: str, media_accounts: list[dict[str, Any]]) -> None:
+    def retry_task_if_ready(self, task: dict[str, Any], media_accounts: list[dict[str, Any]]) -> None:
         self.media_accounts = media_accounts
         block_reason = self.auto_task_block_reason(media_accounts) or self.contract_task_block_reason(media_accounts)
+        task_id = str(task.get("id") or "")
         if block_reason:
             self.set_manual_publish_busy(False)
             QMessageBox.warning(self, "重试任务", block_reason)
@@ -1680,26 +1665,12 @@ class DesktopWindow(QMainWindow):
         self.update_task_progress("重试请求已受理，正在执行任务", task_id)
         self.run_async(
             "重试任务",
-            lambda: self.retry_task_once(task_id),
+            lambda: self.retry_task_once(task),
             self.handle_retry_task_done,
         )
 
     @staticmethod
     def is_task_retryable(task: dict[str, Any]) -> bool:
-        return str(task.get("status") or "") in {
-            "FAILED",
-            "CANCELLED",
-            "CLAIMED",
-            "DOWNLOADING",
-            "PROCESSING",
-            "UPLOADING",
-        }
-
-    @staticmethod
-    def is_task_form_refillable(task: dict[str, Any]) -> bool:
-        platform = str(task.get("platform") or task.get("mediaPlatform") or "").strip()
-        if platform != "TIKTOK":
-            return False
         return str(task.get("status") or "") in {
             "FAILED",
             "CANCELLED",
@@ -1726,12 +1697,26 @@ class DesktopWindow(QMainWindow):
             and (self.manual_publish_busy or self.auto_task_busy)
         )
 
-    def retry_task_once(self, task_id: str) -> str:
-        task = self.api().post(
+    @staticmethod
+    def should_retry_from_upload_cache(task: dict[str, Any]) -> bool:
+        if not DesktopWindow.is_task_retryable(task):
+            return False
+        try:
+            progress = int(task.get("progress") or 0)
+        except (TypeError, ValueError):
+            progress = 0
+        return progress >= 75 or str(task.get("status") or "") == "UPLOADING"
+
+    def retry_task_once(self, task: dict[str, Any]) -> str:
+        task_id = str(task.get("id") or "")
+        claimed_task = self.api().post(
             f"/desktop/tasks/{task_id}/retry",
             {"deviceId": self.settings.device_id, "asyncPreparation": True},
         )
-        return self.runner().execute_task(task)
+        runner = self.runner()
+        if self.should_retry_from_upload_cache(task):
+            return runner.execute_task_from_upload_cache(claimed_task)
+        return runner.execute_task(claimed_task)
 
     def handle_retry_task_done(self, result: str) -> None:
         self.set_manual_publish_busy(False)
@@ -1758,19 +1743,6 @@ class DesktopWindow(QMainWindow):
         else:
             self.update_task_progress("任务完成", self.current_task_id)
             QMessageBox.information(self, "重试任务", "任务已重新执行完成。")
-        self.load_task_history(page=self.task_history_page)
-
-    def handle_refill_task_form_done(self, result: str) -> None:
-        self.set_manual_publish_busy(False)
-        if result == "ready-for-review":
-            self.update_task_progress("TK 表单已重填，停留在提交前", self.current_task_id)
-            QMessageBox.information(self, "重填TK表单", "TK 表单已重填完成，已停留在提交前，等待人工核验。")
-        elif result == "succeeded":
-            self.update_task_progress("TK 表单重填完成", self.current_task_id)
-            QMessageBox.information(self, "重填TK表单", "TK 表单重填完成。")
-        else:
-            self.update_task_progress("TK 表单重填结束", self.current_task_id)
-            QMessageBox.information(self, "重填TK表单", f"重填结束：{result}")
         self.load_task_history(page=self.task_history_page)
 
     @staticmethod
@@ -1849,23 +1821,15 @@ class DesktopWindow(QMainWindow):
                 recent.append(row)
         return recent
 
-    @staticmethod
-    def drama_listed_at(drama: dict[str, Any]) -> datetime | None:
+    @classmethod
+    def drama_listed_at(cls, drama: dict[str, Any]) -> datetime | None:
         for key in ("listedAt", "publishedAt", "createdAt"):
             value = drama.get(key)
             if not value:
                 continue
-            text = str(value).strip()
-            if not text:
-                continue
-            normalized = text.replace("Z", "+00:00")
-            try:
-                parsed = datetime.fromisoformat(normalized)
-            except ValueError:
-                continue
-            if parsed.tzinfo is None:
-                parsed = parsed.astimezone()
-            return parsed.astimezone()
+            parsed = cls.parse_server_datetime(value)
+            if parsed:
+                return parsed
         return None
 
     def render_drama_table(self, rows: list[dict[str, Any]]) -> None:
@@ -1928,7 +1892,7 @@ class DesktopWindow(QMainWindow):
         info.addWidget(QLabel(f"素材状态：{self.drama_preparation_status_label(drama)}"))
         info.addWidget(QLabel(f"下载状态：{status}"))
         info.addWidget(QLabel(f"已下载集数：{downloaded_count}/{total_count}"))
-        info.addWidget(QLabel(f"上架时间：{self.format_datetime(str(drama.get('createdAt') or ''))}"))
+        info.addWidget(QLabel(f"上架时间：{self.format_datetime(self.drama_listed_at_value(drama))}"))
         info.addStretch(1)
         top.addLayout(info, 1)
         layout.addLayout(top)
@@ -1984,8 +1948,12 @@ class DesktopWindow(QMainWindow):
             cls.drama_preparation_status_label(drama),
             "-",
             "-",
-            cls.format_datetime(str(drama.get("createdAt") or "")),
+            cls.format_datetime(cls.drama_listed_at_value(drama)),
         ]
+
+    @staticmethod
+    def drama_listed_at_value(drama: dict[str, Any]) -> Any:
+        return drama.get("listedAt") or drama.get("publishedAt") or drama.get("createdAt") or ""
 
     @classmethod
     def drama_preparation_status_label(cls, drama: dict[str, Any]) -> str:
@@ -2367,10 +2335,32 @@ class DesktopWindow(QMainWindow):
         return f"{value} 分钟"
 
     @staticmethod
-    def format_datetime(value: str) -> str:
+    def parse_server_datetime(value: Any) -> datetime | None:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            normalized = text.replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(CHINA_TIMEZONE)
+
+    @classmethod
+    def format_datetime(cls, value: Any) -> str:
+        parsed = cls.parse_server_datetime(value)
+        if parsed:
+            return parsed.strftime("%Y-%m-%d %H:%M:%S")
         if not value:
             return "-"
-        return value.replace("T", " ")[:19]
+        return str(value).replace("T", " ")[:19]
 
     def open_create_media_dialog(self) -> None:
         self.media_platform_input.setCurrentIndex(0)

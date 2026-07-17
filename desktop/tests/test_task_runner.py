@@ -824,7 +824,7 @@ def test_tiktok_task_merges_last_three_when_episode_count_is_odd(tmp_path, monke
     assert merged_items[-1].source_episode_indexes == (119, 120, 121)
 
 
-def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_path, monkeypatch):
+def test_tiktok_upload_retry_uses_cached_merged_videos_without_processing(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = CapturingPausedPublisher()
     processor = LowBitrateProcessor()
@@ -861,7 +861,7 @@ def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_pat
         device_id="device-1",
     )
 
-    result = runner.refill_task_form_from_cache(
+    result = runner.execute_task_from_upload_cache(
         {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-tk", "platform": "TIKTOK"}
     )
 
@@ -877,6 +877,9 @@ def test_tiktok_form_refill_uses_cached_merged_videos_without_processing(tmp_pat
     assert publisher.metadata["episodes"][-1]["sourceEpisodeNumbers"] == [167, 168]
     assert processor.calls == []
     assert processor.merge_calls == []
+    result_payload = last_task_result_payload(api)
+    assert result_payload["success"] is False
+    assert "等待人工核验" in result_payload["failureReason"]
 
 
 def test_publish_once_fails_when_all_video_episodes_are_too_short(tmp_path, monkeypatch):
@@ -1246,6 +1249,45 @@ def test_publish_once_marks_task_failed_when_upload_fails(tmp_path, monkeypatch)
         "/desktop/tasks/task-1/result",
         {"success": False, "platformPublishId": None, "failureReason": "upload failed"},
     ) in api.calls
+
+
+def test_execute_task_from_upload_cache_skips_download_and_processing(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = LowBitrateProcessor()
+    publisher = FakePublisher()
+    cached_files = []
+    for episode_no in (1, 2):
+        target = drama_processed_dir(tmp_path) / f"{episode_no:03d}.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("processed-video")
+        cached_files.append(target)
+
+    def fail_download(*_args, **_kwargs):
+        raise AssertionError("download should not be called when retrying from upload cache")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fail_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    result = runner.execute_task_from_upload_cache(
+        {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1", "platform": "WECHAT_VIDEO"}
+    )
+
+    assert result == "succeeded"
+    assert publisher.files == cached_files
+    assert processor.calls == []
+    assert processor.merge_calls == []
+    assert ("PUT", "/desktop/tasks/task-1/progress", {"status": "UPLOADING", "progress": 75}) in api.calls
+    assert last_task_result_payload(api) == {
+        "success": True,
+        "platformPublishId": "published-1",
+        "failureReason": None,
+    }
 
 
 def test_publish_once_marks_task_cancelled_when_download_is_stopped(tmp_path, monkeypatch):

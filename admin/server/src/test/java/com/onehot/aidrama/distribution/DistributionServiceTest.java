@@ -53,7 +53,7 @@ class DistributionServiceTest {
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(owned));
         when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-owned")
         )).thenAnswer(invocation -> {
@@ -61,7 +61,7 @@ class DistributionServiceTest {
             task.setMediaAccountId("media-owned");
             task.setDramaId("drama-1");
             task.setStatus(DistributionTaskStatus.PENDING);
-            return Optional.of(task);
+            return List.of(task);
         });
 
         Optional<DistributionTask> claimed = service.prepareAndClaimForOwner("owner-1", "device-1");
@@ -96,7 +96,7 @@ class DistributionServiceTest {
         assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
                 .hasMessageContaining("今日发布次数已达 10 次");
 
-        verify(taskRepository, never()).findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(any(), any());
+        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
         verify(taskRepository, never()).save(any(DistributionTask.class));
     }
 
@@ -125,10 +125,10 @@ class DistributionServiceTest {
                 any(Instant.class),
                 any()
         )).thenReturn(0L);
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-tiktok")
-        )).thenReturn(Optional.of(pendingTiktok));
+        )).thenReturn(List.of(pendingTiktok));
         when(mediaAccountRepository.findById("media-tiktok")).thenReturn(Optional.of(tiktok));
         when(taskRepository.save(pendingTiktok)).thenReturn(pendingTiktok);
 
@@ -136,7 +136,7 @@ class DistributionServiceTest {
 
         assertThat(claimed).contains(pendingTiktok);
         assertThat(claimed.get().getPlatform()).isEqualTo(MediaPlatform.TIKTOK);
-        verify(taskRepository).findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        verify(taskRepository).findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-tiktok")
         );
@@ -158,20 +158,57 @@ class DistributionServiceTest {
         pendingTiktok.setStatus(DistributionTaskStatus.PENDING);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(pausedWechat, activeTiktok));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-tiktok")
-        )).thenReturn(Optional.of(pendingTiktok));
+        )).thenReturn(List.of(pendingTiktok));
         when(taskRepository.save(pendingTiktok)).thenReturn(pendingTiktok);
 
         Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
 
         assertThat(claimed).contains(pendingTiktok);
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-tiktok");
-        verify(taskRepository).findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        verify(taskRepository).findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-tiktok")
         );
+    }
+
+    @Test
+    void claimPrioritizesPendingTasksByPublishedAtFallbackCreatedAt() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask olderPublishedTask = pendingTask("task-old-published", "media-1", "drama-old-published");
+        DistributionTask newerPublishedTask = pendingTask("task-new-published", "media-1", "drama-new-published");
+        DistributionTask newerCreatedFallbackTask = pendingTask("task-new-created", "media-1", "drama-new-created");
+
+        Drama olderPublished = readyDrama("drama-old-published", "urban");
+        olderPublished.setPublishedAt(Instant.parse("2026-07-10T00:00:00Z"));
+        ReflectionTestUtils.setField(olderPublished, "createdAt", Instant.parse("2026-07-16T00:00:00Z"));
+        Drama newerPublished = readyDrama("drama-new-published", "urban");
+        newerPublished.setPublishedAt(Instant.parse("2026-07-14T00:00:00Z"));
+        ReflectionTestUtils.setField(newerPublished, "createdAt", Instant.parse("2026-07-13T00:00:00Z"));
+        Drama newerCreatedFallback = readyDrama("drama-new-created", "urban");
+        newerCreatedFallback.setPublishedAt(null);
+        ReflectionTestUtils.setField(newerCreatedFallback, "createdAt", Instant.parse("2026-07-15T00:00:00Z"));
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(List.of(olderPublishedTask, newerPublishedTask, newerCreatedFallbackTask));
+        when(dramaRepository.findAllById(any())).thenReturn(List.of(olderPublished, newerPublished, newerCreatedFallback));
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(newerCreatedFallbackTask);
+        assertThat(claimed.get().getDramaId()).isEqualTo("drama-new-created");
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
     }
 
     @Test
@@ -195,10 +232,10 @@ class DistributionServiceTest {
         Drama prepared = readyDrama("drama-1", "urban");
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
-        )).thenReturn(Optional.of(pending));
+        )).thenReturn(List.of(pending));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(preparationService.prepareForDistribution(drama)).thenReturn(prepared);
         when(taskRepository.save(pending)).thenReturn(pending);
@@ -226,10 +263,10 @@ class DistributionServiceTest {
         pending.setStatus(DistributionTaskStatus.PENDING);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
-        )).thenReturn(Optional.of(pending));
+        )).thenReturn(List.of(pending));
         when(taskRepository.save(pending)).thenReturn(pending);
 
         Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
@@ -337,10 +374,10 @@ class DistributionServiceTest {
         drama.setAiVideoCoverUrl(null);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
-        )).thenReturn(Optional.of(pending));
+        )).thenReturn(List.of(pending));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(preparationService.prepareForDistribution(drama)).thenReturn(drama);
         when(taskRepository.save(pending)).thenReturn(pending);
@@ -367,10 +404,10 @@ class DistributionServiceTest {
         MediaAccount secondMedia = activeMedia("media-2", "owner-1", "urban");
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(firstMedia, secondMedia));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1", "media-2")
-        )).thenReturn(Optional.empty());
+        )).thenReturn(List.of());
         when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
@@ -473,10 +510,10 @@ class DistributionServiceTest {
         MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, tiktok));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-wechat", "media-tiktok")
-        )).thenReturn(Optional.empty());
+        )).thenReturn(List.of());
         when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
@@ -517,10 +554,10 @@ class DistributionServiceTest {
                 any(Instant.class),
                 any()
         )).thenReturn(0L);
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-tiktok")
-        )).thenReturn(Optional.empty());
+        )).thenReturn(List.of());
         when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
@@ -609,10 +646,10 @@ class DistributionServiceTest {
         markPrepared(drama);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.findFirstByStatusAndMediaAccountIdInOrderByPriorityDescCreatedAtAsc(
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
-        )).thenReturn(Optional.of(pending));
+        )).thenReturn(List.of(pending));
         when(dramaRepository.findById("drama-baidu")).thenReturn(Optional.of(drama));
         when(dramaRepository.save(drama)).thenReturn(drama);
         when(taskRepository.save(pending)).thenReturn(pending);
@@ -828,23 +865,41 @@ class DistributionServiceTest {
     }
 
     @Test
-    void generatesFromRecentCreatedReadyPoolOrderedByCreatedAtDesc() {
+    void generatesFromRecentPoolOrderedByPublishedAtFallbackCreatedAtDesc() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
         DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama olderPublished = readyDrama("drama-old-published", "urban");
+        olderPublished.setPublishedAt(Instant.parse("2026-07-10T00:00:00Z"));
+        ReflectionTestUtils.setField(olderPublished, "createdAt", Instant.parse("2026-07-16T00:00:00Z"));
+        Drama newerCreatedFallback = readyDrama("drama-new-created", "urban");
+        newerCreatedFallback.setPublishedAt(null);
+        ReflectionTestUtils.setField(newerCreatedFallback, "createdAt", Instant.parse("2026-07-15T00:00:00Z"));
+        Drama newerPublished = readyDrama("drama-new-published", "urban");
+        newerPublished.setPublishedAt(Instant.parse("2026-07-14T00:00:00Z"));
+        ReflectionTestUtils.setField(newerPublished, "createdAt", Instant.parse("2026-07-13T00:00:00Z"));
+
         when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
                 any(Sort.class)
-        )).thenReturn(List.of());
+        )).thenReturn(List.of(olderPublished, newerCreatedFallback, newerPublished));
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.generateTasksForOwner("owner-1");
+        List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
+
+        assertThat(generated)
+                .extracting(DistributionTask::getDramaId)
+                .containsExactly("drama-new-created", "drama-new-published", "drama-old-published");
 
         verify(dramaRepository).findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
-                org.mockito.ArgumentMatchers.argThat(sort -> sort.toString().contains("createdAt: DESC"))
+                any(Sort.class)
         );
         verify(dramaRepository, never()).findByStatus(DramaStatus.READY);
     }
@@ -1385,6 +1440,16 @@ class DistributionServiceTest {
         policy.setCategoryIds(List.of(categoryId));
         media.setDistributionPolicy(policy);
         return media;
+    }
+
+    private static DistributionTask pendingTask(String id, String mediaAccountId, String dramaId) {
+        DistributionTask task = new DistributionTask();
+        task.setId(id);
+        task.setMediaAccountId(mediaAccountId);
+        task.setDramaId(dramaId);
+        task.setStatus(DistributionTaskStatus.PENDING);
+        task.setCreatedAt(Instant.parse("2026-07-01T00:00:00Z"));
+        return task;
     }
 
     private static Drama readyDrama(String id, String categoryId) {

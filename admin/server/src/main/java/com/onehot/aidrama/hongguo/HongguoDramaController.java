@@ -55,6 +55,20 @@ public class HongguoDramaController {
         );
     }
 
+    @GetMapping("/ai-playlet-new-top-candidates")
+    ApiResponse<List<HongguoDramaCandidate>> aiPlayletNewTopCandidates(@RequestParam(required = false) Integer page) {
+        return ApiResponse.ok(service.listAiPlayletNewTopDramas(page), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
+    @PostMapping("/ai-playlet-new-top-sync")
+    ApiResponse<HongguoDtos.MangaSearchResponse> syncAiPlayletNewTop(@RequestBody(required = false) HongguoDtos.NewDramaRequest request) {
+        int page = request == null || request.page() == null ? 1 : request.page();
+        return ApiResponse.ok(
+                HongguoDtos.MangaSearchResponse.from(service.syncAiPlayletNewTopDramas(page)),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @GetMapping("/ai-manga-new-candidates")
     ApiResponse<List<HongguoDramaCandidate>> aiMangaNewCandidates(@RequestParam(required = false) Integer page) {
         return ApiResponse.ok(service.listAiMangaNewDramas(page), MDC.get(TraceIdFilter.TRACE_ID));

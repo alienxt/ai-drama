@@ -1,4 +1,4 @@
-import { CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined } from '@ant-design/icons';
+import { CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
@@ -20,7 +20,7 @@ type ClientSyncProgress = {
   detail: string;
 };
 
-type HongguoPanelMode = 'manga' | 'new' | 'screening';
+type HongguoPanelMode = 'manga' | 'new' | 'top' | 'screening';
 
 const HONGGUO_SYNC_TIMEOUT_MS = 180000;
 
@@ -45,6 +45,7 @@ export function DramasPage() {
   const [hongguoKeyword, setHongguoKeyword] = useState('漫剧');
   const [hongguoPage, setHongguoPage] = useState(1);
   const [hongguoNewPage, setHongguoNewPage] = useState(1);
+  const [hongguoTopPage, setHongguoTopPage] = useState(1);
   const hongguoScreeningPage = 1;
   const [hongguoScreeningMaxPages, setHongguoScreeningMaxPages] = useState(8);
   const [hongguoCandidates, setHongguoCandidates] = useState<HongguoCandidate[]>([]);
@@ -61,6 +62,7 @@ export function DramasPage() {
     [categories],
   );
   const isHongguoNewMode = hongguoMode === 'new';
+  const isHongguoTopMode = hongguoMode === 'top';
   const isHongguoScreeningMode = hongguoMode === 'screening';
 
   async function scan() {
@@ -79,6 +81,12 @@ export function DramasPage() {
     setHongguoMode('new');
     setHongguoOpen(true);
     await loadHongguoNewCandidates(hongguoNewPage);
+  }
+
+  async function openHongguoAiPlayletNewTopDramas() {
+    setHongguoMode('top');
+    setHongguoOpen(true);
+    await loadHongguoTopCandidates(hongguoTopPage);
   }
 
   async function openHongguoAiMangaNewDramas() {
@@ -115,6 +123,18 @@ export function DramasPage() {
     }
   }
 
+  async function loadHongguoTopCandidates(page = hongguoTopPage) {
+    setLoadingHongguoCandidates(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(Math.max(Number(page || 1), 1)));
+      const rows = await apiGet<HongguoCandidate[]>(`/admin/hongguo/ai-playlet-new-top-candidates?${params.toString()}`);
+      setHongguoCandidates(rows);
+    } finally {
+      setLoadingHongguoCandidates(false);
+    }
+  }
+
   async function loadHongguoScreeningCandidates(page = hongguoScreeningPage) {
     setLoadingHongguoCandidates(true);
     try {
@@ -130,6 +150,10 @@ export function DramasPage() {
   async function loadCurrentHongguoCandidates() {
     if (hongguoMode === 'new') {
       await loadHongguoNewCandidates(hongguoNewPage);
+      return;
+    }
+    if (hongguoMode === 'top') {
+      await loadHongguoTopCandidates(hongguoTopPage);
       return;
     }
     if (hongguoMode === 'screening') {
@@ -170,6 +194,21 @@ export function DramasPage() {
     }
   }
 
+  async function syncHongguoAiPlayletNewTopDramas() {
+    setSyncingHongguo(true);
+    try {
+      const result = await apiPost<HongguoMangaSyncResponse>('/admin/hongguo/ai-playlet-new-top-sync', {
+        page: hongguoTopPage,
+      }, {
+        timeout: HONGGUO_SYNC_TIMEOUT_MS,
+      });
+      appMessage.success(`AI剧新剧榜已同步：获取 ${result.fetched} 部，查详情 ${result.detailed} 部，跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
+      await loadHongguoTopCandidates(hongguoTopPage);
+    } finally {
+      setSyncingHongguo(false);
+    }
+  }
+
   async function syncHongguoAiMangaNewDramas() {
     setSyncingHongguo(true);
     try {
@@ -188,6 +227,10 @@ export function DramasPage() {
   async function syncCurrentHongguo() {
     if (hongguoMode === 'new') {
       await syncHongguoNewDramas();
+      return;
+    }
+    if (hongguoMode === 'top') {
+      await syncHongguoAiPlayletNewTopDramas();
       return;
     }
     if (hongguoMode === 'screening') {
@@ -449,12 +492,18 @@ export function DramasPage() {
     if (isHongguoScreeningMode) {
       return 'AI漫剧近3日上新60-120分钟';
     }
+    if (isHongguoTopMode) {
+      return 'AI剧新剧榜';
+    }
     return isHongguoNewMode ? '红果新剧' : '红果漫剧搜索';
   }
 
   function hongguoCurrentPage() {
     if (isHongguoScreeningMode) {
       return hongguoScreeningPage;
+    }
+    if (isHongguoTopMode) {
+      return hongguoTopPage;
     }
     return isHongguoNewMode ? hongguoNewPage : hongguoPage;
   }
@@ -463,6 +512,9 @@ export function DramasPage() {
     if (isHongguoScreeningMode) {
       return '同步近3日AI漫剧';
     }
+    if (isHongguoTopMode) {
+      return '同步AI剧新剧榜';
+    }
     return isHongguoNewMode ? '同步新剧' : '搜索漫剧';
   }
 
@@ -470,12 +522,18 @@ export function DramasPage() {
     if (isHongguoScreeningMode) {
       return '当前没有 AI漫剧近3日上新候选';
     }
+    if (isHongguoTopMode) {
+      return '当前页还没有 AI剧新剧榜候选';
+    }
     return isHongguoNewMode ? '当前页还没有候选短剧' : '当前关键词还没有候选短剧';
   }
 
   function hongguoInfoMessage() {
     if (isHongguoScreeningMode) {
       return '从红果 AI 漫剧 7 日筛选池多页获取，保存前只保留发布时间近 3 天、60-120 分钟的候选；导入单部时才拉详情并保存目录。';
+    }
+    if (isHongguoTopMode) {
+      return '走 hg_new_top 的 AI剧-新剧榜，列表每页约 10 部；同步时会再拉详情补目录、发布时间和封面，导入单部后客户端下载剧集时才取链。';
     }
     return isHongguoNewMode
       ? '走 hg_new_play 的新剧接口；默认 date 取当前时间往前 3 小时所在日期，接口只支持按日期取新剧，不过滤真人/漫剧。每次同步会对当前页候选查详情并按发布时间倒序展示；导入单部后只保存目录，客户端下载剧集时才取链。'
@@ -500,6 +558,7 @@ export function DramasPage() {
           <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
           <Button icon={<SearchOutlined />} onClick={openHongguoMangaSearch}>红果漫剧搜索</Button>
           <Button icon={<CalendarOutlined />} onClick={openHongguoNewDramas}>红果新剧</Button>
+          <Button icon={<TrophyOutlined />} onClick={openHongguoAiPlayletNewTopDramas}>AI剧新剧榜</Button>
           <Button icon={<RocketOutlined />} onClick={openHongguoAiMangaNewDramas}>AI漫剧近3日上新</Button>
           <Button
             icon={<ClockCircleOutlined />}
@@ -889,7 +948,7 @@ export function DramasPage() {
       >
         <Space direction="vertical" size={16} className="hongguo-calendar">
           <Space wrap>
-            {isHongguoNewMode || isHongguoScreeningMode ? null : (
+            {isHongguoNewMode || isHongguoTopMode || isHongguoScreeningMode ? null : (
               <Input
                 value={hongguoKeyword}
                 onChange={(event) => setHongguoKeyword(event.target.value)}
@@ -916,6 +975,8 @@ export function DramasPage() {
                   const page = Number(value || 1);
                   if (isHongguoNewMode) {
                     setHongguoNewPage(page);
+                  } else if (isHongguoTopMode) {
+                    setHongguoTopPage(page);
                   } else {
                     setHongguoPage(page);
                   }
@@ -924,7 +985,7 @@ export function DramasPage() {
             )}
             <Button
               type="primary"
-              icon={isHongguoScreeningMode ? <RocketOutlined /> : isHongguoNewMode ? <CalendarOutlined /> : <SearchOutlined />}
+              icon={isHongguoScreeningMode ? <RocketOutlined /> : isHongguoTopMode ? <TrophyOutlined /> : isHongguoNewMode ? <CalendarOutlined /> : <SearchOutlined />}
               loading={syncingHongguo}
               onClick={syncCurrentHongguo}
             >

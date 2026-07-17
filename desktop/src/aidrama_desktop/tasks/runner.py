@@ -140,44 +140,59 @@ class TaskRunner:
     def execute_task(self, task: dict | None) -> str:
         return self._execute_task(task)
 
-    def refill_task_form_from_cache(self, task: dict | None) -> str:
+    def execute_task_from_upload_cache(self, task: dict | None) -> str:
         if not task:
-            self._notify("重填表单失败：任务为空", None)
+            self._notify("空闲", None)
             return "no-task"
         task_id = str(task["id"])
         platform = self._task_platform(task)
-        if platform != "TIKTOK":
-            raise RuntimeError("当前只支持 TK 任务从本地缓存重填表单。")
-        download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
-        drama_title = self._drama_title(download_plan, task)
-        task_with_title = {**task, "dramaTitle": drama_title}
-        self._notify(f"重填TK表单：{drama_title}", task_id, task_with_title)
-        upload_items = self._cached_upload_items(download_plan, platform)
-        if not upload_items:
-            raise RuntimeError("没有找到本地可用于 TK 上传的视频缓存，请先完整执行一次任务生成处理后的视频。")
-        effective_download_plan = self._effective_download_plan(download_plan, upload_items)
-        contract_metadata = self._prepare_contract_materials(
-            effective_download_plan,
-            task_id,
-            drama_title,
-            platform=platform,
-        )
-        metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
-        metadata.update(contract_metadata)
-        publish_title = str(metadata.get("publishTitle") or drama_title)
-        publish_summary = metadata.get("publishSummary")
+        self._notify("任务已领取", task_id, task)
         try:
-            self._publisher_for(task).publish(
-                [item.file for item in upload_items],
-                title=publish_title,
-                summary=str(publish_summary) if publish_summary else None,
-                metadata=metadata,
+            self._progress(task_id, "UPLOADING", 75)
+            download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
+            drama_title = self._drama_title(download_plan, task)
+            task_with_title = {**task, "dramaTitle": drama_title}
+            self._notify(f"从上传阶段继续：{drama_title}", task_id, task_with_title)
+            upload_items = self._cached_upload_items(download_plan, platform)
+            if not upload_items:
+                raise RuntimeError("没有找到本地可用于继续上传的视频缓存，请先完整执行一次任务。")
+            return self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
+        except Exception as exception:  # noqa: BLE001
+            if isinstance(exception, PlatformPublishPaused):
+                failure_reason = str(exception) or "剧目提审表单已填写，等待人工核验后手动提交。"
+                result_task = self.api.put(
+                    f"/desktop/tasks/{task_id}/result",
+                    {"success": False, "platformPublishId": None, "failureReason": failure_reason},
+                )
+                if self._is_cancelled_result(result_task):
+                    self._notify("任务已停止，可重新分发", task_id, task)
+                    return "cancelled"
+                self._notify(f"上传暂停：{failure_reason}", task_id, task)
+                return "ready-for-review"
+            if isinstance(exception, TaskPaused):
+                self.api.post(f"/desktop/tasks/{task_id}/pause", {"deviceId": self.device_id})
+                self._notify("任务已暂停，可恢复执行", task_id, task)
+                return "paused"
+            if isinstance(exception, TaskSkipped):
+                self.api.post(f"/desktop/tasks/{task_id}/skip", {"deviceId": self.device_id})
+                self._notify("任务已跳过，已放回池里", task_id, task)
+                return "skipped"
+            if isinstance(exception, TaskCancelled):
+                self.api.post(f"/desktop/tasks/{task_id}/force-stop")
+                self._notify("任务已停止，可重新分发", task_id, task)
+                return "cancelled"
+            result_task = self.api.put(
+                f"/desktop/tasks/{task_id}/result",
+                {"success": False, "platformPublishId": None, "failureReason": str(exception)},
             )
-        except PlatformPublishPaused as exception:
-            self._notify(str(exception) or "TK 表单已重填并停留在提交前", task_id, task_with_title)
-            return "ready-for-review"
-        self._notify("TK 表单重填完成", task_id, task_with_title)
-        return "succeeded"
+            if self._is_cancelled_result(result_task):
+                self._notify("任务已停止，可重新分发", task_id, task)
+                return "cancelled"
+            self._notify(f"任务失败：{exception}", task_id, task)
+            return "failed"
+
+    def refill_task_form_from_cache(self, task: dict | None) -> str:
+        return self.execute_task_from_upload_cache(task)
 
     def _execute_task(self, task: dict | None) -> str:
         if not task:
@@ -210,33 +225,7 @@ class TaskRunner:
                 raise RuntimeError("没有可上传的剧集，整部剧分发失败。")
             if platform == "TIKTOK":
                 return self._stop_tiktok_task_before_upload(task_id, task_with_title, drama_title)
-            effective_download_plan = self._effective_download_plan(download_plan, upload_items)
-            contract_metadata = (
-                self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
-                if self._requires_contract_materials(platform)
-                else {}
-            )
-            self._progress(task_id, "UPLOADING", 75)
-            self._notify(f"发布：{drama_title}", task_id)
-            metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
-            metadata.update(contract_metadata)
-            publish_title = str(metadata.get("publishTitle") or drama_title)
-            publish_summary = metadata.get("publishSummary")
-            publish_id = self._publisher_for(task).publish(
-                [item.file for item in upload_items],
-                title=publish_title,
-                summary=str(publish_summary) if publish_summary else None,
-                metadata=metadata,
-            )
-            result_task = self.api.put(
-                f"/desktop/tasks/{task_id}/result",
-                {"success": True, "platformPublishId": publish_id, "failureReason": None},
-            )
-            if self._is_cancelled_result(result_task):
-                self._notify("任务已停止，可重新分发", task_id, task)
-                return "cancelled"
-            self._notify("任务完成", task_id)
-            return "succeeded"
+            return self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
@@ -286,6 +275,44 @@ class TaskRunner:
             return "cancelled"
         self._notify(f"上传失败：{TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON}", task_id, task)
         return "failed"
+
+    def _publish_upload_items(
+        self,
+        task: dict,
+        download_plan: dict,
+        upload_items: list[EpisodeMediaFile],
+        task_id: str,
+        task_with_title: dict,
+        platform: str,
+    ) -> str:
+        drama_title = self._drama_title(download_plan, task)
+        effective_download_plan = self._effective_download_plan(download_plan, upload_items)
+        contract_metadata = (
+            self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
+            if self._requires_contract_materials(platform)
+            else {}
+        )
+        self._progress(task_id, "UPLOADING", 75)
+        self._notify(f"发布：{drama_title}", task_id, task_with_title)
+        metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
+        metadata.update(contract_metadata)
+        publish_title = str(metadata.get("publishTitle") or drama_title)
+        publish_summary = metadata.get("publishSummary")
+        publish_id = self._publisher_for(task).publish(
+            [item.file for item in upload_items],
+            title=publish_title,
+            summary=str(publish_summary) if publish_summary else None,
+            metadata=metadata,
+        )
+        result_task = self.api.put(
+            f"/desktop/tasks/{task_id}/result",
+            {"success": True, "platformPublishId": publish_id, "failureReason": None},
+        )
+        if self._is_cancelled_result(result_task):
+            self._notify("任务已停止，可重新分发", task_id, task)
+            return "cancelled"
+        self._notify("任务完成", task_id)
+        return "succeeded"
 
     def _claim_payload(self) -> dict[str, Any]:
         return {"deviceId": self.device_id, "asyncPreparation": True}
