@@ -52,8 +52,12 @@ public class HongguoApiModels {
             int episodeNo,
             String title,
             String providerVideoId,
-            Integer durationSeconds
+            Integer durationSeconds,
+            String downloadUrl
     ) {
+        public DetailEpisode(int episodeNo, String title, String providerVideoId, Integer durationSeconds) {
+            this(episodeNo, title, providerVideoId, durationSeconds, null);
+        }
     }
 
     public record VideoVariant(
@@ -68,5 +72,8 @@ public class HongguoApiModels {
     }
 
     public record DecryptedUrl(String url, Instant expiresAt) {
+    }
+
+    public record ChannelOption(String id, String label) {
     }
 }

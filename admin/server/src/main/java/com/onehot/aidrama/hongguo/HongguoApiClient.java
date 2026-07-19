@@ -125,6 +125,41 @@ public class HongguoApiClient {
         );
     }
 
+    public List<HongguoApiModels.ChannelOption> fetchOtherChannelOptions(OtherShortDramaChannel channel) {
+        if (!channel.needsOption()) {
+            return List.of();
+        }
+        JsonNode data = get(channel.apiPath(), Map.of("type", channel.optionType()));
+        List<HongguoApiModels.ChannelOption> options = parseChannelOptions(data);
+        options.sort(Comparator.comparing(HongguoApiModels.ChannelOption::label, Comparator.nullsLast(String::compareTo)));
+        return options;
+    }
+
+    public HongguoApiModels.MangaSearchPage fetchOtherChannelDramas(
+            OtherShortDramaChannel channel,
+            String keyword,
+            String optionId,
+            int page
+    ) {
+        int effectivePage = Math.max(page, 1);
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("type", channel.listType());
+        if (channel.mode() == OtherShortDramaChannel.Mode.SEARCH) {
+            params.put("keyword", hasText(keyword) ? keyword.trim() : channel.defaultKeyword());
+        } else {
+            if (!hasText(optionId)) {
+                throw new HongguoApiException("请选择" + channel.label() + "的榜单或分类");
+            }
+            params.put(channel.listSelectorParam(), optionId.trim());
+        }
+        params.put("page", String.valueOf(effectivePage));
+        JsonNode data = get(channel.apiPath(), params);
+        String pageKeyword = channel.mode() == OtherShortDramaChannel.Mode.SEARCH
+                ? firstText(keyword, channel.defaultKeyword(), channel.label())
+                : firstText(optionId, channel.label());
+        return new HongguoApiModels.MangaSearchPage(pageKeyword, effectivePage, parseMangaSearchItems(data));
+    }
+
     static String formatChinaDate(Instant instant) {
         return DATE_FORMATTER.format(LocalDateTime.ofInstant(instant, CHINA_ZONE));
     }
@@ -161,6 +196,26 @@ public class HongguoApiClient {
                 "id", providerDramaId,
                 "keyword", keyword == null ? "" : keyword
         ));
+        return parseDramaDetail(providerDramaId, data);
+    }
+
+    public HongguoApiModels.DramaDetail fetchOtherDetail(
+            OtherShortDramaChannel channel,
+            String providerDramaId,
+            String keyword
+    ) {
+        OtherShortDramaChannel detailChannel = channel.detailChannel();
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("type", detailChannel.mode() == OtherShortDramaChannel.Mode.CATEGORY ? detailChannel.videoType() : detailChannel.listType());
+        params.put(detailChannel.detailIdParam(), providerDramaId);
+        if (detailChannel.supportsKeyword()) {
+            params.put("keyword", keyword == null ? "" : keyword);
+        }
+        JsonNode data = get(detailChannel.apiPath(), params);
+        return parseDramaDetail(providerDramaId, data);
+    }
+
+    private HongguoApiModels.DramaDetail parseDramaDetail(String providerDramaId, JsonNode data) {
         List<HongguoApiModels.DetailEpisode> episodes = new ArrayList<>();
         int sequence = 1;
         for (JsonNode item : records(data, "lists", "list", "items", "records", "episodes", "video_list")) {
@@ -173,7 +228,8 @@ public class HongguoApiClient {
                     Math.max(episodeNo, sequence),
                     firstText(item, "title", "name"),
                     providerVideoId,
-                    firstInteger(item, "duration_num", "duration_seconds", "duration_sec")
+                    firstInteger(item, "duration_num", "duration_seconds", "duration_sec"),
+                    firstText(item, "url", "video_url", "play_url", "download_url", "src")
             ));
             sequence++;
         }
@@ -197,11 +253,41 @@ public class HongguoApiClient {
                 "video_id", providerVideoId,
                 "keyword", keyword == null ? "" : keyword
         ));
+        return parseVideoVariants(data, true);
+    }
+
+    public List<HongguoApiModels.VideoVariant> fetchOtherVideoVariants(
+            OtherShortDramaChannel channel,
+            String providerDramaId,
+            String keyword,
+            String providerVideoId
+    ) {
+        OtherShortDramaChannel detailChannel = channel.detailChannel();
+        if (!detailChannel.supportsVideo()) {
+            return List.of();
+        }
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("type", detailChannel.videoType());
+        params.put(detailChannel.detailIdParam(), providerDramaId);
+        if (hasText(providerVideoId)) {
+            params.put("video_id", providerVideoId.trim());
+        }
+        if (detailChannel.supportsKeyword()) {
+            params.put("keyword", keyword == null ? "" : keyword);
+        }
+        JsonNode data = get(detailChannel.apiPath(), params);
+        return parseVideoVariants(data, false);
+    }
+
+    private List<HongguoApiModels.VideoVariant> parseVideoVariants(JsonNode data, boolean requireDecryptKey) {
         List<HongguoApiModels.VideoVariant> variants = new ArrayList<>();
         for (JsonNode item : records(data, "video_lists", "lists", "list", "items", "records")) {
             String url = firstText(item, "url", "video_url", "play_url");
             String decryptKey = firstText(item, "decrypt_key", "decryptKey", "key");
-            if (url == null || url.isBlank() || decryptKey == null || decryptKey.isBlank()) {
+            if (url == null || url.isBlank()) {
+                continue;
+            }
+            if (requireDecryptKey && (decryptKey == null || decryptKey.isBlank())) {
                 continue;
             }
             variants.add(new HongguoApiModels.VideoVariant(
@@ -478,6 +564,19 @@ public class HongguoApiClient {
                 * Math.max(variant.height() == null ? 0 : variant.height(), 0);
     }
 
+    private List<HongguoApiModels.ChannelOption> parseChannelOptions(JsonNode data) {
+        List<HongguoApiModels.ChannelOption> options = new ArrayList<>();
+        for (JsonNode item : records(data, "lists", "list", "items", "records", "series", "tags", "rank_list")) {
+            String id = firstText(item, "id", "tag_id", "content_id", "rank_id", "cell_id");
+            String label = firstText(item, "name", "title", "tag_name", "content_name", "rank_name", "label");
+            if (!hasText(id)) {
+                continue;
+            }
+            options.add(new HongguoApiModels.ChannelOption(id.trim(), firstText(label, id)));
+        }
+        return options;
+    }
+
     private String joinFilterIds(List<String> filterIds) {
         if (filterIds == null || filterIds.isEmpty()) {
             return null;
@@ -507,6 +606,18 @@ public class HongguoApiClient {
                 .map(String::trim)
                 .distinct()
                 .toList();
+    }
+
+    private String firstText(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     private String firstText(JsonNode node, String... fields) {
@@ -614,6 +725,10 @@ public class HongguoApiClient {
             }
         }
         return values;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private List<String> recTagTexts(JsonNode array) {

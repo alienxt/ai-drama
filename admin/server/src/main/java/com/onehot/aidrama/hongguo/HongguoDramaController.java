@@ -104,6 +104,53 @@ public class HongguoDramaController {
         return ApiResponse.ok(new HongguoDtos.ImportCandidateResponse(drama), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @GetMapping("/other-channels")
+    ApiResponse<List<HongguoDtos.OtherChannelResponse>> otherChannels() {
+        return ApiResponse.ok(
+                OtherShortDramaChannel.visibleChannels().stream()
+                        .map(HongguoDtos.OtherChannelResponse::from)
+                        .toList(),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @GetMapping("/other-channels/{channel}/options")
+    ApiResponse<List<HongguoDtos.OtherChannelOptionResponse>> otherChannelOptions(@PathVariable String channel) {
+        return ApiResponse.ok(
+                service.listOtherChannelOptions(channel).stream()
+                        .map(HongguoDtos.OtherChannelOptionResponse::from)
+                        .toList(),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @GetMapping("/other-channels/{channel}/candidates")
+    ApiResponse<List<HongguoDramaCandidate>> otherChannelCandidates(
+            @PathVariable String channel,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String optionId,
+            @RequestParam(required = false) Integer page
+    ) {
+        return ApiResponse.ok(
+                service.listOtherChannelCandidates(channel, keyword, optionId, page),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
+    @PostMapping("/other-channels/{channel}/sync")
+    ApiResponse<HongguoDtos.MangaSearchResponse> syncOtherChannel(
+            @PathVariable String channel,
+            @RequestBody(required = false) HongguoDtos.OtherChannelSyncRequest request
+    ) {
+        String keyword = request == null ? null : request.keyword();
+        String optionId = request == null ? null : request.optionId();
+        int page = request == null || request.page() == null ? 1 : request.page();
+        return ApiResponse.ok(
+                HongguoDtos.MangaSearchResponse.from(service.syncOtherChannel(channel, keyword, optionId, page)),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     @PostMapping("/backfill-covers")
     ApiResponse<HongguoDramaService.CoverBackfillResult> backfillCovers() {
         return ApiResponse.ok(service.backfillCovers(), MDC.get(TraceIdFilter.TRACE_ID));

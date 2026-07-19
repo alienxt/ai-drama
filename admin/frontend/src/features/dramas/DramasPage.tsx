@@ -1,4 +1,4 @@
-import { CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse, OtherShortDramaChannel, OtherShortDramaChannelOption } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -23,6 +23,7 @@ type ClientSyncProgress = {
 type HongguoPanelMode = 'manga' | 'new' | 'top' | 'screening';
 
 const HONGGUO_SYNC_TIMEOUT_MS = 180000;
+const OTHER_CHANNEL_SYNC_TIMEOUT_MS = 180000;
 
 export function DramasPage() {
   const [version, setVersion] = useState(0);
@@ -52,6 +53,18 @@ export function DramasPage() {
   const [loadingHongguoCandidates, setLoadingHongguoCandidates] = useState(false);
   const [syncingHongguo, setSyncingHongguo] = useState(false);
   const [importingHongguoId, setImportingHongguoId] = useState<string | null>(null);
+  const [otherChannelOpen, setOtherChannelOpen] = useState(false);
+  const [otherChannels, setOtherChannels] = useState<OtherShortDramaChannel[]>([]);
+  const [otherChannelCode, setOtherChannelCode] = useState<string>();
+  const [otherChannelKeyword, setOtherChannelKeyword] = useState('穿越');
+  const [otherChannelPage, setOtherChannelPage] = useState(1);
+  const [otherChannelOptionId, setOtherChannelOptionId] = useState<string>();
+  const [otherChannelOptions, setOtherChannelOptions] = useState<OtherShortDramaChannelOption[]>([]);
+  const [otherChannelCandidates, setOtherChannelCandidates] = useState<HongguoCandidate[]>([]);
+  const [loadingOtherChannelOptions, setLoadingOtherChannelOptions] = useState(false);
+  const [loadingOtherChannelCandidates, setLoadingOtherChannelCandidates] = useState(false);
+  const [syncingOtherChannel, setSyncingOtherChannel] = useState(false);
+  const [importingOtherChannelId, setImportingOtherChannelId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
@@ -64,6 +77,10 @@ export function DramasPage() {
   const isHongguoNewMode = hongguoMode === 'new';
   const isHongguoTopMode = hongguoMode === 'top';
   const isHongguoScreeningMode = hongguoMode === 'screening';
+  const selectedOtherChannel = useMemo(
+    () => otherChannels.find((channel) => channel.code === otherChannelCode),
+    [otherChannels, otherChannelCode],
+  );
 
   async function scan() {
     await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
@@ -249,6 +266,122 @@ export function DramasPage() {
       await loadCurrentHongguoCandidates();
     } finally {
       setImportingHongguoId(null);
+    }
+  }
+
+  async function openOtherChannels() {
+    setOtherChannelOpen(true);
+    let channels = otherChannels;
+    if (!channels.length) {
+      channels = await apiGet<OtherShortDramaChannel[]>('/admin/hongguo/other-channels');
+      setOtherChannels(channels);
+    }
+    const firstChannel = otherChannelCode || channels[0]?.code;
+    if (!firstChannel) {
+      return;
+    }
+    await selectOtherChannel(firstChannel, channels);
+  }
+
+  async function selectOtherChannel(code: string, availableChannels = otherChannels) {
+    const channel = availableChannels.find((item) => item.code === code);
+    setOtherChannelCode(code);
+    setOtherChannelPage(1);
+    setOtherChannelCandidates([]);
+    if (channel?.keywordSupported) {
+      setOtherChannelKeyword(channel.defaultKeyword || '穿越');
+      setOtherChannelOptionId(undefined);
+      setOtherChannelOptions([]);
+      await loadOtherChannelCandidates(code, channel.defaultKeyword || '穿越', 1, undefined, channel);
+      return;
+    }
+    const options = await loadOtherChannelOptions(code);
+    const firstOption = options[0]?.id;
+    setOtherChannelOptionId(firstOption);
+    if (firstOption) {
+      await loadOtherChannelCandidates(code, undefined, 1, firstOption);
+    }
+  }
+
+  async function loadOtherChannelOptions(code = otherChannelCode) {
+    if (!code) {
+      return [];
+    }
+    setLoadingOtherChannelOptions(true);
+    try {
+      const rows = await apiGet<OtherShortDramaChannelOption[]>(`/admin/hongguo/other-channels/${code}/options`);
+      setOtherChannelOptions(rows);
+      return rows;
+    } finally {
+      setLoadingOtherChannelOptions(false);
+    }
+  }
+
+  async function loadOtherChannelCandidates(
+    code = otherChannelCode,
+    keyword = otherChannelKeyword,
+    page = otherChannelPage,
+    optionId = otherChannelOptionId,
+    channelOverride?: OtherShortDramaChannel,
+  ) {
+    if (!code) {
+      return;
+    }
+    const channel = channelOverride ?? otherChannels.find((item) => item.code === code);
+    if (channel?.optionRequired && !optionId) {
+      setOtherChannelCandidates([]);
+      return;
+    }
+    setLoadingOtherChannelCandidates(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(Math.max(Number(page || 1), 1)));
+      if (channel?.keywordSupported && keyword?.trim()) {
+        params.set('keyword', keyword.trim());
+      }
+      if (channel?.optionRequired && optionId) {
+        params.set('optionId', optionId);
+      }
+      const rows = await apiGet<HongguoCandidate[]>(`/admin/hongguo/other-channels/${code}/candidates?${params.toString()}`);
+      setOtherChannelCandidates(rows);
+    } finally {
+      setLoadingOtherChannelCandidates(false);
+    }
+  }
+
+  async function syncOtherChannel() {
+    if (!otherChannelCode) {
+      return;
+    }
+    if (selectedOtherChannel?.optionRequired && !otherChannelOptionId) {
+      appMessage.error('请先选择榜单或分类');
+      return;
+    }
+    setSyncingOtherChannel(true);
+    try {
+      const result = await apiPost<HongguoMangaSyncResponse>(`/admin/hongguo/other-channels/${otherChannelCode}/sync`, {
+        keyword: selectedOtherChannel?.keywordSupported ? otherChannelKeyword : undefined,
+        page: otherChannelPage,
+        optionId: selectedOtherChannel?.optionRequired ? otherChannelOptionId : undefined,
+      }, {
+        timeout: OTHER_CHANNEL_SYNC_TIMEOUT_MS,
+      });
+      appMessage.success(`${selectedOtherChannel?.label || '其他渠道'}已查询：获取 ${result.fetched} 部，查详情 ${result.detailed} 部，跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
+      await loadOtherChannelCandidates(otherChannelCode, otherChannelKeyword, otherChannelPage, otherChannelOptionId);
+    } finally {
+      setSyncingOtherChannel(false);
+    }
+  }
+
+  async function importOtherChannelCandidate(candidate: HongguoCandidate) {
+    setImportingOtherChannelId(candidate.id);
+    try {
+      await apiPost<HongguoImportCandidateResponse>(`/admin/hongguo/candidates/${candidate.id}/import`, {});
+      appMessage.success('已导入短剧目录并加入可分发池，客户端领取时才会生成 AI 素材和下载剧集视频');
+      setVersion((value) => value + 1);
+      await loadOtherChannelCandidates(otherChannelCode, otherChannelKeyword, otherChannelPage, otherChannelOptionId);
+    } finally {
+      setImportingOtherChannelId(null);
     }
   }
 
@@ -560,6 +693,7 @@ export function DramasPage() {
           <Button icon={<CalendarOutlined />} onClick={openHongguoNewDramas}>红果新剧</Button>
           <Button icon={<TrophyOutlined />} onClick={openHongguoAiPlayletNewTopDramas}>AI剧新剧榜</Button>
           <Button icon={<RocketOutlined />} onClick={openHongguoAiMangaNewDramas}>AI漫剧近3日上新</Button>
+          <Button icon={<AppstoreOutlined />} onClick={openOtherChannels}>其他渠道</Button>
           <Button
             icon={<ClockCircleOutlined />}
             disabled={!hasSelectedDramas}
@@ -1041,6 +1175,115 @@ export function DramasPage() {
               </div>
             ) : (
               <Alert type="warning" showIcon message={hongguoEmptyMessage()} />
+            )}
+          </Spin>
+        </Space>
+      </Modal>
+      <Modal
+        title="其他渠道"
+        open={otherChannelOpen}
+        onCancel={() => setOtherChannelOpen(false)}
+        footer={[
+          <Button key="refresh" onClick={() => loadOtherChannelCandidates()} loading={loadingOtherChannelCandidates}>刷新</Button>,
+          <Button key="close" type="primary" onClick={() => setOtherChannelOpen(false)}>关闭</Button>,
+        ]}
+        width={980}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={16} className="hongguo-calendar">
+          <Space wrap>
+            <Select
+              value={otherChannelCode}
+              placeholder="选择渠道"
+              className="hongguo-keyword-input"
+              options={otherChannels.map((channel) => ({ value: channel.code, label: channel.label }))}
+              onChange={(value) => selectOtherChannel(value)}
+            />
+            {selectedOtherChannel?.keywordSupported ? (
+              <Input
+                value={otherChannelKeyword}
+                onChange={(event) => setOtherChannelKeyword(event.target.value)}
+                className="hongguo-keyword-input"
+                placeholder="搜索关键词"
+              />
+            ) : null}
+            {selectedOtherChannel?.optionRequired ? (
+              <Select
+                value={otherChannelOptionId}
+                placeholder={selectedOtherChannel.mode === 'CATEGORY' ? '选择分类' : '选择榜单'}
+                className="hongguo-keyword-input"
+                loading={loadingOtherChannelOptions}
+                options={otherChannelOptions.map((option) => ({ value: option.id, label: option.label }))}
+                onChange={(value) => {
+                  setOtherChannelOptionId(value);
+                  setOtherChannelCandidates([]);
+                }}
+              />
+            ) : null}
+            <InputNumber
+              min={1}
+              precision={0}
+              value={otherChannelPage}
+              onChange={(value) => setOtherChannelPage(Number(value || 1))}
+            />
+            <Button
+              type="primary"
+              icon={<SearchOutlined />}
+              loading={syncingOtherChannel}
+              onClick={syncOtherChannel}
+            >
+              查询
+            </Button>
+          </Space>
+          <Alert
+            type="info"
+            showIcon
+            message="查询会从所选 52API 渠道拉取当前页短剧并保存为候选；导入单部后加入短剧库，客户端下载剧集时才解析播放链接。"
+          />
+          <Spin spinning={loadingOtherChannelCandidates || loadingOtherChannelOptions}>
+            {otherChannelCandidates.length ? (
+              <div className="hongguo-candidate-list">
+                {otherChannelCandidates.map((candidate) => (
+                  <div key={candidate.id} className="hongguo-candidate-row">
+                    <div className="hongguo-candidate-cover">
+                      {candidate.coverUrl ? <Image src={candidate.coverUrl} alt={candidate.title} /> : <span>无封面</span>}
+                    </div>
+                    <div className="hongguo-candidate-main">
+                      <div className="hongguo-candidate-title">
+                        <strong>{candidate.title}</strong>
+                        <Tag color={candidate.status === 'IMPORTED' ? 'green' : 'blue'}>
+                          {candidate.status === 'IMPORTED' ? '已导入' : '候选'}
+                        </Tag>
+                      </div>
+                      <Typography.Paragraph className="hongguo-candidate-summary" ellipsis={{ rows: 2, tooltip: candidate.summary }}>
+                        {candidate.summary || '-'}
+                      </Typography.Paragraph>
+                      <Space wrap size={[4, 4]}>
+                        <Tag color={candidate.publishedAt ? 'purple' : 'default'}>
+                          发布时间：{candidate.publishedAt ? formatDateTime(candidate.publishedAt) : '未返回'}
+                        </Tag>
+                        {candidate.category ? <Tag>{candidate.category}</Tag> : null}
+                        {candidate.categories?.map((category) => <Tag key={category}>{category}</Tag>)}
+                        <Tag>{candidate.episodeCount || 0} 集</Tag>
+                        {candidate.duration ? <Tag>{candidate.duration}</Tag> : null}
+                        {candidate.score ? <Tag>{candidate.score} 分</Tag> : null}
+                      </Space>
+                    </div>
+                    <div className="hongguo-candidate-actions">
+                      <Button
+                        type="primary"
+                        disabled={candidate.status === 'IMPORTED'}
+                        loading={importingOtherChannelId === candidate.id}
+                        onClick={() => importOtherChannelCandidate(candidate)}
+                      >
+                        导入
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Alert type="warning" showIcon message="当前渠道还没有候选短剧，选择渠道和页码后点击查询。" />
             )}
           </Spin>
         </Space>

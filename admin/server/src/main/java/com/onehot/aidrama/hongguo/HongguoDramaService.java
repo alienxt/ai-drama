@@ -516,15 +516,88 @@ public class HongguoDramaService {
                 .toList();
     }
 
+    public List<HongguoApiModels.ChannelOption> listOtherChannelOptions(String channelCode) {
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromCode(channelCode);
+        if (!channel.needsOption()) {
+            return List.of();
+        }
+        return callApi(() -> apiClient.fetchOtherChannelOptions(channel));
+    }
+
+    public List<HongguoDramaCandidate> listOtherChannelCandidates(
+            String channelCode,
+            String keyword,
+            String optionId,
+            Integer page
+    ) {
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromCode(channelCode);
+        int effectivePage = page == null ? 1 : Math.max(page, 1);
+        String scope = otherChannelScope(channel, keyword, optionId);
+        if (!hasText(scope)) {
+            return List.of();
+        }
+        return candidateRepository.findByProviderAndSearchKeywordAndSearchPageOrderByPublishedAtDescCreatedAtDesc(
+                channel.providerCode(),
+                scope,
+                effectivePage
+        );
+    }
+
+    public MangaSearchResult syncOtherChannel(String channelCode, String keyword, String optionId, int page) {
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromCode(channelCode);
+        int effectivePage = Math.max(page, 1);
+        String effectiveOptionId = normalizeOtherOption(channel, optionId);
+        String effectiveKeyword = channel.supportsKeyword() ? normalizeOtherKeyword(channel, keyword) : null;
+        HongguoApiModels.MangaSearchPage searchPage = callApi(
+                () -> apiClient.fetchOtherChannelDramas(channel, effectiveKeyword, effectiveOptionId, effectivePage)
+        );
+
+        int created = 0;
+        int updated = 0;
+        int detailed = 0;
+        int skipped = 0;
+        String scope = otherChannelScope(channel, effectiveKeyword, effectiveOptionId);
+        for (HongguoApiModels.MangaSearchItem item : searchPage.items()) {
+            if (!hasText(item.providerDramaId())) {
+                skipped++;
+                continue;
+            }
+            HongguoDramaCandidate candidate = candidateRepository
+                    .findByProviderAndProviderDramaId(channel.providerCode(), item.providerDramaId())
+                    .orElseGet(HongguoDramaCandidate::new);
+            boolean isNew = candidate.getId() == null;
+            HongguoApiModels.DramaDetail detail = callApi(
+                    () -> apiClient.fetchOtherDetail(channel, item.providerDramaId(), firstText(item.title(), effectiveKeyword, channel.label()))
+            );
+            detailed++;
+            applyOtherChannelCandidate(candidate, channel, item, detail, scope, effectivePage);
+            candidateRepository.save(candidate);
+            if (isNew) {
+                created++;
+            } else {
+                updated++;
+            }
+        }
+        return new MangaSearchResult(
+                otherChannelResultLabel(channel, effectiveKeyword, effectiveOptionId),
+                searchPage.page(),
+                searchPage.items().size(),
+                detailed,
+                skipped,
+                created,
+                updated
+        );
+    }
+
     public Drama importCandidate(String candidateId) {
         HongguoDramaCandidate candidate = candidateRepository.findById(candidateId)
                 .orElseThrow(() -> new BusinessException("HONGGUO_CANDIDATE_NOT_FOUND", "红果候选短剧不存在", HttpStatus.NOT_FOUND));
-        HongguoApiModels.DramaDetail detail = callApi(() -> apiClient.fetchDetail(candidate.getProviderDramaId(), candidate.getTitle()));
+        HongguoApiModels.DramaDetail detail = fetchCandidateDetail(candidate);
         if (detail.episodes().isEmpty()) {
-            throw new BusinessException("HONGGUO_DETAIL_EMPTY", "红果详情没有返回剧集目录", HttpStatus.BAD_REQUEST);
+            throw new BusinessException("HONGGUO_DETAIL_EMPTY", "52API 详情没有返回剧集目录", HttpStatus.BAD_REQUEST);
         }
 
-        String sourcePath = sourcePath(candidate.getProviderDramaId());
+        String sourcePath = sourcePath(candidate);
         Drama drama = dramaRepository.findAllBySourcePath(sourcePath).stream()
                 .findFirst()
                 .orElseGet(Drama::new);
@@ -542,7 +615,7 @@ public class HongguoDramaService {
         drama.setCoverUrl(coverUrl);
         drama.setSource(DramaSources.HONGGUO_52API);
         drama.setSourcePath(sourcePath);
-        drama.setProviderName(PROVIDER);
+        drama.setProviderName(normalizeProvider(candidate.getProvider()));
         drama.setProviderDramaId(candidate.getProviderDramaId());
         drama.setPublishedAt(firstInstant(detail.publishedAt(), candidate.getPublishedAt()));
         drama.setSourceSyncedAt(Instant.now());
@@ -551,7 +624,7 @@ public class HongguoDramaService {
         }
         drama.setCategoryIds(List.copyOf(categoryCodes(title, summary, candidate)));
         drama.setEpisodes(detail.episodes().stream()
-                .map(episode -> episodeFrom(candidate.getProviderDramaId(), episode))
+                .map(episode -> episodeFrom(candidate, episode))
                 .toList());
         setTotalMinutes(drama, detail);
         if (DramaDurationEstimator.needsCostAmountWan(drama)) {
@@ -611,24 +684,25 @@ public class HongguoDramaService {
     }
 
     public URI createDownloadUri(Drama drama, DramaEpisode episode) {
-        ensureHongguoEpisode(drama, episode);
+        ensureFiftyTwoApiEpisode(drama, episode);
         if (cachedDownloadUrlStillFresh(episode)) {
             return URI.create(episode.getDownloadUrl());
         }
-        List<HongguoApiModels.VideoVariant> variants = callApi(() -> apiClient.fetchVideoVariants(
-                drama.getProviderDramaId(),
-                drama.getTitle(),
-                episode.getProviderVideoId()
-        ));
+        List<HongguoApiModels.VideoVariant> variants = fetchCandidateVideoVariants(drama, episode);
         if (variants.isEmpty()) {
-            throw new BusinessException("HONGGUO_VIDEO_EMPTY", "红果播放接口没有返回可下载视频", HttpStatus.FAILED_DEPENDENCY);
+            throw new BusinessException("HONGGUO_VIDEO_EMPTY", "52API 播放接口没有返回可下载视频", HttpStatus.FAILED_DEPENDENCY);
         }
         HongguoApiModels.VideoVariant variant = variants.getFirst();
-        HongguoApiModels.DecryptedUrl decryptedUrl = callApi(() -> apiClient.decrypt(variant.url(), variant.decryptKey()));
-        episode.setDownloadUrl(decryptedUrl.url());
-        episode.setDownloadUrlExpiresAt(decryptedUrl.expiresAt());
+        if (hasText(variant.decryptKey())) {
+            HongguoApiModels.DecryptedUrl decryptedUrl = callApi(() -> apiClient.decrypt(variant.url(), variant.decryptKey()));
+            episode.setDownloadUrl(decryptedUrl.url());
+            episode.setDownloadUrlExpiresAt(decryptedUrl.expiresAt());
+        } else {
+            episode.setDownloadUrl(variant.url());
+            episode.setDownloadUrlExpiresAt(Instant.now(clock).plus(Duration.ofHours(6)));
+        }
         dramaRepository.save(drama);
-        return URI.create(decryptedUrl.url());
+        return URI.create(episode.getDownloadUrl());
     }
 
     public void downloadEpisodeToFile(Drama drama, DramaEpisode episode, Path file) throws IOException {
@@ -708,6 +782,21 @@ public class HongguoDramaService {
         candidate.setCategories(mergedCategories(candidate.getCategories(), "AI剧", "新剧榜"));
     }
 
+    private void applyOtherChannelCandidate(
+            HongguoDramaCandidate candidate,
+            OtherShortDramaChannel channel,
+            HongguoApiModels.MangaSearchItem item,
+            HongguoApiModels.DramaDetail detail,
+            String scope,
+            int page
+    ) {
+        applyCandidateFields(candidate, item, detail);
+        candidate.setProvider(channel.providerCode());
+        candidate.setSearchKeyword(scope);
+        candidate.setSearchPage(page);
+        candidate.setCategories(mergedCategories(candidate.getCategories(), channel.label()));
+    }
+
     private void applyCandidateFields(
             HongguoDramaCandidate candidate,
             HongguoApiModels.MangaSearchItem item,
@@ -736,6 +825,45 @@ public class HongguoDramaService {
         }
     }
 
+    private HongguoApiModels.DramaDetail fetchCandidateDetail(HongguoDramaCandidate candidate) {
+        if (isHongguoProvider(candidate.getProvider())) {
+            return callApi(() -> apiClient.fetchDetail(candidate.getProviderDramaId(), candidate.getTitle()));
+        }
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromProviderCode(normalizeProvider(candidate.getProvider()));
+        return callApi(() -> apiClient.fetchOtherDetail(channel, candidate.getProviderDramaId(), candidate.getTitle()));
+    }
+
+    private List<HongguoApiModels.VideoVariant> fetchCandidateVideoVariants(Drama drama, DramaEpisode episode) {
+        if (isHongguoProvider(drama.getProviderName())) {
+            return callApi(() -> apiClient.fetchVideoVariants(
+                    drama.getProviderDramaId(),
+                    drama.getTitle(),
+                    episode.getProviderVideoId()
+            ));
+        }
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromProviderCode(normalizeProvider(drama.getProviderName()));
+        if (!channel.detailChannel().supportsVideo()) {
+            if (hasText(episode.getDownloadUrl())) {
+                return List.of(new HongguoApiModels.VideoVariant(
+                        episode.getDownloadUrl(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null
+                ));
+            }
+            throw new BusinessException("HONGGUO_VIDEO_UNSUPPORTED", channel.label() + "暂未提供单集播放解析接口", HttpStatus.FAILED_DEPENDENCY);
+        }
+        return callApi(() -> apiClient.fetchOtherVideoVariants(
+                channel,
+                drama.getProviderDramaId(),
+                drama.getTitle(),
+                episode.getProviderVideoId()
+        ));
+    }
+
     private boolean isRecentOrUnknown(Instant publishedAt, Instant since) {
         return publishedAt == null || since == null || !publishedAt.isBefore(since);
     }
@@ -744,12 +872,51 @@ public class HongguoDramaService {
         return hasText(keyword) ? keyword.trim() : DEFAULT_MANGA_KEYWORD;
     }
 
-    private DramaEpisode episodeFrom(String providerDramaId, HongguoApiModels.DetailEpisode detailEpisode) {
+    private String normalizeOtherKeyword(OtherShortDramaChannel channel, String keyword) {
+        return hasText(keyword) ? keyword.trim() : firstText(channel.defaultKeyword(), channel.label());
+    }
+
+    private String normalizeOtherOption(OtherShortDramaChannel channel, String optionId) {
+        if (!channel.needsOption()) {
+            return null;
+        }
+        if (hasText(optionId)) {
+            return optionId.trim();
+        }
+        List<HongguoApiModels.ChannelOption> options = listOtherChannelOptions(channel.code());
+        if (options.isEmpty()) {
+            throw new BusinessException("OTHER_CHANNEL_OPTION_EMPTY", channel.label() + "没有返回可用榜单或分类", HttpStatus.BAD_GATEWAY);
+        }
+        return options.getFirst().id();
+    }
+
+    private String otherChannelScope(OtherShortDramaChannel channel, String keyword, String optionId) {
+        if (channel.supportsKeyword()) {
+            return "OTHER:%s:SEARCH:%s".formatted(channel.code(), normalizeOtherKeyword(channel, keyword));
+        }
+        if (!hasText(optionId)) {
+            return null;
+        }
+        return "OTHER:%s:OPTION:%s".formatted(channel.code(), optionId.trim());
+    }
+
+    private String otherChannelResultLabel(OtherShortDramaChannel channel, String keyword, String optionId) {
+        if (channel.supportsKeyword()) {
+            return channel.label() + "：" + normalizeOtherKeyword(channel, keyword);
+        }
+        return channel.label() + "：" + optionId;
+    }
+
+    private DramaEpisode episodeFrom(HongguoDramaCandidate candidate, HongguoApiModels.DetailEpisode detailEpisode) {
         DramaEpisode episode = new DramaEpisode();
         episode.setEpisodeNo(detailEpisode.episodeNo());
         episode.setTitle(firstText(detailEpisode.title(), "第 %d 集".formatted(detailEpisode.episodeNo())));
         episode.setProviderVideoId(detailEpisode.providerVideoId());
-        episode.setSourcePath(videoSourcePath(providerDramaId, detailEpisode.providerVideoId()));
+        episode.setSourcePath(videoSourcePath(candidate, detailEpisode.providerVideoId()));
+        if (hasText(detailEpisode.downloadUrl())) {
+            episode.setDownloadUrl(detailEpisode.downloadUrl().trim());
+            episode.setDownloadUrlExpiresAt(Instant.now(clock).plus(Duration.ofHours(6)));
+        }
         episode.setSize(0);
         return episode;
     }
@@ -807,15 +974,15 @@ public class HongguoDramaService {
         }
     }
 
-    private void ensureHongguoEpisode(Drama drama, DramaEpisode episode) {
+    private void ensureFiftyTwoApiEpisode(Drama drama, DramaEpisode episode) {
         if (drama == null || !DramaSources.isHongguo(drama.getSource())) {
-            throw new BusinessException("DRAMA_SOURCE_NOT_HONGGUO", "当前短剧不是红果来源", HttpStatus.BAD_REQUEST);
+            throw new BusinessException("DRAMA_SOURCE_NOT_HONGGUO", "当前短剧不是 52API 来源", HttpStatus.BAD_REQUEST);
         }
         if (!hasText(drama.getProviderDramaId())) {
-            throw new BusinessException("HONGGUO_DRAMA_ID_MISSING", "红果短剧 ID 缺失", HttpStatus.BAD_REQUEST);
+            throw new BusinessException("HONGGUO_DRAMA_ID_MISSING", "52API 短剧 ID 缺失", HttpStatus.BAD_REQUEST);
         }
-        if (episode == null || !hasText(episode.getProviderVideoId())) {
-            throw new BusinessException("HONGGUO_VIDEO_ID_MISSING", "红果剧集 video_id 缺失", HttpStatus.BAD_REQUEST);
+        if (episode == null || (!hasText(episode.getProviderVideoId()) && !hasText(episode.getDownloadUrl()))) {
+            throw new BusinessException("HONGGUO_VIDEO_ID_MISSING", "52API 剧集 video_id 缺失", HttpStatus.BAD_REQUEST);
         }
     }
 
@@ -847,7 +1014,7 @@ public class HongguoDramaService {
         if (candidate == null || !hasText(candidate.getProviderDramaId())) {
             return Optional.empty();
         }
-        return dramaRepository.findAllBySourcePath(sourcePath(candidate.getProviderDramaId())).stream().findFirst();
+        return dramaRepository.findAllBySourcePath(sourcePath(candidate)).stream().findFirst();
     }
 
     private ImportedDramaSummary summary(Drama drama) {
@@ -922,12 +1089,28 @@ public class HongguoDramaService {
         return List.copyOf(values);
     }
 
-    private static String sourcePath(String providerDramaId) {
-        return "52api://hongguo/" + providerDramaId;
+    private String normalizeProvider(String provider) {
+        return hasText(provider) ? provider.trim() : PROVIDER;
     }
 
-    private static String videoSourcePath(String providerDramaId, String providerVideoId) {
-        return sourcePath(providerDramaId) + "/video/" + providerVideoId;
+    private boolean isHongguoProvider(String provider) {
+        return PROVIDER.equals(normalizeProvider(provider));
+    }
+
+    private String sourcePath(HongguoDramaCandidate candidate) {
+        return sourcePath(normalizeProvider(candidate.getProvider()), candidate.getProviderDramaId());
+    }
+
+    private String sourcePath(String provider, String providerDramaId) {
+        if (PROVIDER.equals(normalizeProvider(provider))) {
+            return "52api://hongguo/" + providerDramaId;
+        }
+        OtherShortDramaChannel channel = OtherShortDramaChannel.fromProviderCode(normalizeProvider(provider));
+        return "52api://" + channel.code().toLowerCase() + "/" + providerDramaId;
+    }
+
+    private String videoSourcePath(HongguoDramaCandidate candidate, String providerVideoId) {
+        return sourcePath(candidate) + "/video/" + providerVideoId;
     }
 
     private boolean hasText(String value) {

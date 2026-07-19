@@ -108,6 +108,20 @@ export type HongguoImportCandidateResponse = {
   drama: Drama;
 };
 
+export type OtherShortDramaChannel = {
+  code: string;
+  label: string;
+  mode: 'SEARCH' | 'RANK' | 'CATEGORY';
+  keywordSupported: boolean;
+  optionRequired: boolean;
+  defaultKeyword?: string;
+};
+
+export type OtherShortDramaChannelOption = {
+  id: string;
+  label: string;
+};
+
 export type HongguoCoverBackfillResponse = {
   requested: number;
   updated: number;
