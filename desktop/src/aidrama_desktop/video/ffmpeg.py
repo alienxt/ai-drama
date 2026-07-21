@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,10 +14,33 @@ WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
 WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v7"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
+DRAMA_STRATEGY1_TRIM_HEAD_SECONDS = 1.0
+DRAMA_STRATEGY1_TRIM_TAIL_SECONDS = 1.0
+DRAMA_STRATEGY1_MIN_SEGMENT_SECONDS = 50
+DRAMA_STRATEGY1_MAX_SEGMENT_SECONDS = 60
+DRAMA_STRATEGY1_MIN_LAST_SEGMENT_SECONDS = 30.0
+DRAMA_STRATEGY1_MIN_SPEED = 1.02
+DRAMA_STRATEGY1_MAX_SPEED = 1.05
 
 
 class FfmpegError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class DramaStrategySegment:
+    file: Path
+    source_episode_indexes: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _TimelineSource:
+    file: Path
+    source_episode_index: int
+    start_seconds: float
+    end_seconds: float
+    output_start_seconds: float
+    output_end_seconds: float
 
 
 @dataclass
@@ -53,6 +78,67 @@ class FfmpegProcessor:
             except OSError:
                 pass
 
+    def process_drama_with_strategy1(
+        self,
+        sources: list[Path],
+        target_dir: Path,
+        drama_title: str,
+        *,
+        speed: float | None = None,
+        segment_seconds: tuple[int, int] = (
+            DRAMA_STRATEGY1_MIN_SEGMENT_SECONDS,
+            DRAMA_STRATEGY1_MAX_SEGMENT_SECONDS,
+        ),
+        trim_head_seconds: float = DRAMA_STRATEGY1_TRIM_HEAD_SECONDS,
+        trim_tail_seconds: float = DRAMA_STRATEGY1_TRIM_TAIL_SECONDS,
+        min_last_segment_seconds: float = DRAMA_STRATEGY1_MIN_LAST_SEGMENT_SECONDS,
+    ) -> list[DramaStrategySegment]:
+        if not sources:
+            return []
+        target_dir.mkdir(parents=True, exist_ok=True)
+        effective_speed = speed or self._strategy1_speed(sources)
+        timeline_sources = self._strategy1_timeline_sources(sources, effective_speed, trim_head_seconds, trim_tail_seconds)
+        if not timeline_sources:
+            return []
+        total_seconds = timeline_sources[-1].output_end_seconds
+        segment_lengths = self._strategy1_segment_lengths(sources, total_seconds, segment_seconds, min_last_segment_seconds)
+        if not segment_lengths:
+            return []
+        boundaries = self._strategy1_segment_boundaries(segment_lengths)
+        timeline_file = target_dir / ".strategy1-timeline.mp4"
+        self._run_ffmpeg(
+            self._strategy1_timeline_command(timeline_sources, timeline_file, effective_speed, boundaries),
+            timeline_file,
+        )
+        generated_dir = target_dir / ".strategy1-segments"
+        generated_dir.mkdir(parents=True, exist_ok=True)
+        for existing in generated_dir.glob("*.mp4"):
+            existing.unlink()
+        split_pattern = generated_dir / "%03d.mp4"
+        self._run_ffmpeg(
+            self._strategy1_split_command(timeline_file, split_pattern, boundaries),
+            split_pattern,
+        )
+        segments: list[DramaStrategySegment] = []
+        for index, length in enumerate(segment_lengths, start=1):
+            generated = generated_dir / f"{index - 1:03d}.mp4"
+            target = target_dir / f"{self._safe_strategy1_title(drama_title)}-策略1第{index:03d}集.mp4"
+            if not generated.exists():
+                raise FfmpegError(f"策略1切分未生成第 {index} 段：{generated}")
+            if target.exists():
+                target.unlink()
+            generated.replace(target)
+            start = sum(segment_lengths[: index - 1])
+            end = start + length
+            source_indexes = self._strategy1_source_indexes_for_range(timeline_sources, start, end)
+            segments.append(DramaStrategySegment(target, source_indexes))
+        self._cleanup_failed_target(timeline_file)
+        try:
+            generated_dir.rmdir()
+        except OSError:
+            pass
+        return segments
+
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
@@ -67,6 +153,206 @@ class FfmpegProcessor:
             self._cleanup_failed_target(target)
             raise FfmpegError(f"FFmpeg 无法启动：{exception}") from exception
         return target
+
+    def _strategy1_timeline_command(
+        self,
+        timeline_sources: list[_TimelineSource],
+        target: Path,
+        speed: float,
+        boundaries: list[float] | None = None,
+    ) -> list[str]:
+        command = [self.ffmpeg_path, "-y"]
+        for source in timeline_sources:
+            command.extend(["-i", str(source.file)])
+        filters: list[str] = []
+        concat_inputs: list[str] = []
+        atempo = self._audio_atempo_filter(speed)
+        for input_index, source in enumerate(timeline_sources):
+            filters.append(
+                f"[{input_index}:v]trim=start={self._format_seconds(source.start_seconds)}:"
+                f"end={self._format_seconds(source.end_seconds)},"
+                f"setpts=(PTS-STARTPTS)/{self._format_float(speed)},format=yuv420p[v{input_index}]"
+            )
+            if self.video_has_audio(source.file):
+                filters.append(
+                    f"[{input_index}:a]atrim=start={self._format_seconds(source.start_seconds)}:"
+                    f"end={self._format_seconds(source.end_seconds)},"
+                    f"asetpts=PTS-STARTPTS,{atempo}[a{input_index}]"
+                )
+            else:
+                duration = (source.end_seconds - source.start_seconds) / speed
+                filters.append(
+                    "anullsrc=r=48000:cl=stereo,"
+                    f"atrim=duration={self._format_seconds(duration)},"
+                    f"asetpts=PTS-STARTPTS[a{input_index}]"
+                )
+            concat_inputs.append(f"[v{input_index}][a{input_index}]")
+        concat_filter = "".join(concat_inputs)
+        concat_filter += f"concat=n={len(timeline_sources)}:v=1:a=1[outv][outa]"
+        filter_complex = ";".join([*filters, concat_filter])
+        command.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[outv]",
+                "-map",
+                "[outa]",
+                *self._strategy1_force_keyframe_args(boundaries or []),
+                *self._wechat_video_output_args(),
+                str(target),
+            ]
+        )
+        return command
+
+    @staticmethod
+    def _strategy1_force_keyframe_args(boundaries: list[float]) -> list[str]:
+        if not boundaries:
+            return []
+        return ["-force_key_frames", ",".join(f"{boundary:.3f}" for boundary in boundaries)]
+
+    def _strategy1_split_command(self, timeline_file: Path, split_pattern: Path, boundaries: list[float]) -> list[str]:
+        command = [
+            self.ffmpeg_path,
+            "-y",
+            "-i",
+            str(timeline_file),
+            "-c",
+            "copy",
+            "-f",
+            "segment",
+            "-reset_timestamps",
+            "1",
+        ]
+        if boundaries:
+            command.extend(["-segment_times", ",".join(f"{boundary:.3f}" for boundary in boundaries)])
+        command.append(str(split_pattern))
+        return command
+
+    def _strategy1_timeline_sources(
+        self,
+        sources: list[Path],
+        speed: float,
+        trim_head_seconds: float,
+        trim_tail_seconds: float,
+    ) -> list[_TimelineSource]:
+        timeline_sources: list[_TimelineSource] = []
+        output_cursor = 0.0
+        for index, source in enumerate(sources, start=1):
+            duration = self.video_duration_seconds(source)
+            if duration is None:
+                raise FfmpegError(f"无法读取策略1源视频时长：{source}")
+            start = min(max(trim_head_seconds, 0.0), duration)
+            end = max(start, duration - max(trim_tail_seconds, 0.0))
+            usable = end - start
+            if usable <= 0:
+                continue
+            output_duration = usable / speed
+            timeline_sources.append(
+                _TimelineSource(
+                    file=source,
+                    source_episode_index=index,
+                    start_seconds=start,
+                    end_seconds=end,
+                    output_start_seconds=output_cursor,
+                    output_end_seconds=output_cursor + output_duration,
+                )
+            )
+            output_cursor += output_duration
+        return timeline_sources
+
+    def _strategy1_segment_lengths(
+        self,
+        sources: list[Path],
+        total_seconds: float,
+        segment_seconds: tuple[int, int],
+        min_last_segment_seconds: float,
+    ) -> list[float]:
+        min_seconds, max_seconds = sorted(segment_seconds)
+        if total_seconds <= 0:
+            return []
+        if total_seconds <= max_seconds:
+            return [total_seconds]
+        rng = random.Random(self._strategy1_seed(sources))
+        lengths: list[float] = []
+        remaining = total_seconds
+        while remaining > max_seconds:
+            length = float(rng.randint(min_seconds, max_seconds))
+            lengths.append(length)
+            remaining -= length
+        if remaining < min_last_segment_seconds and lengths:
+            lengths[-1] += remaining
+        else:
+            lengths.append(remaining)
+        return lengths
+
+    @staticmethod
+    def _strategy1_segment_boundaries(segment_lengths: list[float]) -> list[float]:
+        boundaries: list[float] = []
+        cursor = 0.0
+        for length in segment_lengths[:-1]:
+            cursor += length
+            boundaries.append(cursor)
+        return boundaries
+
+    @staticmethod
+    def _strategy1_source_indexes_for_range(
+        timeline_sources: list[_TimelineSource],
+        start_seconds: float,
+        end_seconds: float,
+    ) -> tuple[int, ...]:
+        indexes = [
+            source.source_episode_index
+            for source in timeline_sources
+            if source.output_start_seconds < end_seconds and source.output_end_seconds > start_seconds
+        ]
+        return tuple(dict.fromkeys(indexes))
+
+    def _strategy1_speed(self, sources: list[Path]) -> float:
+        rng = random.Random(self._strategy1_seed(sources))
+        return round(rng.uniform(DRAMA_STRATEGY1_MIN_SPEED, DRAMA_STRATEGY1_MAX_SPEED), 3)
+
+    @staticmethod
+    def _strategy1_seed(sources: list[Path]) -> str:
+        parts = []
+        for source in sources:
+            try:
+                stat = source.stat()
+                parts.append(f"{source.name}:{stat.st_size}:{stat.st_mtime_ns}")
+            except OSError:
+                parts.append(source.name)
+        return "|".join(parts)
+
+    @staticmethod
+    def _audio_atempo_filter(speed: float) -> str:
+        if 0.5 <= speed <= 2.0:
+            return f"atempo={FfmpegProcessor._format_float(speed)}"
+        filters: list[str] = []
+        remaining = speed
+        while remaining > 2.0:
+            filters.append("atempo=2.0")
+            remaining /= 2.0
+        while remaining < 0.5:
+            filters.append("atempo=0.5")
+            remaining /= 0.5
+        filters.append(f"atempo={FfmpegProcessor._format_float(remaining)}")
+        return ",".join(filters)
+
+    @staticmethod
+    def _safe_strategy1_title(value: object) -> str:
+        clean = re.sub(r'[\\/:*?"<>|\r\n\t]+', "", str(value or "").strip())
+        clean = re.sub(r"\s+", "", clean).strip(" ._-")
+        return clean or "短剧"
+
+    @staticmethod
+    def _format_seconds(value: float) -> str:
+        text = f"{value:.3f}"
+        return text.rstrip("0").rstrip(".") if "." in text else text
+
+    @staticmethod
+    def _format_float(value: float) -> str:
+        text = f"{value:.6f}"
+        return text.rstrip("0").rstrip(".") if "." in text else text
 
     def _transcode_command(self, source: Path, target: Path) -> list[str]:
         command = [
@@ -265,6 +551,26 @@ class FfmpegProcessor:
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return None
         return self._positive_float((payload.get("format") or {}).get("duration"))
+
+    def video_has_audio(self, source: Path) -> bool:
+        command = [
+            self.ffprobe_path(),
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            payload = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+            return False
+        return any(stream.get("codec_type") == "audio" for stream in payload.get("streams") or [])
 
     def ffprobe_path(self) -> str:
         ffmpeg = Path(self.ffmpeg_path)

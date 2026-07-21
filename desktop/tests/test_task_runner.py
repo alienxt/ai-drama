@@ -105,6 +105,22 @@ class FakeProcessor:
         return target
 
 
+class Strategy1Processor(FakeProcessor):
+    def __init__(self):
+        super().__init__()
+        self.strategy1_calls = []
+
+    def process_drama_with_strategy1(self, sources: list[Path], target_dir: Path, drama_title: str):
+        self.strategy1_calls.append((sources, target_dir, drama_title))
+        outputs = []
+        for index, source in enumerate(sources, start=1):
+            target = target_dir / f"{drama_title}-策略1第{index:03d}集.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"strategy1-{source.name}")
+            outputs.append(type("Segment", (), {"file": target, "source_episode_indexes": (index,)})())
+        return outputs
+
+
 class LowBitrateProcessor(FakeProcessor):
     def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
         return source.name == "001.mp4"
@@ -196,6 +212,99 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
+
+
+def test_publish_once_runs_strategy1_after_full_download_before_upload(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = Strategy1Processor()
+    publisher = FakePublisher()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(episode["downloadUrl"])
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    strategy_sources, strategy_target_dir, drama_title = processor.strategy1_calls[0]
+    assert [source.name for source in strategy_sources] == ["001.mp4", "002.mp4"]
+    assert strategy_target_dir == drama_download_dir(tmp_path) / "strategy1"
+    assert drama_title == "神医归来"
+    assert [file.parent.name for file in publisher.files] == ["strategy1", "strategy1"]
+    assert [file.name for file in publisher.files] == ["神医归来-策略1第001集.mp4", "神医归来-策略1第002集.mp4"]
+
+
+def test_strategy1_sources_use_parent_download_assets_for_cover_frame(tmp_path):
+    processor = FakeProcessor()
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    download_dir = drama_download_dir(tmp_path)
+    strategy_dir = download_dir / "strategy1"
+    strategy_video = strategy_dir / "神医归来-策略1第001集.mp4"
+    strategy_video.parent.mkdir(parents=True)
+    strategy_video.write_bytes(b"video")
+    cover = download_dir / "fengmian.jpg"
+    cover.write_bytes(b"cover")
+
+    assert runner._cover_file_for_sources([strategy_video]) == cover
+
+
+def test_upload_retry_reads_strategy1_manifest_for_processed_cache(tmp_path):
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    download_strategy_dir = drama_download_dir(tmp_path) / "strategy1"
+    processed_strategy_dir = drama_processed_dir(tmp_path) / "strategy1"
+    download_strategy_dir.mkdir(parents=True)
+    processed_strategy_dir.mkdir(parents=True)
+    cached_file = processed_strategy_dir / "神医归来-策略1第001集.mp4"
+    cached_file.write_bytes(b"processed")
+    manifest = {
+        "files": [
+            {
+                "file": cached_file.name,
+                "episodeIndex": 1,
+                "episode": {
+                    "episodeNo": 1,
+                    "title": "第1-2集",
+                    "sourceEpisodeNumbers": [1, 2],
+                    "sourceEpisodeRange": "1-2",
+                },
+                "sourceEpisodeIndexes": [1, 2],
+            }
+        ]
+    }
+    (download_strategy_dir / ".downloaded-episodes.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
+
+    assert len(items) == 1
+    assert items[0].file == cached_file
+    assert items[0].source_episode_indexes == (1, 2)
+    assert items[0].episode["sourceEpisodeRange"] == "1-2"
 
 
 def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypatch):

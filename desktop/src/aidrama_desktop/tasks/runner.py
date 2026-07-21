@@ -538,9 +538,47 @@ class TaskRunner:
         drama_title: str,
         platform: str,
     ) -> list[EpisodeMediaFile]:
+        source_items = self._prepare_source_items_with_strategy1(source_items, task_id, drama_title)
         if platform == "TIKTOK" and len(source_items) > TIKTOK_MAX_EPISODE_COUNT:
             return self._merge_tiktok_episode_items(source_items, task_id, drama_title)
         return source_items
+
+    def _prepare_source_items_with_strategy1(
+        self,
+        source_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+    ) -> list[EpisodeMediaFile]:
+        process_strategy = getattr(self.processor, "process_drama_with_strategy1", None)
+        if not callable(process_strategy) or not source_items:
+            return source_items
+        target_dir = source_items[0].file.parent / "strategy1"
+        self._notify(f"策略1处理：{drama_title}（重组分集、去头尾、轻微变速）", task_id)
+        try:
+            segments = process_strategy([item.file for item in source_items], target_dir, drama_title)
+        except Exception as exception:  # noqa: BLE001
+            raise RuntimeError(f"策略1视频处理失败：{exception}") from exception
+        if not segments:
+            return source_items
+        strategy_items: list[EpisodeMediaFile] = []
+        for output_index, segment in enumerate(segments, start=1):
+            source_indexes = tuple(int(value) for value in getattr(segment, "source_episode_indexes", ()) or (output_index,))
+            source_episode_numbers = [
+                episode_number(source_items[source_index - 1].episode, source_items[source_index - 1].episode_index)
+                for source_index in source_indexes
+                if 1 <= source_index <= len(source_items)
+            ]
+            source_range = self._source_episode_range_label(source_episode_numbers)
+            episode = {
+                "episodeNo": output_index,
+                "title": f"第{source_range or output_index}集",
+                "sourceEpisodeNumbers": source_episode_numbers,
+                "sourceEpisodeRange": source_range,
+            }
+            strategy_items.append(EpisodeMediaFile(episode, output_index, Path(getattr(segment, "file")), source_indexes))
+        self._write_strategy1_manifest(target_dir, strategy_items, source_items)
+        self._notify(f"策略1处理完成：{drama_title}（{len(strategy_items)} 集）", task_id)
+        return strategy_items
 
     def _prepare_media_files_for_upload(
         self,
@@ -921,7 +959,7 @@ class TaskRunner:
     @staticmethod
     def _source_asset_dir(source_file: Path) -> Path:
         parent = source_file.parent
-        if parent.name == "TK" and parent.parent != parent:
+        if parent.name in {"TK", "strategy1"} and parent.parent != parent:
             return parent.parent
         return parent
 
@@ -1035,10 +1073,10 @@ class TaskRunner:
         return sorted(items, key=lambda item: item.episode_index)
 
     @staticmethod
-    def _episode_media_files_from_manifest(files: list[Path]) -> list[EpisodeMediaFile]:
+    def _episode_media_files_from_manifest(files: list[Path], manifest_dir: Path | None = None) -> list[EpisodeMediaFile]:
         if not files:
             return []
-        manifest = read_download_episode_manifest(files[0].parent)
+        manifest = read_download_episode_manifest(manifest_dir or files[0].parent)
         entries = manifest.get("files")
         if not isinstance(entries, list):
             return []
@@ -1095,7 +1133,12 @@ class TaskRunner:
                     *(directory / "TK" for directory in download_dirs),
                 ]
         else:
-            directories = [*processed_dirs, *download_dirs]
+            directories = [
+                *(directory / "strategy1" for directory in processed_dirs),
+                *(directory / "strategy1" for directory in download_dirs),
+                *processed_dirs,
+                *download_dirs,
+            ]
         for directory in directories:
             files = self._cached_video_files(directory)
             if not files:
@@ -1130,6 +1173,9 @@ class TaskRunner:
         manifest_items = self._episode_media_files_from_manifest(files)
         if manifest_items:
             return manifest_items
+        manifest_items = self._episode_media_files_from_download_cache_manifest(files)
+        if manifest_items:
+            return manifest_items
         original_episodes = download_plan.get("episodes") or []
         if platform == "TIKTOK" and len(original_episodes) > TIKTOK_MAX_EPISODE_COUNT:
             source_items = [
@@ -1152,6 +1198,18 @@ class TaskRunner:
             episode = original_episodes[index - 1] if index <= len(original_episodes) else {"episodeNo": index}
             items.append(EpisodeMediaFile(episode, index, file))
         return items
+
+    def _episode_media_files_from_download_cache_manifest(self, files: list[Path]) -> list[EpisodeMediaFile]:
+        if not files:
+            return []
+        try:
+            relative_parent = files[0].parent.relative_to(self.output_dir())
+        except ValueError:
+            return []
+        manifest_dir = self.input_dir() / relative_parent
+        if manifest_dir == files[0].parent:
+            return []
+        return self._episode_media_files_from_manifest(files, manifest_dir)
 
     @classmethod
     def _effective_download_plan(cls, download_plan: dict, media_items: list[EpisodeMediaFile]) -> dict:
@@ -1245,6 +1303,47 @@ class TaskRunner:
                 for item in media_items
             ],
         }
+
+    @staticmethod
+    def _source_episode_range_label(source_episode_numbers: list[int]) -> str:
+        if not source_episode_numbers:
+            return ""
+        if len(source_episode_numbers) == 1 or source_episode_numbers[0] == source_episode_numbers[-1]:
+            return str(source_episode_numbers[0])
+        return f"{source_episode_numbers[0]}-{source_episode_numbers[-1]}"
+
+    @staticmethod
+    def _write_strategy1_manifest(
+        target_dir: Path,
+        strategy_items: list[EpisodeMediaFile],
+        source_items: list[EpisodeMediaFile],
+    ) -> None:
+        original_episode_numbers = [
+            episode_number(item.episode, item.episode_index)
+            for item in source_items
+        ]
+        write_download_episode_manifest(
+            target_dir,
+            {
+                "version": 1,
+                "strategy": "strategy1",
+                "originalEpisodeCount": len(source_items),
+                "episodeCount": len(strategy_items),
+                "skippedEpisodeCount": 0,
+                "skippedEpisodeNumbers": [],
+                "sourceEpisodeNumbers": original_episode_numbers,
+                "files": [
+                    {
+                        "file": item.file.name,
+                        "episodeIndex": item.episode_index,
+                        "episode": item.episode,
+                        "sourceEpisodeIndexes": list(item.source_episode_indexes or (item.episode_index,)),
+                        "sourceEpisodeNumbers": item.episode.get("sourceEpisodeNumbers") or [],
+                    }
+                    for item in strategy_items
+                ],
+            },
+        )
 
     @staticmethod
     def _episode_publish_metadata(item: EpisodeMediaFile) -> dict[str, Any]:

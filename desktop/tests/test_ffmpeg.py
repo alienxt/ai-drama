@@ -234,6 +234,128 @@ def test_ffmpeg_processor_merges_tiktok_videos_with_concat_file(monkeypatch, tmp
     assert not concat_files[0].exists()
 
 
+def test_ffmpeg_processor_strategy1_resegments_whole_drama_without_orientation_conversion(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    target_dir = tmp_path / "strategy1"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            source = Path(command[-1])
+            duration = "62.0" if source == source_1 else "63.0"
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": duration}}))
+        if "-f" in command and "segment" in command:
+            pattern = Path(command[-1])
+            pattern.parent.mkdir(parents=True, exist_ok=True)
+            for index in range(2):
+                Path(str(pattern).replace("%03d", f"{index:03d}")).write_text(f"segment-{index}")
+            return subprocess.CompletedProcess(command, 0)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("timeline")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    segments = processor.process_drama_with_strategy1(
+        [source_1, source_2],
+        target_dir,
+        drama_title="神医归来",
+        speed=1.0,
+        segment_seconds=(60, 60),
+    )
+
+    assert [segment.file.name for segment in segments] == ["神医归来-策略1第001集.mp4", "神医归来-策略1第002集.mp4"]
+    assert [segment.source_episode_indexes for segment in segments] == [(1,), (2,)]
+    timeline_command = commands[-2]
+    assert "-filter_complex" in timeline_command
+    timeline_filter = timeline_command[timeline_command.index("-filter_complex") + 1]
+    assert "trim=start=1:end=61" in timeline_filter
+    assert "trim=start=1:end=62" in timeline_filter
+    assert "concat=n=2:v=1:a=1" in timeline_filter
+    assert "scale=" not in timeline_filter
+    assert "pad=" not in timeline_filter
+    split_command = commands[-1]
+    assert split_command[split_command.index("-segment_times") + 1] == "60.000"
+
+
+def test_ffmpeg_processor_strategy1_adds_silent_audio_for_sources_without_audio(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    target_dir = tmp_path / "strategy1"
+    source.write_text("video")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe" and "format=duration" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
+        if command[0] == "ffprobe" and "stream=codec_type" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": []}))
+        if "-f" in command and "segment" in command:
+            pattern = Path(command[-1])
+            pattern.parent.mkdir(parents=True, exist_ok=True)
+            Path(str(pattern).replace("%03d", "000")).write_text("segment")
+            return subprocess.CompletedProcess(command, 0)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("timeline")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    processor.process_drama_with_strategy1([source], target_dir, drama_title="无声剧", speed=1.0)
+
+    timeline_command = commands[-2]
+    timeline_filter = timeline_command[timeline_command.index("-filter_complex") + 1]
+    assert "anullsrc=r=48000:cl=stereo" in timeline_filter
+    assert "[0:a]atrim" not in timeline_filter
+
+
+def test_ffmpeg_processor_strategy1_forces_keyframes_at_segment_boundaries(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe" and "format=duration" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
+        if command[0] == "ffprobe" and "stream=codec_type" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"codec_type": "audio"}]}))
+        if "-f" in command and "segment" in command:
+            pattern = Path(command[-1])
+            pattern.parent.mkdir(parents=True, exist_ok=True)
+            for index in range(2):
+                Path(str(pattern).replace("%03d", f"{index:03d}")).write_text("segment")
+            return subprocess.CompletedProcess(command, 0)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("timeline")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    processor.process_drama_with_strategy1(
+        [source_1, source_2],
+        tmp_path / "strategy1",
+        drama_title="神医归来",
+        speed=1.0,
+        segment_seconds=(60, 60),
+    )
+
+    timeline_command = commands[-2]
+    assert timeline_command[timeline_command.index("-force_key_frames") + 1] == "60.000"
+
+
 def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"
