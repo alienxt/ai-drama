@@ -9,6 +9,10 @@ class PlatformPublishPaused(RuntimeError):
     pass
 
 
+class PlatformPublishSubmittedError(RuntimeError):
+    pass
+
+
 class PlatformPublisher(ABC):
     @abstractmethod
     def open_login(self) -> str:

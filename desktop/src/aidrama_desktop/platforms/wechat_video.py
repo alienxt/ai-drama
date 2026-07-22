@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aidrama_desktop.browser.chrome import ChromeController
-from aidrama_desktop.platforms.base import PlatformPublisher
+from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishSubmittedError
 
 
 PLAYLET_SUMMARY_MAX_CHARS = 100
@@ -1409,14 +1409,18 @@ class WeChatVideoPublisher(PlatformPublisher):
                 except RuntimeError as exception:
                     if self._is_final_playlet_submit_closed_result(exception):
                         return
-                    raise
+                    raise PlatformPublishSubmittedError(
+                        "短剧表单已触发确认提审，但确认环节异常，平台可能已接收，请到视频号助手核验。"
+                    ) from exception
                 if self._is_page_blank_or_closed(page):
                     return
                 continue
             self._wait_for_page(page, 1000)
         if submit_clicks == 0:
             raise RuntimeError("短剧表单已唤起，但未找到确认提审/提交审核按钮，任务不会标记完成。")
-        raise RuntimeError("短剧表单已唤起，但未确认提交成功，任务不会标记完成。")
+        raise PlatformPublishSubmittedError(
+            "短剧表单已触发确认提审，但未确认提交成功，平台可能已接收，请到视频号助手核验。"
+        )
 
     def _is_final_playlet_submit_closed_result(self, exception: Exception) -> bool:
         message = str(exception)

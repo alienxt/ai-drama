@@ -25,7 +25,7 @@ from aidrama_desktop.contracts import (
     generate_agreement_number,
     render_contract_material_bundle,
 )
-from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
+from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused, PlatformPublishSubmittedError
 from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator, infer_storyboard_style
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
@@ -60,6 +60,22 @@ VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
 TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
+CONTRACT_MATERIALS_MANIFEST_FILENAME = ".contract-materials.json"
+STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
+MATERIALS_MANIFEST_VERSION = 1
+MATERIAL_METADATA_SINGLE_PATH_KEYS = (
+    "purchaseContractDocx",
+    "costContractDocx",
+    "rightsStatementDocx",
+)
+MATERIAL_METADATA_LIST_PATH_KEYS = (
+    "purchaseContractImages",
+    "costContractImages",
+    "costConfigReportImages",
+    "rightsStatementImages",
+    "buyDramaContractImages",
+    "storyboardImages",
+)
 TIKTOK_COVER_WIDTH = 768
 TIKTOK_COVER_HEIGHT = 1024
 TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
@@ -183,6 +199,16 @@ class TaskRunner:
                     return "cancelled"
                 self._notify(f"上传暂停：{failure_reason}", task_id, task)
                 return "ready-for-review"
+            if isinstance(exception, PlatformPublishSubmittedError):
+                result_task = self.api.put(
+                    f"/desktop/tasks/{task_id}/result",
+                    self._failed_result_payload(str(exception), platform_submitted=True),
+                )
+                if self._is_cancelled_result(result_task):
+                    self._notify("任务已停止，可重新分发", task_id, task)
+                    return "cancelled"
+                self._notify(f"平台已提交后失败：{exception}", task_id, task)
+                return "failed"
             if isinstance(exception, TaskPaused):
                 self.api.post(f"/desktop/tasks/{task_id}/pause", {"deviceId": self.device_id})
                 self._notify("任务已暂停，可恢复执行", task_id, task)
@@ -251,6 +277,16 @@ class TaskRunner:
                     self._notify("任务已停止，可重新分发", task_id, task)
                     return "cancelled"
                 self._notify(f"上传失败：{failure_reason}", task_id, task)
+                return "failed"
+            if isinstance(exception, PlatformPublishSubmittedError):
+                result_task = self.api.put(
+                    f"/desktop/tasks/{task_id}/result",
+                    self._failed_result_payload(str(exception), platform_submitted=True),
+                )
+                if self._is_cancelled_result(result_task):
+                    self._notify("任务已停止，可重新分发", task_id, task)
+                    return "cancelled"
+                self._notify(f"平台已提交后失败：{exception}", task_id, task)
                 return "failed"
             if isinstance(exception, TaskPaused):
                 self.api.post(f"/desktop/tasks/{task_id}/pause", {"deviceId": self.device_id})
@@ -340,6 +376,17 @@ class TaskRunner:
     def _claim_payload(self) -> dict[str, Any]:
         return {"deviceId": self.device_id, "asyncPreparation": True}
 
+    @staticmethod
+    def _failed_result_payload(failure_reason: str, *, platform_submitted: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "success": False,
+            "platformPublishId": None,
+            "failureReason": failure_reason,
+        }
+        if platform_submitted:
+            payload["platformSubmitted"] = True
+        return payload
+
     def _wait_for_task_preparation(self, task: dict) -> None:
         task_id = str(task["id"])
         self._notify("准备AI素材", task_id, task)
@@ -412,18 +459,31 @@ class TaskRunner:
                 configured_style=config.style,
             ),
         )
+        task_output_dir = self._storyboard_task_output_dir(task_id)
+        cached_metadata = self._cached_material_metadata(
+            task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
+            required_keys=("storyboardImages",),
+        )
+        if cached_metadata:
+            images = cached_metadata.get("storyboardImages") or []
+            self._notify(f"复用分镜图：{drama_title}（{len(images)} 张）", task_id)
+            return cached_metadata
+        legacy_images = self._legacy_storyboard_images(task_output_dir)
+        if legacy_images:
+            metadata = {"storyboardImages": legacy_images}
+            self._write_material_metadata_manifest(
+                task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
+                metadata,
+            )
+            self._notify(f"复用分镜图：{drama_title}（{len(legacy_images)} 张）", task_id)
+            return metadata
         item = self._select_storyboard_episode_item(upload_items)
         if item is None:
             return {}
         generator = self.storyboard_generator or StoryboardGenerator(getattr(self.processor, "ffmpeg_path", "ffmpeg"))
         episode_label = self._storyboard_episode_label(item)
         media_account = self._task_media_account_name(task)
-        output_dir = (
-            (self.storyboards_dir or self.work_dir / "storyboards")
-            / "generated"
-            / str(task_id)
-            / self._storyboard_episode_output_name(item)
-        )
+        output_dir = self._storyboard_episode_output_dir(task_id, item)
         self._notify(f"生成分镜图：{drama_title} {episode_label}", task_id)
         images = generator.generate(
             source_video=item.file,
@@ -434,6 +494,10 @@ class TaskRunner:
             config=config,
         )
         self._notify(f"分镜图已生成：{drama_title} {episode_label}（{len(images)} 张）", task_id)
+        self._write_material_metadata_manifest(
+            task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
+            {"storyboardImages": images},
+        )
         return {"storyboardImages": images}
 
     @staticmethod
@@ -477,6 +541,32 @@ class TaskRunner:
             clean = re.sub(INVALID_FILENAME_CHARS_RE, "-", source_range).strip(FILENAME_EDGE_CHARS)
             return f"episode-{clean or item.episode_index}"
         return f"episode-{episode_number(item.episode, item.episode_index)}"
+
+    def _storyboard_task_output_dir(self, task_id: str) -> Path:
+        return (self.storyboards_dir or self.work_dir / "storyboards") / "generated" / str(task_id)
+
+    def _storyboard_episode_output_dir(self, task_id: str, item: EpisodeMediaFile) -> Path:
+        return self._storyboard_task_output_dir(task_id) / self._storyboard_episode_output_name(item)
+
+    def _legacy_storyboard_images(self, task_output_dir: Path) -> list[Path]:
+        if not task_output_dir.exists() or not task_output_dir.is_dir():
+            return []
+        candidates: list[tuple[float, list[Path]]] = []
+        for screenshots_dir in task_output_dir.glob("episode-*/分镜截图"):
+            if not screenshots_dir.is_dir():
+                continue
+            images = sorted(
+                path
+                for pattern in ("*.png", "*.jpg", "*.jpeg")
+                for path in screenshots_dir.glob(pattern)
+                if self._is_ready_material_file(path)
+            )
+            if not images:
+                continue
+            candidates.append((max(path.stat().st_mtime for path in images), images))
+        if not candidates:
+            return []
+        return max(candidates, key=lambda item: item[0])[1]
 
     def _task_media_account_name(self, task: dict) -> str:
         for key in ("mediaAccountName", "mediaAccountDisplayName", "displayName"):
@@ -523,11 +613,18 @@ class TaskRunner:
         *,
         platform: str,
     ) -> dict[str, object]:
+        material_label = "TK合作协议" if platform == "TIKTOK" else "合同材料"
+        output_dir = self._contract_output_dir(task_id)
+        cached_metadata = self._cached_material_metadata(
+            output_dir / CONTRACT_MATERIALS_MANIFEST_FILENAME,
+            required_keys=self._required_contract_material_keys(platform),
+        )
+        if cached_metadata:
+            self._notify(f"复用{material_label}：{drama_title}", task_id)
+            return cached_metadata
         if self.contract_templates is None:
             return {}
-        material_label = "TK合作协议" if platform == "TIKTOK" else "合同材料"
         self._notify(f"生成{material_label}：{drama_title}", task_id)
-        output_dir = (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
         sign_date = (date.today() - timedelta(days=1)).isoformat()
         start_date = generate_contract_start_date(sign_date)
         agreement_number = generate_agreement_number(sign_date)
@@ -552,7 +649,98 @@ class TaskRunner:
             soffice_path=self.soffice_path,
         )
         self._notify(f"{material_label}已生成：{drama_title}", task_id)
-        return bundle.metadata()
+        metadata = bundle.metadata()
+        self._write_material_metadata_manifest(output_dir / CONTRACT_MATERIALS_MANIFEST_FILENAME, metadata)
+        return metadata
+
+    def _contract_output_dir(self, task_id: str) -> Path:
+        return (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
+
+    @staticmethod
+    def _required_contract_material_keys(platform: str) -> tuple[str, ...]:
+        if platform == "WECHAT_VIDEO":
+            return ("buyDramaContractImages", "costConfigReportImages", "rightsStatementImages")
+        if platform == "TIKTOK":
+            return ("purchaseContractImages",)
+        return ()
+
+    def _cached_material_metadata(self, manifest_path: Path, *, required_keys: tuple[str, ...] = ()) -> dict[str, object]:
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if payload.get("version") != MATERIALS_MANIFEST_VERSION:
+            return {}
+        raw_metadata = payload.get("metadata")
+        if not isinstance(raw_metadata, dict):
+            return {}
+        metadata = self._deserialize_material_metadata(raw_metadata)
+        if not metadata:
+            return {}
+        for key in required_keys:
+            value = metadata.get(key)
+            if not value or (isinstance(value, list) and not value):
+                return {}
+        return metadata
+
+    def _write_material_metadata_manifest(self, manifest_path: Path, metadata: dict[str, object]) -> None:
+        serialized = self._serialize_material_metadata(metadata)
+        if not serialized:
+            return
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": MATERIALS_MANIFEST_VERSION,
+                    "metadata": serialized,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _serialize_material_metadata(metadata: dict[str, object]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key in MATERIAL_METADATA_SINGLE_PATH_KEYS:
+            value = metadata.get(key)
+            if isinstance(value, Path):
+                result[key] = str(value)
+        for key in MATERIAL_METADATA_LIST_PATH_KEYS:
+            value = metadata.get(key)
+            if not isinstance(value, (list, tuple)):
+                continue
+            values = [str(path) for path in value if isinstance(path, Path)]
+            if values:
+                result[key] = values
+        return result
+
+    def _deserialize_material_metadata(self, metadata: dict[str, object]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key in MATERIAL_METADATA_SINGLE_PATH_KEYS:
+            value = metadata.get(key)
+            if not value:
+                continue
+            path = Path(str(value))
+            if not self._is_ready_material_file(path):
+                return {}
+            result[key] = path
+        for key in MATERIAL_METADATA_LIST_PATH_KEYS:
+            value = metadata.get(key)
+            if not value:
+                continue
+            if not isinstance(value, list):
+                return {}
+            paths = [Path(str(item)) for item in value]
+            if not paths or any(not self._is_ready_material_file(path) for path in paths):
+                return {}
+            result[key] = paths
+        return result
+
+    @staticmethod
+    def _is_ready_material_file(path: Path) -> bool:
+        return path.exists() and path.is_file() and path.stat().st_size > 0
 
     def _contract_render_input(
         self,

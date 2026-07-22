@@ -7,11 +7,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from collections.abc import Iterable
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
@@ -307,7 +308,7 @@ class StoryboardGenerator:
         selected_indexes = sample_shot_indexes(len(shots), DEFAULT_SCREENSHOT_COUNT)
         selected = {index for index in selected_indexes}
         rendered: list[Path] = []
-        with tempfile.TemporaryDirectory(prefix="aidrama-storyboard-chrome-") as profile_dir:
+        with temporary_chrome_profile_dir() as profile_dir:
             for shot in shots:
                 index = int(shot["index"])
                 if index not in selected:
@@ -342,6 +343,15 @@ class StoryboardGenerator:
                 )
                 rendered.append(screenshot)
         return rendered
+
+
+@contextmanager
+def temporary_chrome_profile_dir() -> Iterator[str]:
+    profile_dir = tempfile.mkdtemp(prefix="aidrama-storyboard-chrome-")
+    try:
+        yield profile_dir
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 def resolve_target_shot_count(target_shots: int | None) -> int:

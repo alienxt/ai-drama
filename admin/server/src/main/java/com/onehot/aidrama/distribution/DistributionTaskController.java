@@ -169,11 +169,13 @@ public class DistributionTaskController {
         if (task.getStatus() == DistributionTaskStatus.CANCELLED) {
             return ApiResponse.ok(task, MDC.get(TraceIdFilter.TRACE_ID));
         }
+        Instant now = Instant.now();
         task.setStatus(request.success() ? DistributionTaskStatus.SUCCEEDED : DistributionTaskStatus.FAILED);
         task.setProgress(request.success() ? 100 : task.getProgress());
         task.setPlatformPublishId(request.platformPublishId());
+        task.setPlatformSubmittedAt(request.success() || Boolean.TRUE.equals(request.platformSubmitted()) ? now : null);
         task.setFailureReason(request.failureReason());
-        task.setFinishedAt(Instant.now());
+        task.setFinishedAt(now);
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
     }
 

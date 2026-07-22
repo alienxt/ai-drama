@@ -45,7 +45,17 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             String dramaId,
             DistributionTaskStatus status
     );
-    long countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+    long countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+            List<String> mediaAccountIds,
+            Instant updatedAt,
+            DistributionTaskStatus status
+    );
+    long countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
+            List<String> mediaAccountIds,
+            Instant platformSubmittedAt,
+            List<DistributionTaskStatus> statuses
+    );
+    long countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
             List<String> mediaAccountIds,
             Instant updatedAt,
             List<DistributionTaskStatus> statuses

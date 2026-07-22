@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from aidrama_desktop.browser.chrome import ChromeController
+from aidrama_desktop.platforms.base import PlatformPublishSubmittedError
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.platforms.wechat_video import (
     PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS,
@@ -1088,7 +1089,7 @@ def test_wechat_video_publisher_does_not_complete_without_submit_confirmation(tm
         def wait_for_timeout(self, _timeout):
             return None
 
-    with pytest.raises(RuntimeError, match="未确认提交成功"):
+    with pytest.raises(PlatformPublishSubmittedError, match="未确认提交成功"):
         publisher._submit_playlet_and_wait_for_success(FakePage(), TimeoutError, success_timeout_seconds=0)
 
     assert any("确认提审" in pattern for pattern, _timeout in clicks)

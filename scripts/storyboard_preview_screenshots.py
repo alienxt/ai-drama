@@ -12,10 +12,11 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 DEFAULT_VIEWPORT_WIDTH = 1470
@@ -759,7 +760,7 @@ def render_screenshots(
     shots = storyboard.get("shots") or []
     shots_by_index = {int(shot["index"]): shot for shot in shots}
     rendered: list[Path] = []
-    with tempfile.TemporaryDirectory(prefix="aidrama-storyboard-chrome-") as profile_dir:
+    with temporary_chrome_profile_dir() as profile_dir:
         for shot_index in selected_shots:
             shot = shots_by_index.get(shot_index)
             if not shot:
@@ -794,6 +795,15 @@ def render_screenshots(
             )
             rendered.append(screenshot_path)
     return rendered
+
+
+@contextmanager
+def temporary_chrome_profile_dir() -> Iterator[str]:
+    profile_dir = tempfile.mkdtemp(prefix="aidrama-storyboard-chrome-")
+    try:
+        yield profile_dir
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 def render_html(storyboard: dict[str, Any], selected_index: int, keyframes_dir: Path) -> str:

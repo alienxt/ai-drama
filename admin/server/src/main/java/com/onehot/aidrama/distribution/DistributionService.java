@@ -61,12 +61,7 @@ public class DistributionService {
             DistributionTaskStatus.PROCESSING,
             DistributionTaskStatus.UPLOADING
     );
-    private static final List<DistributionTaskStatus> DAILY_PUBLISH_COUNT_STATUSES = List.of(
-            DistributionTaskStatus.CLAIMED,
-            DistributionTaskStatus.DOWNLOADING,
-            DistributionTaskStatus.PROCESSING,
-            DistributionTaskStatus.UPLOADING,
-            DistributionTaskStatus.SUCCEEDED,
+    private static final List<DistributionTaskStatus> DAILY_SUBMITTED_FAILURE_STATUSES = List.of(
             DistributionTaskStatus.FAILED,
             DistributionTaskStatus.CANCELLED
     );
@@ -519,16 +514,24 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
-        if (!isRecentRetryTask(task)) {
+        if (!canRetryWithoutDailyPublishLimit(task)) {
             assertDailyPublishLimitAvailable(mediaAccountIdsForTaskPlatform(mediaAccounts, task));
         }
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation);
     }
 
+    private boolean canRetryWithoutDailyPublishLimit(DistributionTask task) {
+        return isRecentRetryTask(task) && !hasPlatformSubmissionMarker(task);
+    }
+
     private boolean isRecentRetryTask(DistributionTask task) {
         Instant createdAt = task.getCreatedAt();
         return createdAt != null && !createdAt.isBefore(Instant.now().minus(DAILY_LIMIT_RECENT_RETRY_WINDOW));
+    }
+
+    private boolean hasPlatformSubmissionMarker(DistributionTask task) {
+        return task.getPlatformSubmittedAt() != null || hasText(task.getPlatformPublishId());
     }
 
     private List<MediaAccount> mediaAccountsWithDailyPublishLimitAvailable(List<MediaAccount> mediaAccounts) {
@@ -555,10 +558,19 @@ public class DistributionService {
     }
 
     private boolean isDailyPublishLimitAvailable(List<String> mediaAccountIds) {
-        long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        Instant dayStart = publishLimitDayStart();
+        long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 mediaAccountIds,
-                publishLimitDayStart(),
-                DAILY_PUBLISH_COUNT_STATUSES
+                dayStart,
+                DistributionTaskStatus.SUCCEEDED
+        ) + taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
+                mediaAccountIds,
+                dayStart,
+                DAILY_SUBMITTED_FAILURE_STATUSES
+        ) + taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
+                mediaAccountIds,
+                dayStart,
+                DAILY_SUBMITTED_FAILURE_STATUSES
         );
         return todayCount < DAILY_PUBLISH_LIMIT;
     }
@@ -609,6 +621,7 @@ public class DistributionService {
         task.setLockedByDeviceId(null);
         task.setFailureReason(null);
         task.setPlatformPublishId(null);
+        task.setPlatformSubmittedAt(null);
         task.setFinishedAt(null);
     }
 
@@ -632,6 +645,7 @@ public class DistributionService {
         task.setLockedByDeviceId(null);
         task.setFailureReason(null);
         task.setPlatformPublishId(null);
+        task.setPlatformSubmittedAt(null);
         task.setFinishedAt(null);
         return taskRepository.save(task);
     }

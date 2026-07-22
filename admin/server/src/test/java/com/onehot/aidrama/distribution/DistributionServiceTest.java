@@ -87,11 +87,76 @@ class DistributionServiceTest {
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
                 .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-1")),
                 any(Instant.class),
                 any()
         )).thenReturn(10L);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
+                .hasMessageContaining("今日发布次数已达 10 次");
+
+        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void claimAllowsWhenOnlyPreSubmitFailuresLeaveDailyLimitAvailable() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+        DistributionTask pending = pendingTask("task-1", "media-1", "drama-1");
+        pending.setPlatform(MediaPlatform.WECHAT_VIDEO);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(9L);
+        when(taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(0L);
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(0L);
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(List.of(pending));
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).isPresent();
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+    }
+
+    @Test
+    void claimRejectsWhenSubmittedFailuresReachDailyPublishLimit() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(9L);
+        when(taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(1L);
 
         assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
                 .hasMessageContaining("今日发布次数已达 10 次");
@@ -115,12 +180,12 @@ class DistributionServiceTest {
         pendingTiktok.setStatus(DistributionTaskStatus.PENDING);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, tiktok));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-wechat")),
                 any(Instant.class),
                 any()
         )).thenReturn(10L);
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-tiktok")),
                 any(Instant.class),
                 any()
@@ -400,6 +465,8 @@ class DistributionServiceTest {
 
         Drama firstDrama = readyDrama("drama-1", "urban");
         Drama secondDrama = readyDrama("drama-2", "urban");
+        firstDrama.setPublishedAt(Instant.parse("2026-07-02T00:00:00Z"));
+        secondDrama.setPublishedAt(Instant.parse("2026-07-01T00:00:00Z"));
         MediaAccount firstMedia = activeMedia("media-1", "owner-1", "urban");
         MediaAccount secondMedia = activeMedia("media-2", "owner-1", "urban");
 
@@ -544,12 +611,12 @@ class DistributionServiceTest {
         MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, tiktok));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-wechat")),
                 any(Instant.class),
                 any()
         )).thenReturn(10L);
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-tiktok")),
                 any(Instant.class),
                 any()
@@ -1044,6 +1111,7 @@ class DistributionServiceTest {
         failed.setProgress(75);
         failed.setFailureReason("upload failed");
         failed.setPlatformPublishId("old-publish");
+        failed.setPlatformSubmittedAt(Instant.now());
         failed.setFinishedAt(Instant.now());
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
@@ -1058,6 +1126,7 @@ class DistributionServiceTest {
         assertThat(task.getProgress()).isZero();
         assertThat(task.getFailureReason()).isNull();
         assertThat(task.getPlatformPublishId()).isNull();
+        assertThat(task.getPlatformSubmittedAt()).isNull();
         assertThat(task.getFinishedAt()).isNull();
     }
 
@@ -1080,7 +1149,7 @@ class DistributionServiceTest {
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
                 .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-1")),
                 any(Instant.class),
                 any()
@@ -1114,7 +1183,7 @@ class DistributionServiceTest {
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(wechat, tiktok));
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-tiktok")),
                 any(Instant.class),
                 any()
@@ -1126,7 +1195,7 @@ class DistributionServiceTest {
         assertThat(task.getMediaAccountId()).isEqualTo("media-tiktok");
         assertThat(task.getPlatform()).isEqualTo(MediaPlatform.TIKTOK);
         assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
-        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(
+        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 eq(List.of("media-wechat")),
                 any(Instant.class),
                 any()
@@ -1159,7 +1228,39 @@ class DistributionServiceTest {
         assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(task.getFailureReason()).isNull();
-        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusIn(any(), any(), any());
+        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(any(), any(), any());
+    }
+
+    @Test
+    void desktopRetryChecksDailyPublishLimitForRecentlySubmittedFailure() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask failed = new DistributionTask();
+        failed.setId("task-1");
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setFailureReason("submitted upload failed");
+        failed.setPlatformSubmittedAt(Instant.now());
+        failed.setFinishedAt(Instant.now());
+        failed.setCreatedAt(Instant.now().minusSeconds(2 * 60 * 60));
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
+        )).thenReturn(10L);
+
+        assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
+                .hasMessageContaining("今日发布次数已达 10 次");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
     }
 
     @Test

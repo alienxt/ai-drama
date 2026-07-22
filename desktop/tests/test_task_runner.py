@@ -200,6 +200,13 @@ class FailingPublisher:
         raise RuntimeError("upload failed")
 
 
+class SubmittedFailingPublisher:
+    def publish(self, media_files, title, summary=None, metadata=None):
+        from aidrama_desktop.platforms.base import PlatformPublishSubmittedError
+
+        raise PlatformPublishSubmittedError("submitted upload failed")
+
+
 class DraftPausedPublisher:
     def publish(self, media_files, title, summary=None, metadata=None):
         from aidrama_desktop.platforms.base import PlatformPublishPaused
@@ -437,6 +444,73 @@ def test_publish_once_generates_storyboard_images_for_contract_upload(tmp_path, 
     assert publisher.metadata["buyDramaContractImages"] == images
     assert ("生成分镜图：神医归来 #2集", "task-1") in progress_events
     assert ("分镜图已生成：神医归来 #2集（2 张）", "task-1") in progress_events
+
+
+def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
+    class StoryboardApi(FakeApi):
+        def get(self, path):
+            self.calls.append(("GET", path, None))
+            if path == "/desktop/storyboard-config":
+                return {
+                    "enabled": True,
+                    "deepseekApiKey": "configured-key",
+                    "targetShots": 15,
+                }
+            return super().get(path)
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(episode["downloadUrl"])
+            files.append(target)
+        return files
+
+    storyboard_task_dir = tmp_path / "storyboards" / "generated" / "task-1"
+    screenshots_dir = storyboard_task_dir / "episode-2" / "分镜截图"
+    screenshots_dir.mkdir(parents=True)
+    images = [
+        screenshots_dir / "分镜-001-完整工作台.png",
+        screenshots_dir / "分镜-002-完整工作台.png",
+    ]
+    for image in images:
+        image.write_bytes(b"png")
+    (storyboard_task_dir / ".storyboard-materials.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "metadata": {
+                    "storyboardImages": [str(path) for path in images],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    api = StoryboardApi()
+    publisher = FakePublisher()
+    generator = FakeStoryboardGenerator()
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        storyboard_generator=generator,
+        storyboards_dir=tmp_path / "storyboards",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert generator.calls == []
+    assert publisher.metadata["storyboardImages"] == images
+    assert publisher.metadata["buyDramaContractImages"] == images
+    assert ("复用分镜图：神医归来（2 张）", "task-1") in progress_events
 
 
 def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypatch):
@@ -1492,6 +1566,72 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
     assert "2026年05月" in purchase_paragraphs[2].text or "2026年06月" in purchase_paragraphs[2].text
 
 
+def test_publish_once_reuses_cached_contract_materials_without_templates(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    contract_dir = tmp_path / "contracts" / "generated" / "task-1"
+    docx_dir = contract_dir / "docx"
+    image_dir = contract_dir / "images"
+    docx_dir.mkdir(parents=True)
+    image_dir.mkdir(parents=True)
+    purchase_docx = docx_dir / "purchase.docx"
+    cost_docx = docx_dir / "cost.docx"
+    rights_docx = docx_dir / "rights.docx"
+    purchase_image = image_dir / "purchase.png"
+    cost_image = image_dir / "cost.png"
+    rights_image = image_dir / "rights.png"
+    for path in (purchase_docx, cost_docx, rights_docx):
+        path.write_bytes(b"docx")
+    for path in (purchase_image, cost_image, rights_image):
+        path.write_bytes(b"png")
+    (contract_dir / ".contract-materials.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "metadata": {
+                    "purchaseContractDocx": str(purchase_docx),
+                    "costContractDocx": str(cost_docx),
+                    "rightsStatementDocx": str(rights_docx),
+                    "purchaseContractImages": [str(purchase_image)],
+                    "buyDramaContractImages": [str(purchase_image)],
+                    "costConfigReportImages": [str(cost_image)],
+                    "rightsStatementImages": [str(rights_image)],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        contract_templates={},
+        contracts_dir=tmp_path / "contracts",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert publisher.metadata["purchaseContractImages"] == [purchase_image]
+    assert publisher.metadata["buyDramaContractImages"] == [purchase_image]
+    assert publisher.metadata["costConfigReportImages"] == [cost_image]
+    assert publisher.metadata["rightsStatementImages"] == [rights_image]
+    assert ("复用合同材料：神医归来", "task-1") in progress_events
+
+
 def test_publish_once_generates_contracts_with_successful_episode_count(tmp_path, monkeypatch):
     from docx import Document
 
@@ -1613,6 +1753,39 @@ def test_publish_once_marks_task_failed_when_upload_fails(tmp_path, monkeypatch)
         "PUT",
         "/desktop/tasks/task-1/result",
         {"success": False, "platformPublishId": None, "failureReason": "upload failed"},
+    ) in api.calls
+
+
+def test_publish_once_marks_task_failed_as_submitted_when_platform_submit_fails(tmp_path, monkeypatch):
+    api = FakeApi()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=SubmittedFailingPublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    result = runner.publish_once()
+
+    assert result == "failed"
+    assert (
+        "PUT",
+        "/desktop/tasks/task-1/result",
+        {
+            "success": False,
+            "platformPublishId": None,
+            "failureReason": "submitted upload failed",
+            "platformSubmitted": True,
+        },
     ) in api.calls
 
 

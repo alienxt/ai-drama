@@ -84,7 +84,7 @@ public class DistributionDtos {
     public record ProgressRequest(DistributionTaskStatus status, int progress, String message) {
     }
 
-    public record ResultRequest(boolean success, String platformPublishId, String failureReason) {
+    public record ResultRequest(boolean success, String platformPublishId, String failureReason, Boolean platformSubmitted) {
     }
 
     public record HeartbeatRequest(String deviceId, String appVersion, String osName, boolean idle) {
