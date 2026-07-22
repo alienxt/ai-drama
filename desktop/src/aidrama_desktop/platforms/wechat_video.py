@@ -310,11 +310,18 @@ class WeChatVideoPublisher(PlatformPublisher):
                 Path(cover_file),
                 [
                     re.compile("剧目海报"),
-                    re.compile("海报"),
-                    re.compile("封面"),
                 ],
                 timeout_error,
                 "剧目海报",
+            )
+            self._set_file_input_near_text(
+                page,
+                Path(cover_file),
+                [
+                    re.compile("推广海报"),
+                ],
+                timeout_error,
+                "推广海报",
             )
 
         self._upload_playlet_contract_materials(page, metadata, timeout_error)
@@ -751,7 +758,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             metadata,
             "buyDramaContractImages",
             "purchaseContractImages",
-            "rightsStatementImages",
+            "storyboardImages",
         )
         if purchase_images:
             self._set_file_input_near_text(
@@ -764,6 +771,22 @@ class WeChatVideoPublisher(PlatformPublisher):
                 ],
                 timeout_error,
                 "剧目制作证明材料",
+            )
+
+        rights_images = self._metadata_paths(metadata, "rightsStatementImages")
+        if rights_images:
+            self._set_file_input_near_text(
+                page,
+                rights_images,
+                [
+                    re.compile("版权采买.*播出授权证明材料"),
+                    re.compile("版权采购.*播出授权证明材料"),
+                    re.compile("播出授权证明材料"),
+                    re.compile("版权采买"),
+                    re.compile("版权采购"),
+                ],
+                timeout_error,
+                "版权采购&播出授权证明材料",
             )
 
         cost_images = self._metadata_paths(metadata, "costConfigReportImages", "costContractImages")
@@ -801,6 +824,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                 metadata,
                 "buyDramaContractImages",
                 "purchaseContractImages",
+                "storyboardImages",
                 "rightsStatementImages",
             )
         )
@@ -2026,8 +2050,10 @@ class WeChatVideoPublisher(PlatformPublisher):
     def _validate_material_upload_file_count(files: list[Path], field_label: str) -> None:
         limits = {
             "剧目海报": 1,
+            "推广海报": 1,
             "成本配置比例情况报告": 1,
             "剧目制作证明材料": 4,
+            "版权采购&播出授权证明材料": 4,
         }
         limit = limits.get(field_label)
         if limit is not None and len(files) > limit:

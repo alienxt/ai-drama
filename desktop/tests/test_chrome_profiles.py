@@ -797,11 +797,17 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
     assert events.index("field:剧目名称") > events.index("option:^其他微短剧$")
     assert events.index("summary") > events.index("option:^其他微短剧$")
     assert material_uploads == [
-        ("剧目海报", tmp_path / "cover.jpg", ["剧目海报", "海报", "封面"]),
+        ("剧目海报", tmp_path / "cover.jpg", ["剧目海报"]),
+        ("推广海报", tmp_path / "cover.jpg", ["推广海报"]),
         (
             "剧目制作证明材料",
-            [purchase_image, rights_image],
+            [purchase_image],
             ["剧目制作证明材料", "制作证明材料", "剧目制作合同"],
+        ),
+        (
+            "版权采购&播出授权证明材料",
+            [rights_image],
+            ["版权采买.*播出授权证明材料", "版权采购.*播出授权证明材料", "播出授权证明材料", "版权采买", "版权采购"],
         ),
         ("成本配置比例情况报告", [cost_image], ["成本配置比例情况报告", "成本配置比例", "成本配置报告"]),
     ]

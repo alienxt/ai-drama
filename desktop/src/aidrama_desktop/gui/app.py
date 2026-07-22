@@ -1161,7 +1161,7 @@ class DesktopWindow(QMainWindow):
         panel_layout.addLayout(form)
         hint = QLabel(
             "全剧按集序接成一条时间线，在切分区间内滚动切出新集；"
-            "剩余不足 30 秒会并入上一集。横竖互换默认不启用。"
+            "剩余不足 30 秒会并入上一集。横竖互换默认启用并使用黑边填充。"
         )
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)

@@ -169,8 +169,8 @@ class ContractMaterialBundle:
                 result["rightsStatementDocx"] = material.docx_path
                 result["rightsStatementImages"] = material.image_paths
                 rights_images = material.image_paths
-        if purchase_images or rights_images:
-            result["buyDramaContractImages"] = [*purchase_images, *rights_images]
+        if purchase_images:
+            result["buyDramaContractImages"] = purchase_images
         return result
 
 

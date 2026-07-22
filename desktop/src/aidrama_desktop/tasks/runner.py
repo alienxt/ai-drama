@@ -669,7 +669,6 @@ class TaskRunner:
         drama_title: str,
         platform: str,
     ) -> list[EpisodeMediaFile]:
-        source_items = self._prepare_source_items_with_strategy1(source_items, task_id, drama_title)
         if self._should_reassemble_episode_items(source_items):
             source_items = self._reassemble_episode_items(source_items, task_id, drama_title)
         if platform == "TIKTOK" and len(source_items) > TIKTOK_MAX_EPISODE_COUNT:

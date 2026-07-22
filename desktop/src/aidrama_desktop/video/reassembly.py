@@ -19,7 +19,7 @@ class VideoReassemblyConfig:
     trim_tail_seconds: float = 1.0
     speed_min_percent: float = 2.0
     speed_max_percent: float = 5.0
-    swap_orientation: bool = False
+    swap_orientation: bool = True
     tail_merge_threshold_seconds: float = 30.0
 
     @property
@@ -80,7 +80,7 @@ class VideoReassemblyConfig:
         if not self.enabled:
             return "不启用"
         config = self.normalized()
-        swap_text = "横竖互换" if config.swap_orientation else "不横竖互换"
+        swap_text = "横竖互换黑边填充" if config.swap_orientation else "不横竖互换"
         speed_text = (
             f"变速{config.speed_min_percent:g}%"
             if config.speed_min_percent == config.speed_max_percent

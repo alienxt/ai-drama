@@ -537,7 +537,7 @@ class FfmpegProcessor:
     def _wechat_video_frame_filter(width: int, height: int) -> str:
         return (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
             "setsar=1,format=yuv420p"
         )
 

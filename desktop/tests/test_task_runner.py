@@ -258,7 +258,7 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
 
-def test_publish_once_runs_strategy1_after_full_download_before_upload(tmp_path, monkeypatch):
+def test_publish_once_does_not_run_strategy1_before_upload(tmp_path, monkeypatch):
     api = FakeApi()
     processor = Strategy1Processor()
     publisher = FakePublisher()
@@ -284,12 +284,12 @@ def test_publish_once_runs_strategy1_after_full_download_before_upload(tmp_path,
 
     assert runner.publish_once() == "succeeded"
 
-    strategy_sources, strategy_target_dir, drama_title = processor.strategy1_calls[0]
-    assert [source.name for source in strategy_sources] == ["001.mp4", "002.mp4"]
-    assert strategy_target_dir == drama_download_dir(tmp_path) / "strategy1"
-    assert drama_title == "神医归来"
-    assert [file.parent.name for file in publisher.files] == ["strategy1", "strategy1"]
-    assert [file.name for file in publisher.files] == ["神医归来-策略1第001集.mp4", "神医归来-策略1第002集.mp4"]
+    assert processor.strategy1_calls == []
+    assert [file.parent.name for file in publisher.files] == [
+        drama_download_dir(tmp_path).name,
+        drama_download_dir(tmp_path).name,
+    ]
+    assert [file.name for file in publisher.files] == ["001.mp4", "002.mp4"]
 
 
 def test_strategy1_sources_use_parent_download_assets_for_cover_frame(tmp_path):
@@ -1395,10 +1395,10 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
     assert publisher.metadata["rightsStatementDocx"].exists()
     assert len(publisher.metadata["purchaseContractImages"]) == 1
     assert len(publisher.metadata["rightsStatementImages"]) == 1
-    assert len(publisher.metadata["buyDramaContractImages"]) == 2
+    assert len(publisher.metadata["buyDramaContractImages"]) == 1
     assert len(publisher.metadata["costConfigReportImages"]) == 1
     assert publisher.metadata["buyDramaContractImages"][0].exists()
-    assert publisher.metadata["buyDramaContractImages"][1].exists()
+    assert publisher.metadata["rightsStatementImages"][0].exists()
     assert publisher.metadata["costConfigReportImages"][0].exists()
     purchase_number = Document(publisher.metadata["purchaseContractDocx"]).paragraphs[0].text.split()[1]
     cost_number = Document(publisher.metadata["costContractDocx"]).paragraphs[0].text.split()[1]

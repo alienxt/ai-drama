@@ -120,4 +120,4 @@ def test_video_reassembly_config_store_uses_screenshot_defaults(tmp_path: Path):
     assert config.trim_tail_seconds == 1.0
     assert config.speed_min_percent == 2.0
     assert config.speed_max_percent == 5.0
-    assert config.swap_orientation is False
+    assert config.swap_orientation is True

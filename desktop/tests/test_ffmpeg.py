@@ -416,6 +416,46 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
     assert not concat_files[0].exists()
 
 
+def test_ffmpeg_processor_reassembly_swaps_orientation_with_black_padding(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe" and "stream=width,height" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 720, "height": 1280}]}),
+            )
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        commands.append(command)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("video")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+    processor.reassemble_videos(
+        [VideoReassemblySourceClip(source, 1.0, 60.0)],
+        [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+        timeline,
+        speed_factor=1.0,
+        swap_orientation=True,
+    )
+
+    timeline_command = commands[0]
+    assert timeline_command[timeline_command.index("-vf") + 1] == (
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,format=yuv420p"
+    )
+
+
 def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"
