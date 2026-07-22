@@ -1923,6 +1923,7 @@ class TaskRunner:
             for path in directory.iterdir()
             if path.is_file()
             and path.suffix.lower() in {".mp4", ".mov", ".m4v"}
+            and not path.name.startswith(".")
             and not path.name.endswith(".part")
         ]
         return sorted(files, key=lambda path: path.name)

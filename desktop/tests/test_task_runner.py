@@ -16,6 +16,7 @@ from aidrama_desktop.tasks.runner import (
     download_episodes,
     drama_directory_name,
     episode_video_filename,
+    write_download_episode_manifest,
 )
 from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
@@ -1201,6 +1202,49 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
     assert manifest["files"][-1]["episode"]["sourceEpisodeRange"] == "2"
+
+
+def test_upload_cache_ignores_hidden_reassembly_full_video(tmp_path):
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(method="fixed"),
+    )
+    final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
+    final_dir.mkdir(parents=True)
+    hidden_full = final_dir / ".神医归来-full.mp4"
+    hidden_full.write_bytes(b"0" * (600 * 1024 * 1024))
+    first = final_dir / "神医归来-第1集.mp4"
+    second = final_dir / "神医归来-第2集.mp4"
+    first.write_bytes(b"video-1")
+    second.write_bytes(b"video-2")
+    write_download_episode_manifest(
+        final_dir,
+        {
+            "files": [
+                {
+                    "file": first.name,
+                    "episodeIndex": 1,
+                    "episode": {"episodeNo": 1, "title": "第1集"},
+                    "sourceEpisodeIndexes": [1],
+                },
+                {
+                    "file": second.name,
+                    "episodeIndex": 2,
+                    "episode": {"episodeNo": 2, "title": "第2集"},
+                    "sourceEpisodeIndexes": [1],
+                },
+            ]
+        },
+    )
+
+    items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
+
+    assert [item.file for item in items] == [first, second]
+    assert hidden_full not in [item.file for item in items]
 
 
 def test_reassembly_outputs_final_upload_files_with_cover_frame(tmp_path):
