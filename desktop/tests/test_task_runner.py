@@ -1197,11 +1197,67 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v3"
+    assert manifest["reassemblyVersion"] == "video-reassembly-v4"
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
     assert manifest["files"][-1]["episode"]["sourceEpisodeRange"] == "2"
+
+
+def test_reassembly_cache_rebuilds_low_bitrate_segments(tmp_path):
+    class ReassemblyBitrateProcessor(FakeProcessor):
+        def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
+            return source.name.startswith("神医归来-第")
+
+    processor = ReassemblyBitrateProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"video-1")
+    processor.durations = {"001.mp4": 62.0}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=50.0,
+            segment_max_seconds=50.0,
+            trim_head_seconds=1.0,
+            trim_tail_seconds=1.0,
+            speed_min_percent=2.0,
+            speed_max_percent=2.0,
+        ),
+    )
+    items = [EpisodeMediaFile({"episodeNo": 1}, 1, source)]
+    runner._prepare_source_items_for_platform(items, "task-1", "神医归来", "WECHAT_VIDEO")
+    processor.reassemble_calls.clear()
+
+    runner._prepare_source_items_for_platform(items, "task-2", "神医归来", "WECHAT_VIDEO")
+
+    assert processor.reassemble_calls
+
+
+def test_final_upload_video_still_transcodes_low_bitrate_for_wechat(tmp_path):
+    processor = LowBitrateProcessor()
+    source_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"low-bitrate")
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    item = EpisodeMediaFile({"episodeNo": 1, "finalUploadVideo": True}, 1, source)
+
+    upload_items = runner._prepare_media_files_for_upload([item], "task-1", "神医归来", 1, "WECHAT_VIDEO")
+
+    assert processor.calls
+    assert upload_items[0].file != source
 
 
 def test_upload_cache_ignores_hidden_reassembly_full_video(tmp_path):

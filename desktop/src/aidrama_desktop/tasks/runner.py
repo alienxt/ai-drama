@@ -32,8 +32,11 @@ from aidrama_desktop.video.ffmpeg import (
     VideoReassemblySegment,
     VideoReassemblySourceClip,
     WECHAT_VIDEO_COVER_FRAME_VERSION,
+    WECHAT_VIDEO_MIN_BITRATE_BPS,
     WECHAT_VIDEO_MIN_HEIGHT,
     WECHAT_VIDEO_MIN_WIDTH,
+    WECHAT_VIDEO_TARGET_BITRATE,
+    WECHAT_VIDEO_TRANSCODE_VERSION,
 )
 from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
@@ -54,7 +57,7 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v3"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v4"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
@@ -1077,6 +1080,13 @@ class TaskRunner:
                 "avoidOriginalEpisodeCount": True,
                 "originalEpisodeCount": original_episode_count,
             },
+            "output": {
+                "wechatVideoTranscodeVersion": WECHAT_VIDEO_TRANSCODE_VERSION,
+                "targetBitrate": WECHAT_VIDEO_TARGET_BITRATE,
+                "minBitrateBps": WECHAT_VIDEO_MIN_BITRATE_BPS,
+                "minWidth": WECHAT_VIDEO_MIN_WIDTH,
+                "minHeight": WECHAT_VIDEO_MIN_HEIGHT,
+            },
             "sources": sources,
         }
 
@@ -1165,6 +1175,7 @@ class TaskRunner:
         return all(
             self._is_ready_upload_file(segment.target)
             and self._processed_media_signature_matches(segment.target, signature)
+            and not self._needs_wechat_video_bitrate_transcode(segment.target)
             for segment in segments
         )
 
@@ -1334,9 +1345,16 @@ class TaskRunner:
                     )
                 self._notify(f"跳过：{drama_title} {message}", task_id)
                 continue
-            source_needs_bitrate_transcode = False if final_upload_video else self._needs_wechat_video_bitrate_transcode(source_file)
-            source_needs_resolution_transcode = False if final_upload_video else self._needs_wechat_video_resolution_transcode(source_file)
-            source_needs_transcode = False if final_upload_video else self._needs_wechat_video_transcode(source_file)
+            should_validate_wechat_specs = platform == "WECHAT_VIDEO" or not final_upload_video
+            source_needs_bitrate_transcode = (
+                self._needs_wechat_video_bitrate_transcode(source_file) if should_validate_wechat_specs else False
+            )
+            source_needs_resolution_transcode = (
+                self._needs_wechat_video_resolution_transcode(source_file)
+                if should_validate_wechat_specs and not final_upload_video
+                else False
+            )
+            source_needs_transcode = source_needs_bitrate_transcode or source_needs_resolution_transcode
             source_needs_tiktok_upload_transcode = (
                 False
                 if final_upload_video
