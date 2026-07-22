@@ -5,6 +5,10 @@ import java.util.Random;
 import java.util.zip.CRC32;
 
 public final class DramaDurationEstimator {
+    private static final int MIN_COST_AMOUNT_WAN = 2;
+    private static final int MAX_COST_AMOUNT_WAN = 20;
+    private static final int COST_STEP_MINUTES = 10;
+
     private DramaDurationEstimator() {
     }
 
@@ -29,8 +33,8 @@ public final class DramaDurationEstimator {
     }
 
     public static int estimateCostAmountWan(int totalMinutes) {
-        int cost = (int) Math.ceil(Math.max(totalMinutes, 1) / 30.0);
-        return Math.max(1, Math.min(5, cost));
+        int cost = (int) Math.ceil(Math.max(totalMinutes, 1) / (double) COST_STEP_MINUTES);
+        return Math.max(MIN_COST_AMOUNT_WAN, Math.min(MAX_COST_AMOUNT_WAN, cost));
     }
 
     public static int estimateCostAmountWan(Drama drama) {

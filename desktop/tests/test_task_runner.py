@@ -1,5 +1,6 @@
 import io
 import json
+import random
 import threading
 import time
 import urllib.error
@@ -114,8 +115,9 @@ class FakeProcessor:
         *,
         speed_factor: float = 1.0,
         swap_orientation: bool = False,
+        cover_path: Path | None = None,
     ) -> list[Path]:
-        self.reassemble_calls.append((clips, segments, timeline, speed_factor, swap_orientation))
+        self.reassemble_calls.append((clips, segments, timeline, speed_factor, swap_orientation, cover_path))
         timeline.parent.mkdir(parents=True, exist_ok=True)
         timeline.write_bytes(b"timeline")
         for segment in segments:
@@ -211,6 +213,18 @@ class CapturingPausedPublisher(FakePublisher):
         from aidrama_desktop.platforms.base import PlatformPublishPaused
 
         raise PlatformPublishPaused("TK 表单已填写并停留在提交前，等待人工核验后手动提交。")
+
+
+def test_task_media_account_name_defaults_to_user_1182(tmp_path):
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    assert runner._task_media_account_name({}) == "用户1182"
 
 
 def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeypatch):
@@ -1089,24 +1103,90 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
         "WECHAT_VIDEO",
     )
 
-    assert len(reassembled) == 2
-    clips, segments, timeline, speed_factor, swap_orientation = processor.reassemble_calls[0]
+    assert len(reassembled) == 50
+    clips, segments, timeline, speed_factor, swap_orientation, cover_path = processor.reassemble_calls[0]
     assert [clip.path for clip in clips] == [first, second]
     assert [clip.start_seconds for clip in clips] == [1.0, 1.0]
     assert [clip.duration_seconds for clip in clips] == [60.0, 60.0]
-    assert [round(segment.duration_seconds, 3) for segment in segments] == [50.0, 67.647]
-    assert timeline == source_dir / "reassembled" / ".神医归来-full.mp4"
+    assert len(segments) == 50
+    assert sum(segment.duration_seconds for segment in segments) == pytest.approx(120.0 / 1.02)
+    assert all(segment.duration_seconds > 0 for segment in segments)
+    final_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
+    assert timeline == final_dir / ".神医归来-full.mp4"
     assert speed_factor == pytest.approx(1.02)
     assert swap_orientation is False
-    assert reassembled[0].file == source_dir / "reassembled" / "神医归来-重组第001集.mp4"
+    assert cover_path is None
+    assert reassembled[0].file == final_dir / "神医归来-重组第001集.mp4"
     assert reassembled[0].source_episode_indexes == (1,)
-    assert reassembled[1].source_episode_indexes == (1, 2)
-    assert reassembled[1].episode["sourceEpisodeNumbers"] == [1, 2]
+    assert reassembled[-1].source_episode_indexes == (2,)
+    assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
-    manifest = json.loads((source_dir / "reassembled" / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v1"
-    assert manifest["episodeCount"] == 2
-    assert manifest["files"][1]["episode"]["sourceEpisodeRange"] == "1-2"
+    manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
+    assert manifest["reassemblyVersion"] == "video-reassembly-v2"
+    assert manifest["originalEpisodeCount"] == 2
+    assert manifest["episodeCount"] == 50
+    assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
+    assert manifest["files"][-1]["episode"]["sourceEpisodeRange"] == "2"
+
+
+def test_reassembly_outputs_final_upload_files_with_cover_frame(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    first = source_dir / "001.mp4"
+    first.write_bytes(b"video-1")
+    cover = source_dir / "fengmian.jpg"
+    cover.write_bytes(b"cover")
+    processor.durations = {"001.mp4": 62.0}
+    processor.dimensions = {"神医归来-重组第001集.mp4": (1282, 720)}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=60.0,
+            segment_max_seconds=60.0,
+            trim_head_seconds=1.0,
+            trim_tail_seconds=1.0,
+            speed_min_percent=0.0,
+            speed_max_percent=0.0,
+            swap_orientation=True,
+        ),
+    )
+
+    source_items = [EpisodeMediaFile({"episodeNo": 1}, 1, first)]
+    reassembled = runner._prepare_source_items_for_platform(
+        source_items,
+        "task-1",
+        "神医归来",
+        "WECHAT_VIDEO",
+    )
+    upload_items = runner._prepare_media_files_for_upload(
+        reassembled,
+        "task-1",
+        "神医归来",
+        original_episode_count=1,
+        platform="WECHAT_VIDEO",
+    )
+
+    final_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
+    assert upload_items == reassembled
+    assert len(upload_items) == 50
+    assert upload_items[0].file.parent == final_dir
+    assert upload_items[0].episode["coverFrameApplied"] is True
+    assert processor.reassemble_calls[0][-1] == cover
+    assert processor.calls == []
+
+
+def test_reassembly_target_count_stays_in_range_and_avoids_original_count():
+    config = VideoReassemblyConfig(segment_min_seconds=60.0, segment_max_seconds=60.0)
+
+    assert TaskRunner._video_reassembly_target_episode_count(600.0, config, random.Random(1), 10) == 50
+    assert TaskRunner._video_reassembly_target_episode_count(3000.0, config, random.Random(1), 50) == 51
+    assert TaskRunner._video_reassembly_target_episode_count(7200.0, config, random.Random(1), 120) == 119
+    assert TaskRunner._video_reassembly_target_episode_count(12000.0, config, random.Random(1), 200) == 120
 
 
 def test_tiktok_upload_retry_uses_cached_merged_videos_without_processing(tmp_path, monkeypatch):

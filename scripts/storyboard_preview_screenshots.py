@@ -26,6 +26,42 @@ MATERIAL_MANIFEST_NAME = "分镜材料清单.json"
 DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_STYLE = "真人风格-国产都市"
+DEFAULT_MEDIA_ACCOUNT_NAME = "用户1182"
+COSTUME_STYLE = "真人风格-古代"
+DEFAULT_RANDOM_TARGET_SHOTS_MIN = 15
+DEFAULT_RANDOM_TARGET_SHOTS_MAX = 20
+DEFAULT_SCREENSHOT_COUNT = 3
+SUMMARY_MIN_CHARS = 150
+SUMMARY_MAX_CHARS = 300
+COSTUME_STYLE_KEYWORDS = (
+    "古风",
+    "古代",
+    "穿越",
+    "旧朝",
+    "东宫",
+    "宫",
+    "皇",
+    "帝",
+    "王爷",
+    "王妃",
+    "太子",
+    "公主",
+    "将军",
+    "侯府",
+    "世子",
+    "殿下",
+    "陛下",
+    "娘娘",
+    "江湖",
+    "剑",
+    "仙",
+    "修仙",
+    "玄幻",
+    "宗门",
+    "灵根",
+    "长生",
+    "圣杖",
+)
 
 
 @dataclass(frozen=True)
@@ -92,7 +128,7 @@ def main() -> None:
         )
         shots = storyboard.get("shots") or []
 
-    selected_shots = parse_selected_shots(args.shots, manifest, len(shots))
+    selected_shots = parse_selected_shots(args.shots, manifest, len(shots), args.screenshot_count)
     viewport = {
         "width": int((manifest.get("viewport") or {}).get("width") or DEFAULT_VIEWPORT_WIDTH),
         "height": int((manifest.get("viewport") or {}).get("height") or DEFAULT_VIEWPORT_HEIGHT),
@@ -131,13 +167,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--shots",
         default="",
-        help="要截图的分镜编号，逗号分隔；传 all 生成全部；默认读取清单，否则取首/中/尾三张。",
+        help="要截图的分镜编号，逗号分隔；传 all 生成全部；默认读取清单，否则随机抽 3 张。",
     )
     parser.add_argument(
         "--segment-seconds",
         type=float,
-        default=15.0,
-        help="无 storyboard 时的自动切分秒数，默认 15。",
+        help="无 storyboard 时按固定秒数切分；不传时默认随机生成 15-20 个分镜段。",
     )
     parser.add_argument(
         "--target-shots",
@@ -145,14 +180,20 @@ def parse_args() -> argparse.Namespace:
         help="无 storyboard 时固定生成的分镜数量；设置后优先于 --segment-seconds。",
     )
     parser.add_argument(
+        "--screenshot-count",
+        type=int,
+        default=DEFAULT_SCREENSHOT_COUNT,
+        help="未指定 --shots 且清单无截图配置时随机生成的工程截图数量，默认 3。",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("output/storyboard-preview"),
         help="输出目录，默认 output/storyboard-preview。",
     )
-    parser.add_argument("--media-account", default="", help="截图顶部显示的媒体号/用户名。")
+    parser.add_argument("--media-account", default="", help="截图顶部显示的媒体号/用户名；不传则显示用户1182。")
     parser.add_argument("--points-balance", default="", help="截图顶部显示的积分余额；为空则按任务随机。")
-    parser.add_argument("--style", default=DEFAULT_STYLE, help="截图顶部显示的风格。")
+    parser.add_argument("--style", default="", help="截图顶部显示的风格；不传则根据视频名推断。")
     parser.add_argument("--deepseek", action="store_true", help="调用 DeepSeek 补全分镜标题、概要和画面要素。")
     parser.add_argument("--deepseek-model", default=DEFAULT_DEEPSEEK_MODEL, help="DeepSeek 模型名。")
     parser.add_argument("--deepseek-api-base", default=DEFAULT_DEEPSEEK_API_BASE, help="DeepSeek API base URL。")
@@ -170,40 +211,38 @@ def load_json(path: Path) -> Any:
         raise SystemExit(f"JSON 格式错误：{path}: {exception}") from exception
 
 
-def parse_selected_shots(raw: str, manifest: dict[str, Any], total_shots: int) -> list[int]:
+def parse_selected_shots(raw: str, manifest: dict[str, Any], total_shots: int, screenshot_count: int) -> list[int]:
     if raw.strip():
         if raw.strip().lower() == "all":
             return list(range(1, total_shots + 1))
         return [int(part.strip()) for part in raw.split(",") if part.strip()]
+    if screenshot_count <= 0:
+        raise SystemExit("--screenshot-count 必须大于 0。")
     manifest_screenshots = manifest.get("screenshots") or []
     selected = [int(item["shotIndex"]) for item in manifest_screenshots if item.get("shotIndex")]
     if selected:
         return [index for index in selected if 1 <= index <= total_shots]
-    return sample_shot_indexes(total_shots)
+    return sample_shot_indexes(total_shots, screenshot_count)
 
 
-def sample_shot_indexes(total_shots: int) -> list[int]:
-    if total_shots <= 0:
+def sample_shot_indexes(total_shots: int, count: int = DEFAULT_SCREENSHOT_COUNT) -> list[int]:
+    if total_shots <= 0 or count <= 0:
         return []
-    candidates = [1, max(1, math.ceil(total_shots / 2)), total_shots]
-    selected: list[int] = []
-    for index in candidates:
-        if index not in selected:
-            selected.append(index)
-    return selected
+    sample_size = min(total_shots, count)
+    return sorted(random.sample(range(1, total_shots + 1), sample_size))
 
 
 def build_storyboard_from_video(
     ffmpeg_path: str,
     video_path: Path,
     *,
-    segment_seconds: float,
+    segment_seconds: float | None,
     target_shots: int | None,
     media_account: str,
     points_balance: str,
     style: str,
 ) -> dict[str, Any]:
-    if segment_seconds <= 0:
+    if segment_seconds is not None and segment_seconds <= 0:
         raise SystemExit("--segment-seconds 必须大于 0。")
     probe = probe_video(ffmpeg_path, video_path)
     duration = float(probe.get("duration") or 0)
@@ -214,9 +253,15 @@ def build_storyboard_from_video(
     fps = float(probe.get("fps") or 30)
     aspect_ratio = aspect_ratio_label(width, height)
     title, episode_label, episode_number = infer_title_and_episode(video_path)
+    style = infer_storyboard_style(title=title, configured_style=style)
     if target_shots is not None and target_shots <= 0:
         raise SystemExit("--target-shots 必须大于 0。")
-    total = target_shots or max(1, math.ceil(duration / segment_seconds))
+    if target_shots:
+        total = target_shots
+    elif segment_seconds:
+        total = max(1, math.ceil(duration / segment_seconds))
+    else:
+        total = random.randint(DEFAULT_RANDOM_TARGET_SHOTS_MIN, DEFAULT_RANDOM_TARGET_SHOTS_MAX)
     actual_segment_seconds = duration / total
     shots = []
     for offset in range(total):
@@ -273,8 +318,8 @@ def build_storyboard_from_video(
         "workspace": {
             "scriptName": title,
             "episodeLabel": episode_label,
-            "style": style or DEFAULT_STYLE,
-            "username": media_account or "未绑定媒体号",
+            "style": style,
+            "username": media_account or DEFAULT_MEDIA_ACCOUNT_NAME,
             "pointsBalance": points_balance or random_points_balance(),
             "promptPoints": 0.056,
             "generationPoints": 151,
@@ -288,6 +333,16 @@ def build_storyboard_from_video(
 
 def random_points_balance() -> str:
     return f"{random.uniform(2000, 18000):.3f}"
+
+
+def infer_storyboard_style(*, title: str = "", summary: str = "", configured_style: str = "") -> str:
+    configured = str(configured_style or "").strip()
+    if configured and configured != DEFAULT_STYLE:
+        return configured
+    text = f"{title or ''} {summary or ''}".lower()
+    if any(keyword.lower() in text for keyword in COSTUME_STYLE_KEYWORDS):
+        return COSTUME_STYLE
+    return configured or DEFAULT_STYLE
 
 
 def enrich_storyboard_with_deepseek(
@@ -313,6 +368,7 @@ def build_deepseek_storyboard_request(storyboard: dict[str, Any], model: str) ->
     drama = storyboard.get("drama") or {}
     episode = storyboard.get("episode") or {}
     source = storyboard.get("source") or {}
+    workspace = storyboard.get("workspace") or {}
     shots = storyboard.get("shots") or []
     compact_shots = [
         {
@@ -335,7 +391,8 @@ def build_deepseek_storyboard_request(storyboard: dict[str, Any], model: str) ->
             "输出必须是一个 JSON object。",
             "shots 数量必须与输入一致，index 必须一一对应。",
             "title 控制在 4-8 个中文字符，最终页面会自动加 1-index 前缀时也要自然。",
-            "summary 控制在 30-60 个中文字符，适合放入分镜概要。",
+            f"summary 控制在 {SUMMARY_MIN_CHARS}-{SUMMARY_MAX_CHARS} 个中文字符，至少达到原合格长度的 5 倍；"
+            "重点补足人物状态、动作推进、环境氛围、镜头关系和剧情张力。",
             "characters、scene、props 都输出字符串数组；不知道时可以输出空数组。",
             "shotSize 只能从：全景、中景、中近景、近景、特写 里选。",
             "cameraAngle 只能从：平视、俯视、仰视、侧面 里选。",
@@ -346,6 +403,7 @@ def build_deepseek_storyboard_request(storyboard: dict[str, Any], model: str) ->
         "input": {
             "dramaTitle": drama.get("title") or drama.get("sourceTitle"),
             "episodeLabel": episode.get("title"),
+            "style": workspace.get("style"),
             "source": {
                 "duration": source.get("duration"),
                 "width": source.get("width"),
@@ -364,7 +422,7 @@ def build_deepseek_storyboard_request(storyboard: dict[str, Any], model: str) ->
                 {
                     "index": 1,
                     "title": "分镜标题",
-                    "summary": "分镜概要",
+                    "summary": "150-300字分镜概要",
                     "characters": ["人物"],
                     "scene": ["场景"],
                     "props": ["道具"],
@@ -769,6 +827,7 @@ def render_html(storyboard: dict[str, Any], selected_index: int, keyframes_dir: 
 
     title = str(selected.get("title") or f"1-{selected_index}")
     summary = str(selected.get("summary") or selected.get("inferredPrompt") or "")
+    summary_counter = f"{len(summary)}/{SUMMARY_MAX_CHARS}"
     characters = selected.get("characters") or []
     scenes = selected.get("scene") or []
     props = selected.get("props") or []
@@ -847,7 +906,7 @@ def render_html(storyboard: dict[str, Any], selected_index: int, keyframes_dir: 
     .counter {{ color: #8b95a7; }}
     .editor-body {{ flex: 1; overflow: hidden; padding: 14px 16px; }}
     .section-title {{ font-weight: 800; margin: 0 0 8px; font-size: 15px; }}
-    .summary-box {{ width: 100%; height: 114px; border: 1px solid #dfe5ee; border-radius: 8px; padding: 12px; line-height: 1.55; color: #243047; resize: none; font: inherit; }}
+    .summary-box {{ width: 100%; height: 114px; border: 1px solid #dfe5ee; border-radius: 8px; padding: 12px; line-height: 1.55; color: #243047; resize: none; font: inherit; overflow: hidden; }}
     .element-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }}
     .metric {{ height: 34px; border: 1px solid #cda7ff; border-radius: 8px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 15px; }}
     .metric strong {{ font-size: 16px; }}
@@ -906,10 +965,10 @@ def render_html(storyboard: dict[str, Any], selected_index: int, keyframes_dir: 
     <div class="brand"><span class="logo"></span><span>绘梦工坊</span></div>
     <div class="select-pill">剧本： <strong>{escape(str(workspace.get("scriptName") or drama.get("title") or ""))}</strong>⌄</div>
     <div class="select-pill">剧集： <strong>{escape(str(workspace.get("episodeLabel") or episode.get("title") or ""))}</strong>⌄</div>
-    <div class="select-pill">风格： <strong>{escape(str(workspace.get("style") or "真人风格-国产都市"))}</strong>⌄</div>
+    <div class="select-pill">风格： <strong>{escape(str(workspace.get("style") or DEFAULT_STYLE))}</strong>⌄</div>
     <div class="top-spacer"></div>
     <div class="balance">积分余额：<strong>{escape(str(workspace.get("pointsBalance") or "9783.738"))}</strong></div>
-    <div class="username">{escape(str(workspace.get("username") or "用户1161"))}</div>
+    <div class="username">{escape(str(workspace.get("username") or DEFAULT_MEDIA_ACCOUNT_NAME))}</div>
   </div>
   <div class="main">
     <aside class="sidebar">
@@ -918,7 +977,7 @@ def render_html(storyboard: dict[str, Any], selected_index: int, keyframes_dir: 
       <div class="sidebar-actions"><button class="mini-button">+ 新建分镜</button><button class="mini-button">导出</button></div>
     </aside>
     <section class="editor">
-      <div class="editor-head"><div class="editor-title">{escape(title)}</div><div class="counter">9/50</div></div>
+      <div class="editor-head"><div class="editor-title">{escape(title)}</div><div class="counter">{escape(summary_counter)}</div></div>
       <div class="editor-body">
         <div class="section-title">分镜概要</div>
         <textarea class="summary-box">{escape(summary)}</textarea>

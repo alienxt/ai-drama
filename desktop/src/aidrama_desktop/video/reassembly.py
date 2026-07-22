@@ -88,6 +88,7 @@ class VideoReassemblyConfig:
         )
         return (
             "重组分集（全剧滚动切分；"
+            "目标50-120集且不等于原下载集数；"
             f"切分{config.segment_min_seconds:g}-{config.segment_max_seconds:g}s；"
             f"去头{config.trim_head_seconds:g}s/尾{config.trim_tail_seconds:g}s；"
             f"{speed_text}；{swap_text}）"

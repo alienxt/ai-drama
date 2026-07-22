@@ -456,6 +456,48 @@ def test_ffmpeg_processor_reassembly_swaps_orientation_with_black_padding(monkey
     )
 
 
+def test_ffmpeg_processor_reassembly_segments_include_cover_frame(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    cover = tmp_path / "fengmian.jpg"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+    cover.write_text("cover")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe" and "stream=width,height" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 1280, "height": 720}]}),
+            )
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        commands.append(command)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("video")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+    processor.reassemble_videos(
+        [VideoReassemblySourceClip(source, 1.0, 60.0)],
+        [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+        timeline,
+        cover_path=cover,
+    )
+
+    segment_command = commands[1]
+    assert segment_command[segment_command.index("-i") + 1] == str(timeline)
+    assert str(cover) in segment_command
+    assert "-filter_complex" in segment_command
+    assert "[mainv][coverv]overlay=0:0:enable='lt(t,1)'" in segment_command[segment_command.index("-filter_complex") + 1]
+    assert "[picv]" in segment_command
+    assert "attached_pic" in segment_command
+
+
 def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"

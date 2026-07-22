@@ -162,6 +162,7 @@ class FfmpegProcessor:
         *,
         speed_factor: float = 1.0,
         swap_orientation: bool = False,
+        cover_path: Path | None = None,
     ) -> list[Path]:
         if not clips:
             raise ValueError("重组分集至少需要 1 个视频")
@@ -185,7 +186,7 @@ class FfmpegProcessor:
             )
             for segment in segments:
                 self._run_ffmpeg(
-                    self._reassembly_segment_command(timeline, segment),
+                    self._reassembly_segment_command(timeline, segment, cover_path=cover_path),
                     segment.target,
                 )
         finally:
@@ -454,7 +455,51 @@ class FfmpegProcessor:
         self,
         timeline: Path,
         segment: VideoReassemblySegment,
+        *,
+        cover_path: Path | None = None,
     ) -> list[str]:
+        if cover_path and cover_path.exists():
+            dimensions = self.video_dimensions(timeline)
+            if not dimensions:
+                raise FfmpegError(f"无法读取重组时间线尺寸，不能嵌入封面帧：{timeline}")
+            width, height = dimensions
+            filter_complex = (
+                "[0:v]setpts=PTS-STARTPTS[mainv];"
+                "[1:v]split=2[coverbgsrc][coverfgsrc];"
+                f"[coverbgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},boxblur=24:2,eq=brightness=-0.08:saturation=0.85,"
+                "setsar=1,format=rgba[coverbg];"
+                f"[coverfgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                "setsar=1,format=rgba[coverfg];"
+                "[coverbg][coverfg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,split=2[coverv][picv];"
+                f"[mainv][coverv]overlay=0:0:enable='lt(t,{WECHAT_VIDEO_COVER_FRAME_SECONDS})',format=yuv420p[outv]"
+            )
+            return [
+                self.ffmpeg_path,
+                "-y",
+                "-ss",
+                self._format_seconds(segment.start_seconds),
+                "-t",
+                self._format_seconds(segment.duration_seconds),
+                "-i",
+                str(timeline),
+                "-i",
+                str(cover_path),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[outv]",
+                "-map",
+                "0:a?",
+                "-map",
+                "[picv]",
+                *self._wechat_video_output_args(),
+                "-c:v:1",
+                "mjpeg",
+                "-disposition:v:1",
+                "attached_pic",
+                str(segment.target),
+            ]
         return [
             self.ffmpeg_path,
             "-y",
@@ -475,11 +520,13 @@ class FfmpegProcessor:
         swap_orientation: bool,
     ) -> list[str]:
         filters: list[str] = []
-        if swap_orientation:
-            dimensions = self.video_dimensions(first_source)
-            if dimensions:
-                width, height = dimensions
+        dimensions = self.video_dimensions(first_source)
+        if dimensions:
+            width, height = dimensions
+            if swap_orientation:
                 filters.append(self._wechat_video_frame_filter(height, width))
+            elif self._is_below_wechat_video_minimum(width, height):
+                filters.append(self._wechat_video_frame_filter(WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT))
         if self._has_effective_speed_change(speed_factor):
             filters.append(f"setpts=PTS/{self._format_filter_number(speed_factor)}")
         return filters

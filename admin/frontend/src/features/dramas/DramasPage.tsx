@@ -1446,7 +1446,7 @@ export function DramasPage() {
             <InputNumber min={1} max={5} precision={0} />
           </Form.Item>
           <Form.Item name="costAmountWan" label="成本金额（万）">
-            <InputNumber min={1} max={99} precision={0} placeholder="不填则自动生成" />
+            <InputNumber min={2} max={20} precision={0} placeholder="不填则自动生成" />
           </Form.Item>
           <Form.Item name="categoryIds" label="分类">
             <Select

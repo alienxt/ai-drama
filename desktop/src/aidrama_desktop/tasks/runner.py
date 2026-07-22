@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,7 @@ from aidrama_desktop.contracts import (
     render_contract_material_bundle,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
-from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator
+from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator, infer_storyboard_style
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
     VideoReassemblySegment,
@@ -54,14 +54,17 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v1"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v2"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
+VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
+VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
 TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
 TIKTOK_COVER_WIDTH = 768
 TIKTOK_COVER_HEIGHT = 1024
 TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
 TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON = "TK表单上传待时间。"
+DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME = "用户1182"
 DRAMA_ASSET_FILENAMES = (
     "fengmian.jpg",
     "video-cover.jpg",
@@ -400,6 +403,15 @@ class TaskRunner:
         config = self._storyboard_generation_config(task_id)
         if not config.enabled:
             return {}
+        config = replace(
+            config,
+            style=infer_storyboard_style(
+                title=drama_title,
+                summary=self._storyboard_style_summary(download_plan),
+                category_ids=download_plan.get("categoryIds") or [],
+                configured_style=config.style,
+            ),
+        )
         item = self._select_storyboard_episode_item(upload_items)
         if item is None:
             return {}
@@ -423,6 +435,13 @@ class TaskRunner:
         )
         self._notify(f"分镜图已生成：{drama_title} {episode_label}（{len(images)} 张）", task_id)
         return {"storyboardImages": images}
+
+    @staticmethod
+    def _storyboard_style_summary(download_plan: dict) -> str:
+        return " ".join(
+            str(download_plan.get(key) or "")
+            for key in ("summary", "aiSummary", "aiSummaryEn")
+        ).strip()
 
     def _storyboard_generation_config(self, task_id: str) -> StoryboardGenerationConfig:
         try:
@@ -466,7 +485,7 @@ class TaskRunner:
                 return value
         media_account_id = str(task.get("mediaAccountId") or "").strip()
         if not media_account_id:
-            return "未绑定媒体号"
+            return DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME
         try:
             accounts = self.api.get("/desktop/media-accounts")
         except Exception:  # noqa: BLE001
@@ -731,16 +750,22 @@ class TaskRunner:
         if not source_clips:
             raise RuntimeError("重组分集失败：没有可用的视频时长，请确认 FFmpeg/FFprobe 可正常读取原片。")
 
-        base_signature = self._video_reassembly_base_signature(source_clips, config)
+        cover_file = self._cover_file_for_sources([item.file for item in media_items])
+        base_signature = self._video_reassembly_base_signature(source_clips, config, cover_file, len(media_items))
         rng = self._video_reassembly_random(base_signature)
         speed_percent = rng.uniform(config.speed_min_percent, config.speed_max_percent)
         speed_factor = max(0.01, 1.0 + speed_percent / 100.0)
         total_duration = sum(clip.duration_seconds / speed_factor for _item, clip in source_clips)
-        segment_lengths = self._video_reassembly_segment_lengths(total_duration, config, rng)
+        segment_lengths = self._video_reassembly_segment_lengths(
+            total_duration,
+            config,
+            rng,
+            original_episode_count=len(media_items),
+        )
         if not segment_lengths:
             raise RuntimeError("重组分集失败：切片计划为空。")
 
-        target_dir = media_items[0].file.parent / VIDEO_REASSEMBLY_DIRNAME
+        target_dir = self._video_reassembly_target_dir(media_items)
         target_dir.mkdir(parents=True, exist_ok=True)
         timeline = target_dir / f".{safe_episode_drama_name(drama_title) or 'drama'}-full.mp4"
         segments = self._video_reassembly_segments(drama_title, target_dir, segment_lengths)
@@ -762,7 +787,8 @@ class TaskRunner:
             self._notify(f"重组分集缓存可用：{drama_title}（{len(segments)} 集）", task_id)
         else:
             self._notify(
-                f"重组分集：{drama_title}（切分 {config.segment_min_seconds:g}-{config.segment_max_seconds:g}s，"
+                f"重组分集：{drama_title}（目标 {VIDEO_REASSEMBLY_MIN_EPISODE_COUNT}-{VIDEO_REASSEMBLY_MAX_EPISODE_COUNT} 集，"
+                f"本次 {len(segments)} 集；参考切分 {config.segment_min_seconds:g}-{config.segment_max_seconds:g}s，"
                 f"去头 {config.trim_head_seconds:g}s/去尾 {config.trim_tail_seconds:g}s，"
                 f"变速 {speed_percent:.2f}%）",
                 task_id,
@@ -774,6 +800,7 @@ class TaskRunner:
                     timeline,
                     speed_factor=speed_factor,
                     swap_orientation=config.swap_orientation,
+                    cover_path=cover_file,
                 )
                 expected_files = {
                     path
@@ -791,7 +818,7 @@ class TaskRunner:
 
         clip_ranges = self._video_reassembly_clip_ranges(source_clips, speed_factor)
         reassembled_items = [
-            self._reassembled_episode_item(segment, clip_ranges)
+            self._reassembled_episode_item(segment, clip_ranges, cover_frame_applied=cover_file is not None)
             for segment in segments
         ]
         self._write_reassembled_episode_manifest(target_dir, media_items, reassembled_items)
@@ -827,6 +854,8 @@ class TaskRunner:
     def _video_reassembly_base_signature(
         source_clips: list[tuple[EpisodeMediaFile, VideoReassemblySourceClip]],
         config: VideoReassemblyConfig,
+        cover_file: Path | None,
+        original_episode_count: int,
     ) -> dict[str, Any]:
         sources = []
         for item, clip in source_clips:
@@ -842,11 +871,30 @@ class TaskRunner:
                     "clipDurationSeconds": round(clip.duration_seconds, 6),
                 }
             )
+        cover = None
+        if cover_file and cover_file.exists():
+            cover_stat = cover_file.stat()
+            cover = {
+                "path": str(cover_file),
+                "size": cover_stat.st_size,
+                "mtimeNs": cover_stat.st_mtime_ns,
+            }
         return {
             "version": VIDEO_REASSEMBLY_VERSION,
             "config": config.to_dict(),
+            "cover": cover,
+            "episodeCountRule": {
+                "min": VIDEO_REASSEMBLY_MIN_EPISODE_COUNT,
+                "max": VIDEO_REASSEMBLY_MAX_EPISODE_COUNT,
+                "avoidOriginalEpisodeCount": True,
+                "originalEpisodeCount": original_episode_count,
+            },
             "sources": sources,
         }
+
+    def _video_reassembly_target_dir(self, media_items: list[EpisodeMediaFile]) -> Path:
+        source_root = self._processed_media_target(media_items[0].file).parent
+        return source_root / VIDEO_REASSEMBLY_DIRNAME
 
     @staticmethod
     def _video_reassembly_random(signature: dict[str, Any]) -> random.Random:
@@ -858,24 +906,49 @@ class TaskRunner:
         total_duration: float,
         config: VideoReassemblyConfig,
         rng: random.Random,
+        *,
+        original_episode_count: int,
     ) -> list[float]:
-        remaining = max(0.0, total_duration)
-        lengths: list[float] = []
-        while remaining > 0.001:
-            if lengths and remaining < config.tail_merge_threshold_seconds:
-                lengths[-1] += remaining
-                break
-            if remaining <= config.segment_max_seconds:
-                lengths.append(remaining)
-                break
-            length = rng.uniform(config.segment_min_seconds, config.segment_max_seconds)
-            length = min(length, remaining)
-            tail = remaining - length
-            if 0 < tail < config.tail_merge_threshold_seconds:
-                length = remaining
-            lengths.append(length)
-            remaining -= length
-        return [length for length in lengths if length > 0.001]
+        total_duration = max(0.0, total_duration)
+        if total_duration <= 0.001:
+            return []
+        target_count = TaskRunner._video_reassembly_target_episode_count(
+            total_duration,
+            config,
+            rng,
+            original_episode_count,
+        )
+        if target_count <= 1:
+            return [total_duration]
+        weights = [
+            rng.uniform(config.segment_min_seconds, config.segment_max_seconds)
+            for _index in range(target_count)
+        ]
+        weight_total = sum(weights)
+        if weight_total <= 0:
+            return [total_duration]
+        lengths = [total_duration * weight / weight_total for weight in weights]
+        lengths[-1] += total_duration - sum(lengths)
+        return lengths
+
+    @staticmethod
+    def _video_reassembly_target_episode_count(
+        total_duration: float,
+        config: VideoReassemblyConfig,
+        rng: random.Random,
+        original_episode_count: int,
+    ) -> int:
+        average_segment_seconds = rng.uniform(config.segment_min_seconds, config.segment_max_seconds)
+        duration_based_count = max(1, round(total_duration / max(average_segment_seconds, 1.0)))
+        target_count = max(
+            VIDEO_REASSEMBLY_MIN_EPISODE_COUNT,
+            min(VIDEO_REASSEMBLY_MAX_EPISODE_COUNT, duration_based_count),
+        )
+        if target_count != original_episode_count:
+            return target_count
+        if target_count < VIDEO_REASSEMBLY_MAX_EPISODE_COUNT:
+            return target_count + 1
+        return target_count - 1
 
     def _video_reassembly_segments(
         self,
@@ -924,6 +997,8 @@ class TaskRunner:
         self,
         segment: VideoReassemblySegment,
         clip_ranges: list[tuple[float, float, EpisodeMediaFile]],
+        *,
+        cover_frame_applied: bool,
     ) -> EpisodeMediaFile:
         segment_start = segment.start_seconds
         segment_end = segment.start_seconds + segment.duration_seconds
@@ -945,6 +1020,8 @@ class TaskRunner:
             "sourceEpisodeNumbers": source_numbers,
             "sourceEpisodeRange": self._number_range_label(source_numbers),
             "reassembledEpisode": True,
+            "finalUploadVideo": True,
+            "coverFrameApplied": cover_frame_applied,
             "durationSeconds": round(segment.duration_seconds, 3),
         }
         return EpisodeMediaFile(episode, segment.index, segment.target, source_indexes)
@@ -1047,9 +1124,15 @@ class TaskRunner:
                 if reusable_processed_item is not None:
                     upload_items.append(reusable_processed_item)
                     continue
+            final_upload_video = bool(item.episode.get("finalUploadVideo"))
             duration_seconds = self._video_duration_seconds(source_file)
             min_duration_seconds = self._platform_min_episode_duration_seconds(platform)
-            if duration_seconds is not None and min_duration_seconds and duration_seconds < min_duration_seconds:
+            if (
+                not final_upload_video
+                and duration_seconds is not None
+                and min_duration_seconds
+                and duration_seconds < min_duration_seconds
+            ):
                 skipped_count += 1
                 message = (
                     f"第 {episode_no} 集视频时长 {duration_seconds:.1f} 秒，小于"
@@ -1063,12 +1146,17 @@ class TaskRunner:
                     )
                 self._notify(f"跳过：{drama_title} {message}", task_id)
                 continue
-            source_needs_transcode = self._needs_wechat_video_transcode(source_file)
-            source_needs_bitrate_transcode = self._needs_wechat_video_bitrate_transcode(source_file)
-            source_needs_resolution_transcode = self._needs_wechat_video_resolution_transcode(source_file)
-            source_needs_tiktok_upload_transcode = self._needs_tiktok_upload_transcode(source_file) if platform == "TIKTOK" else False
+            source_needs_bitrate_transcode = False if final_upload_video else self._needs_wechat_video_bitrate_transcode(source_file)
+            source_needs_resolution_transcode = False if final_upload_video else self._needs_wechat_video_resolution_transcode(source_file)
+            source_needs_transcode = False if final_upload_video else self._needs_wechat_video_transcode(source_file)
+            source_needs_tiktok_upload_transcode = (
+                False
+                if final_upload_video
+                else self._needs_tiktok_upload_transcode(source_file) if platform == "TIKTOK" else False
+            )
             source_needs_transcode = source_needs_transcode or source_needs_tiktok_upload_transcode
-            should_add_cover_frame = cover_file is not None
+            cover_frame_applied = bool(item.episode.get("coverFrameApplied"))
+            should_add_cover_frame = cover_file is not None and not cover_frame_applied
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
                 continue
@@ -1621,7 +1709,9 @@ class TaskRunner:
                 *(directory / VIDEO_REASSEMBLY_DIRNAME for directory in download_dirs),
             ]
             if self.video_reassembly_config and self.video_reassembly_config.normalized().enabled:
-                directories = [*reassembled_dirs, *strategy_dirs, *processed_dirs, *download_dirs]
+                directories = [
+                    *(directory / VIDEO_REASSEMBLY_DIRNAME for directory in processed_dirs),
+                ]
             else:
                 directories = [*strategy_dirs, *processed_dirs, *download_dirs, *reassembled_dirs]
         for directory in directories:
