@@ -83,6 +83,7 @@ public class BootstrapConfig {
             bootstrapBaiduConfig(configService);
             bootstrapHongguoConfig(configService);
             bootstrapOpenAiConfig(configService);
+            bootstrapStoryboardConfig(configService);
             bootstrapSystemTaskConfig(configService);
             bootstrapCategories(categoryRepository);
             dramaRatingBackfill.backfillMissingRatings();
@@ -145,6 +146,16 @@ public class BootstrapConfig {
         putDefaultMetadataPrompt(configService);
         putDefaultCoverPrompt(configService);
         putDefaultVideoCoverPrompt(configService);
+    }
+
+    private void bootstrapStoryboardConfig(SystemConfigService configService) {
+        configService.putIfAbsent("storyboard.enabled", "false", false);
+        configService.putIfAbsent("storyboard.deepseekApiBase", "https://api.deepseek.com", false);
+        configService.putIfAbsent("storyboard.deepseekApiKey", "", true);
+        configService.putIfAbsent("DEEPSEEK_API_KEY", "", true);
+        configService.putIfAbsent("storyboard.deepseekModel", "deepseek-v4-pro", false);
+        configService.putIfAbsent("storyboard.targetShots", "15", false);
+        configService.putIfAbsent("storyboard.style", "真人风格-国产都市", false);
     }
 
     private void putDefaultTitlePrompt(SystemConfigService configService) {

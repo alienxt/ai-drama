@@ -148,6 +148,32 @@ class FakePublisher:
         return "published-1"
 
 
+class FakeStoryboardGenerator:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, *, source_video, drama_title, episode_label, media_account, output_dir, config):
+        self.calls.append(
+            {
+                "source_video": source_video,
+                "drama_title": drama_title,
+                "episode_label": episode_label,
+                "media_account": media_account,
+                "output_dir": output_dir,
+                "config": config,
+            }
+        )
+        screenshots_dir = output_dir / "分镜截图"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        images = [
+            screenshots_dir / "分镜-001-完整工作台.png",
+            screenshots_dir / "分镜-002-完整工作台.png",
+        ]
+        for image in images:
+            image.write_bytes(b"png")
+        return images
+
+
 class FailingPublisher:
     def publish(self, media_files, title, summary=None, metadata=None):
         raise RuntimeError("upload failed")
@@ -212,7 +238,6 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
-
 
 def test_publish_once_runs_strategy1_after_full_download_before_upload(tmp_path, monkeypatch):
     api = FakeApi()
@@ -305,6 +330,80 @@ def test_upload_retry_reads_strategy1_manifest_for_processed_cache(tmp_path):
     assert items[0].file == cached_file
     assert items[0].source_episode_indexes == (1, 2)
     assert items[0].episode["sourceEpisodeRange"] == "1-2"
+
+
+def test_publish_once_generates_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
+    class StoryboardApi(FakeApi):
+        def get(self, path):
+            self.calls.append(("GET", path, None))
+            if path == "/desktop/storyboard-config":
+                return {
+                    "enabled": True,
+                    "deepseekApiBase": "https://api.deepseek.com",
+                    "deepseekApiKey": "configured-key",
+                    "deepseekModel": "deepseek-v4-pro",
+                    "targetShots": 15,
+                    "style": "真人风格-国产都市",
+                }
+            if path == "/desktop/media-accounts":
+                return [{"id": "media-1", "displayName": "用户1161", "externalAccountId": "wx-1"}]
+            return {
+                "dramaId": "drama-1",
+                "title": "神医归来",
+                "summary": "简介",
+                "aiSummary": "AI简介...",
+                "totalMinutes": 30,
+                "costAmountWan": 3,
+                "episodes": [
+                    {"episodeNo": 1, "downloadUrl": "/files/1.mp4"},
+                    {"episodeNo": 2, "downloadUrl": "/files/2.mp4"},
+                    {"episodeNo": 3, "downloadUrl": "/files/3.mp4"},
+                ],
+            }
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        files = []
+        for index, episode in enumerate(download_plan["episodes"], start=1):
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"episode-{index}")
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+
+    api = StoryboardApi()
+    publisher = FakePublisher()
+    generator = FakeStoryboardGenerator()
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        storyboard_generator=generator,
+        storyboards_dir=tmp_path / "storyboards",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert len(generator.calls) == 1
+    call = generator.calls[0]
+    assert call["source_video"] == drama_download_dir(tmp_path) / "002.mp4"
+    assert call["drama_title"] == "神医归来"
+    assert call["episode_label"] == "#2集"
+    assert call["media_account"] == "用户1161"
+    assert call["config"].enabled is True
+    images = [
+        tmp_path / "storyboards" / "generated" / "task-1" / "episode-2" / "分镜截图" / "分镜-001-完整工作台.png",
+        tmp_path / "storyboards" / "generated" / "task-1" / "episode-2" / "分镜截图" / "分镜-002-完整工作台.png",
+    ]
+    assert publisher.metadata["storyboardImages"] == images
+    assert publisher.metadata["buyDramaContractImages"] == images
+    assert ("生成分镜图：神医归来 #2集", "task-1") in progress_events
+    assert ("分镜图已生成：神医归来 #2集（2 张）", "task-1") in progress_events
 
 
 def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypatch):

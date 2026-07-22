@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import random
 import re
 import shutil
 import threading
@@ -24,6 +25,7 @@ from aidrama_desktop.contracts import (
     render_contract_material_bundle,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused
+from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
     WECHAT_VIDEO_COVER_FRAME_VERSION,
@@ -122,6 +124,8 @@ class TaskRunner:
     contract_seller: str = "乙方公司"
     contract_image_converter: Callable[[Path, Path, str | None], list[Path]] | None = None
     soffice_path: str | None = None
+    storyboard_generator: StoryboardGenerator | None = None
+    storyboards_dir: Path | None = None
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -292,6 +296,15 @@ class TaskRunner:
             if self._requires_contract_materials(platform)
             else {}
         )
+        storyboard_metadata = self._prepare_storyboard_materials(
+            effective_download_plan,
+            upload_items,
+            task,
+            task_id,
+            drama_title,
+            platform=platform,
+        )
+        contract_metadata = self._append_storyboard_to_contract_metadata(contract_metadata, storyboard_metadata)
         self._progress(task_id, "UPLOADING", 75)
         self._notify(f"发布：{drama_title}", task_id, task_with_title)
         metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
@@ -364,6 +377,117 @@ class TaskRunner:
     @staticmethod
     def _requires_contract_materials(platform: str) -> bool:
         return platform in {"WECHAT_VIDEO", "TIKTOK"}
+
+    def _prepare_storyboard_materials(
+        self,
+        download_plan: dict,
+        upload_items: list[EpisodeMediaFile],
+        task: dict,
+        task_id: str,
+        drama_title: str,
+        *,
+        platform: str,
+    ) -> dict[str, object]:
+        if not self._requires_contract_materials(platform):
+            return {}
+        config = self._storyboard_generation_config(task_id)
+        if not config.enabled:
+            return {}
+        item = self._select_storyboard_episode_item(upload_items)
+        if item is None:
+            return {}
+        generator = self.storyboard_generator or StoryboardGenerator(getattr(self.processor, "ffmpeg_path", "ffmpeg"))
+        episode_label = self._storyboard_episode_label(item)
+        media_account = self._task_media_account_name(task)
+        output_dir = (
+            (self.storyboards_dir or self.work_dir / "storyboards")
+            / "generated"
+            / str(task_id)
+            / self._storyboard_episode_output_name(item)
+        )
+        self._notify(f"生成分镜图：{drama_title} {episode_label}", task_id)
+        images = generator.generate(
+            source_video=item.file,
+            drama_title=drama_title,
+            episode_label=episode_label,
+            media_account=media_account,
+            output_dir=output_dir,
+            config=config,
+        )
+        self._notify(f"分镜图已生成：{drama_title} {episode_label}（{len(images)} 张）", task_id)
+        return {"storyboardImages": images}
+
+    def _storyboard_generation_config(self, task_id: str) -> StoryboardGenerationConfig:
+        try:
+            payload = self.api.get("/desktop/storyboard-config")
+        except Exception as exception:  # noqa: BLE001
+            self._notify(f"分镜图配置读取失败，已按未启用处理：{exception}", task_id)
+            return StoryboardGenerationConfig()
+        return StoryboardGenerationConfig.from_payload(payload if isinstance(payload, dict) else {})
+
+    @staticmethod
+    def _select_storyboard_episode_item(upload_items: list[EpisodeMediaFile]) -> EpisodeMediaFile | None:
+        if not upload_items:
+            return None
+        total = len(upload_items)
+        if total <= 2:
+            candidates = upload_items
+        else:
+            margin = max(1, total // 3)
+            candidates = upload_items[margin : total - margin] or upload_items
+        return random.SystemRandom().choice(candidates)
+
+    @staticmethod
+    def _storyboard_episode_label(item: EpisodeMediaFile) -> str:
+        source_range = item.episode.get("sourceEpisodeRange")
+        if source_range:
+            return f"#{source_range}集"
+        return f"#{episode_number(item.episode, item.episode_index)}集"
+
+    @staticmethod
+    def _storyboard_episode_output_name(item: EpisodeMediaFile) -> str:
+        source_range = str(item.episode.get("sourceEpisodeRange") or "").strip()
+        if source_range:
+            clean = re.sub(INVALID_FILENAME_CHARS_RE, "-", source_range).strip(FILENAME_EDGE_CHARS)
+            return f"episode-{clean or item.episode_index}"
+        return f"episode-{episode_number(item.episode, item.episode_index)}"
+
+    def _task_media_account_name(self, task: dict) -> str:
+        for key in ("mediaAccountName", "mediaAccountDisplayName", "displayName"):
+            value = str(task.get(key) or "").strip()
+            if value:
+                return value
+        media_account_id = str(task.get("mediaAccountId") or "").strip()
+        if not media_account_id:
+            return "未绑定媒体号"
+        try:
+            accounts = self.api.get("/desktop/media-accounts")
+        except Exception:  # noqa: BLE001
+            return media_account_id
+        for account in accounts or []:
+            if not isinstance(account, dict) or str(account.get("id") or "") != media_account_id:
+                continue
+            return str(account.get("displayName") or account.get("externalAccountId") or media_account_id)
+        return media_account_id
+
+    @staticmethod
+    def _append_storyboard_to_contract_metadata(
+        contract_metadata: dict[str, object],
+        storyboard_metadata: dict[str, object],
+    ) -> dict[str, object]:
+        if not storyboard_metadata:
+            return contract_metadata
+        merged = dict(contract_metadata)
+        storyboard_images = [
+            path
+            for path in (storyboard_metadata.get("storyboardImages") or [])
+            if isinstance(path, Path)
+        ]
+        if not storyboard_images:
+            return merged
+        merged["storyboardImages"] = append_unique_paths(merged.get("storyboardImages"), storyboard_images)
+        merged["buyDramaContractImages"] = append_unique_paths(merged.get("buyDramaContractImages"), storyboard_images)
+        return merged
 
     def _prepare_contract_materials(
         self,
@@ -2131,6 +2255,19 @@ def resolve_download_url(url: str, base_url: str) -> str:
     if url.startswith("/"):
         return base_url.removesuffix("/api") + url
     return url
+
+
+def append_unique_paths(existing: object, additions: list[Path]) -> list[Path]:
+    iterable = existing if isinstance(existing, (list, tuple)) else []
+    paths = [path for path in iterable if isinstance(path, Path)]
+    seen = {str(path) for path in paths}
+    for path in additions:
+        key = str(path)
+        if key in seen:
+            continue
+        paths.append(path)
+        seen.add(key)
+    return paths
 
 
 class TaskInterrupted(RuntimeError):

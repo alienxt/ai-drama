@@ -10,6 +10,7 @@ from aidrama_desktop.browser.chrome import ChromeController, find_chrome
 from aidrama_desktop.config.settings import load_settings
 from aidrama_desktop.local_agent import serve_local_agent
 from aidrama_desktop.platforms.registry import get_publisher
+from aidrama_desktop.storyboard import StoryboardGenerator
 from aidrama_desktop.tasks.runner import TaskRunner, download_episodes
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
 
@@ -158,15 +159,19 @@ def publish(platform: str = "WECHAT_VIDEO") -> None:
 
 def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
     settings = load_settings()
+    chrome_path = find_chrome(settings.chrome_path)
+    chrome = ChromeController(chrome_path, settings.browser_profile_dir)
     return TaskRunner(
         api=build_api(),
         processor=FfmpegProcessor(settings.ffmpeg_path),
-        publisher=get_publisher(platform, build_chrome()),
+        publisher=get_publisher(platform, chrome),
         work_dir=settings.work_dir,
         device_id=settings.device_id,
         downloads_dir=settings.downloads_dir,
         processed_dir=settings.processed_dir,
         download_concurrency=settings.download_concurrency,
+        storyboard_generator=StoryboardGenerator(settings.ffmpeg_path, chrome_path),
+        storyboards_dir=settings.work_dir / "storyboards",
     )
 
 

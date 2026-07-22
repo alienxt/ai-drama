@@ -73,6 +73,7 @@ from aidrama_desktop.contracts import (
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
 from aidrama_desktop.local_agent import create_local_agent_server
 from aidrama_desktop.platforms.registry import get_publisher
+from aidrama_desktop.storyboard import StoryboardGenerator
 from aidrama_desktop.tasks.runner import TaskRunner
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
@@ -1240,7 +1241,8 @@ class DesktopWindow(QMainWindow):
         self.quit_app()
 
     def runner(self) -> TaskRunner:
-        chrome = ChromeController(find_chrome(self.settings.chrome_path), self.settings.browser_profile_dir)
+        chrome_path = find_chrome(self.settings.chrome_path)
+        chrome = ChromeController(chrome_path, self.settings.browser_profile_dir)
         return TaskRunner(
             api=self.api(),
             processor=FfmpegProcessor(self.settings.ffmpeg_path),
@@ -1261,6 +1263,8 @@ class DesktopWindow(QMainWindow):
             contract_buyer=self.contract_party_value("WECHAT_VIDEO", "buyer"),
             contract_seller=self.contract_party_value("WECHAT_VIDEO", "seller"),
             soffice_path=self.settings.soffice_path,
+            storyboard_generator=StoryboardGenerator(self.settings.ffmpeg_path, chrome_path),
+            storyboards_dir=self.settings.work_dir / "storyboards",
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
