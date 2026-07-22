@@ -1835,6 +1835,20 @@ class TaskRunner:
         entries = manifest.get("files")
         if not isinstance(entries, list):
             return []
+        manifest_file_names = [
+            str(entry.get("file"))
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("file")
+        ]
+        if len(manifest_file_names) != len(entries):
+            return []
+        if len(set(manifest_file_names)) != len(manifest_file_names):
+            return []
+        if set(manifest_file_names) != {file.name for file in files}:
+            return []
+        expected_count = TaskRunner._int_value(manifest.get("episodeCount"), len(manifest_file_names))
+        if expected_count != len(files):
+            return []
         by_name = {
             str(entry.get("file")): entry
             for entry in entries
@@ -1908,7 +1922,12 @@ class TaskRunner:
                 continue
             if platform == "TIKTOK" and len(files) > TIKTOK_MAX_EPISODE_COUNT:
                 continue
-            media_items = self._cached_episode_media_files(download_plan, files, platform)
+            media_items = self._cached_episode_media_files(
+                download_plan,
+                files,
+                platform,
+                require_manifest=directory.name == VIDEO_REASSEMBLY_DIRNAME,
+            )
             if platform == "TIKTOK" and not self._all_items_satisfy_tiktok_upload_rules(media_items):
                 continue
             return media_items
@@ -1933,10 +1952,14 @@ class TaskRunner:
         download_plan: dict,
         files: list[Path],
         platform: str,
+        *,
+        require_manifest: bool = False,
     ) -> list[EpisodeMediaFile]:
         manifest_items = self._episode_media_files_from_manifest(files)
         if manifest_items:
             return manifest_items
+        if require_manifest:
+            return []
         manifest_items = self._episode_media_files_from_download_cache_manifest(files)
         if manifest_items:
             return manifest_items
