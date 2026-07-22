@@ -1116,13 +1116,13 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert speed_factor == pytest.approx(1.02)
     assert swap_orientation is False
     assert cover_path is None
-    assert reassembled[0].file == final_dir / "神医归来-重组第001集.mp4"
+    assert reassembled[0].file == final_dir / "神医归来-第1集.mp4"
     assert reassembled[0].source_episode_indexes == (1,)
     assert reassembled[-1].source_episode_indexes == (2,)
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v2"
+    assert manifest["reassemblyVersion"] == "video-reassembly-v3"
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
@@ -1138,7 +1138,7 @@ def test_reassembly_outputs_final_upload_files_with_cover_frame(tmp_path):
     cover = source_dir / "fengmian.jpg"
     cover.write_bytes(b"cover")
     processor.durations = {"001.mp4": 62.0}
-    processor.dimensions = {"神医归来-重组第001集.mp4": (1282, 720)}
+    processor.dimensions = {"神医归来-第1集.mp4": (1282, 720)}
     runner = TaskRunner(
         api=FakeApi(),
         processor=processor,
