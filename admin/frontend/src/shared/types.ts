@@ -102,6 +102,7 @@ export type HongguoMangaSyncResponse = {
   skipped: number;
   created: number;
   updated: number;
+  candidates?: HongguoCandidate[];
 };
 
 export type HongguoImportCandidateResponse = {

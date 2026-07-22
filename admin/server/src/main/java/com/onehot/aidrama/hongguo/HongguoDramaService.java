@@ -1,6 +1,7 @@
 package com.onehot.aidrama.hongguo;
 
 import com.onehot.aidrama.categories.DramaCategoryClassifier;
+import com.onehot.aidrama.categories.DramaCategoryRepository;
 import com.onehot.aidrama.common.error.BusinessException;
 import com.onehot.aidrama.dramas.Drama;
 import com.onehot.aidrama.dramas.DramaDurationEstimator;
@@ -55,6 +56,7 @@ public class HongguoDramaService {
     private final HongguoDramaCandidateRepository candidateRepository;
     private final DramaRepository dramaRepository;
     private final HongguoCoverStorage coverStorage;
+    private final DramaCategoryRepository categoryRepository;
     private final DramaCategoryClassifier classifier = new DramaCategoryClassifier();
     private final Clock clock;
 
@@ -63,9 +65,10 @@ public class HongguoDramaService {
             HongguoApiClient apiClient,
             HongguoDramaCandidateRepository candidateRepository,
             DramaRepository dramaRepository,
-            HongguoCoverStorage coverStorage
+            HongguoCoverStorage coverStorage,
+            DramaCategoryRepository categoryRepository
     ) {
-        this(apiClient, candidateRepository, dramaRepository, coverStorage, Clock.systemUTC());
+        this(apiClient, candidateRepository, dramaRepository, coverStorage, categoryRepository, Clock.systemUTC());
     }
 
     HongguoDramaService(
@@ -73,7 +76,7 @@ public class HongguoDramaService {
             HongguoDramaCandidateRepository candidateRepository,
             DramaRepository dramaRepository
     ) {
-        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, Clock.systemUTC());
+        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, null, Clock.systemUTC());
     }
 
     HongguoDramaService(
@@ -82,7 +85,7 @@ public class HongguoDramaService {
             DramaRepository dramaRepository,
             Clock clock
     ) {
-        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, clock);
+        this(apiClient, candidateRepository, dramaRepository, coverUrl -> coverUrl, null, clock);
     }
 
     HongguoDramaService(
@@ -92,10 +95,22 @@ public class HongguoDramaService {
             HongguoCoverStorage coverStorage,
             Clock clock
     ) {
+        this(apiClient, candidateRepository, dramaRepository, coverStorage, null, clock);
+    }
+
+    HongguoDramaService(
+            HongguoApiClient apiClient,
+            HongguoDramaCandidateRepository candidateRepository,
+            DramaRepository dramaRepository,
+            HongguoCoverStorage coverStorage,
+            DramaCategoryRepository categoryRepository,
+            Clock clock
+    ) {
         this.apiClient = apiClient;
         this.candidateRepository = candidateRepository;
         this.dramaRepository = dramaRepository;
         this.coverStorage = coverStorage;
+        this.categoryRepository = categoryRepository;
         this.clock = clock;
     }
 
@@ -521,6 +536,20 @@ public class HongguoDramaService {
         if (!channel.needsOption()) {
             return List.of();
         }
+        if (channel == OtherShortDramaChannel.XIFAN_TOP) {
+            return List.of(
+                    new HongguoApiModels.ChannelOption("5", "全网榜"),
+                    new HongguoApiModels.ChannelOption("4", "推荐榜"),
+                    new HongguoApiModels.ChannelOption("1", "热播榜"),
+                    new HongguoApiModels.ChannelOption("2", "新剧榜"),
+                    new HongguoApiModels.ChannelOption("3", "热搜榜")
+            );
+        }
+        if (channel == OtherShortDramaChannel.DOUYIN && categoryRepository != null) {
+            return categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
+                    .map(category -> new HongguoApiModels.ChannelOption(category.getCode(), category.getName()))
+                    .toList();
+        }
         return callApi(() -> apiClient.fetchOtherChannelOptions(channel));
     }
 
@@ -532,7 +561,9 @@ public class HongguoDramaService {
     ) {
         OtherShortDramaChannel channel = OtherShortDramaChannel.fromCode(channelCode);
         int effectivePage = page == null ? 1 : Math.max(page, 1);
-        String scope = otherChannelScope(channel, keyword, optionId);
+        String effectiveOptionId = normalizeOtherOption(channel, optionId);
+        String effectiveKeyword = channel.supportsKeyword() ? normalizeOtherKeyword(channel, keyword) : null;
+        String scope = otherChannelScope(channel, effectiveKeyword, effectiveOptionId);
         if (!hasText(scope)) {
             return List.of();
         }
@@ -566,10 +597,13 @@ public class HongguoDramaService {
                     .findByProviderAndProviderDramaId(channel.providerCode(), item.providerDramaId())
                     .orElseGet(HongguoDramaCandidate::new);
             boolean isNew = candidate.getId() == null;
-            HongguoApiModels.DramaDetail detail = callApi(
-                    () -> apiClient.fetchOtherDetail(channel, item.providerDramaId(), firstText(item.title(), effectiveKeyword, channel.label()))
-            );
-            detailed++;
+            HongguoApiModels.DramaDetail detail = null;
+            if (shouldFetchOtherChannelDetailForCandidate(channel)) {
+                detail = callApi(
+                        () -> apiClient.fetchOtherDetail(channel, item.providerDramaId(), firstText(item.title(), effectiveKeyword, channel.label()))
+                );
+                detailed++;
+            }
             applyOtherChannelCandidate(candidate, channel, item, detail, scope, effectivePage);
             candidateRepository.save(candidate);
             if (isNew) {
@@ -833,6 +867,10 @@ public class HongguoDramaService {
         return callApi(() -> apiClient.fetchOtherDetail(channel, candidate.getProviderDramaId(), candidate.getTitle()));
     }
 
+    private boolean shouldFetchOtherChannelDetailForCandidate(OtherShortDramaChannel channel) {
+        return channel != OtherShortDramaChannel.DOUYIN && channel.detailChannel().supportsVideo();
+    }
+
     private List<HongguoApiModels.VideoVariant> fetchCandidateVideoVariants(Drama drama, DramaEpisode episode) {
         if (isHongguoProvider(drama.getProviderName())) {
             return callApi(() -> apiClient.fetchVideoVariants(
@@ -856,12 +894,23 @@ public class HongguoDramaService {
             }
             throw new BusinessException("HONGGUO_VIDEO_UNSUPPORTED", channel.label() + "暂未提供单集播放解析接口", HttpStatus.FAILED_DEPENDENCY);
         }
-        return callApi(() -> apiClient.fetchOtherVideoVariants(
+        List<HongguoApiModels.VideoVariant> variants = callApi(() -> apiClient.fetchOtherVideoVariants(
                 channel,
                 drama.getProviderDramaId(),
                 drama.getTitle(),
                 episode.getProviderVideoId()
         ));
+        if (!hasText(episode.getProviderVideoId())) {
+            return variants;
+        }
+        boolean hasProviderVideoIds = variants.stream()
+                .anyMatch(variant -> hasText(variant.providerVideoId()));
+        if (!hasProviderVideoIds) {
+            return variants;
+        }
+        return variants.stream()
+                .filter(variant -> Objects.equals(episode.getProviderVideoId(), variant.providerVideoId()))
+                .toList();
     }
 
     private boolean isRecentOrUnknown(Instant publishedAt, Instant since) {

@@ -16,6 +16,7 @@ from aidrama_desktop.tasks.runner import (
     drama_directory_name,
     episode_video_filename,
 )
+from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
 
 def drama_download_dir(tmp_path: Path, title: str = "神医归来", drama_id: str = "drama-1") -> Path:
@@ -80,6 +81,7 @@ class FakeProcessor:
     def __init__(self):
         self.calls = []
         self.merge_calls = []
+        self.reassemble_calls = []
         self.dimensions = {}
         self.durations = {}
 
@@ -103,6 +105,23 @@ class FakeProcessor:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"merged-video")
         return target
+
+    def reassemble_videos(
+        self,
+        clips,
+        segments,
+        timeline: Path,
+        *,
+        speed_factor: float = 1.0,
+        swap_orientation: bool = False,
+    ) -> list[Path]:
+        self.reassemble_calls.append((clips, segments, timeline, speed_factor, swap_orientation))
+        timeline.parent.mkdir(parents=True, exist_ok=True)
+        timeline.write_bytes(b"timeline")
+        for segment in segments:
+            segment.target.parent.mkdir(parents=True, exist_ok=True)
+            segment.target.write_bytes(f"segment-{segment.index}".encode())
+        return [segment.target for segment in segments]
 
 
 class Strategy1Processor(FakeProcessor):
@@ -1030,6 +1049,64 @@ def test_tiktok_task_merges_last_three_when_episode_count_is_odd(tmp_path, monke
     assert merged_items[-1].episode["episodeNo"] == 60
     assert merged_items[-1].episode["sourceEpisodeNumbers"] == [119, 120, 121]
     assert merged_items[-1].source_episode_indexes == (119, 120, 121)
+
+
+def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    first = source_dir / "001.mp4"
+    second = source_dir / "002.mp4"
+    first.write_bytes(b"video-1")
+    second.write_bytes(b"video-2")
+    processor.durations = {"001.mp4": 62.0, "002.mp4": 62.0}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=50.0,
+            segment_max_seconds=50.0,
+            trim_head_seconds=1.0,
+            trim_tail_seconds=1.0,
+            speed_min_percent=2.0,
+            speed_max_percent=2.0,
+            swap_orientation=False,
+        ),
+    )
+
+    items = [
+        EpisodeMediaFile({"episodeNo": 1}, 1, first),
+        EpisodeMediaFile({"episodeNo": 2}, 2, second),
+    ]
+
+    reassembled = runner._prepare_source_items_for_platform(
+        items,
+        "task-1",
+        "神医归来",
+        "WECHAT_VIDEO",
+    )
+
+    assert len(reassembled) == 2
+    clips, segments, timeline, speed_factor, swap_orientation = processor.reassemble_calls[0]
+    assert [clip.path for clip in clips] == [first, second]
+    assert [clip.start_seconds for clip in clips] == [1.0, 1.0]
+    assert [clip.duration_seconds for clip in clips] == [60.0, 60.0]
+    assert [round(segment.duration_seconds, 3) for segment in segments] == [50.0, 67.647]
+    assert timeline == source_dir / "reassembled" / ".神医归来-full.mp4"
+    assert speed_factor == pytest.approx(1.02)
+    assert swap_orientation is False
+    assert reassembled[0].file == source_dir / "reassembled" / "神医归来-重组第001集.mp4"
+    assert reassembled[0].source_episode_indexes == (1,)
+    assert reassembled[1].source_episode_indexes == (1, 2)
+    assert reassembled[1].episode["sourceEpisodeNumbers"] == [1, 2]
+
+    manifest = json.loads((source_dir / "reassembled" / ".downloaded-episodes.json").read_text())
+    assert manifest["reassemblyVersion"] == "video-reassembly-v1"
+    assert manifest["episodeCount"] == 2
+    assert manifest["files"][1]["episode"]["sourceEpisodeRange"] == "1-2"
 
 
 def test_tiktok_upload_retry_uses_cached_merged_videos_without_processing(tmp_path, monkeypatch):

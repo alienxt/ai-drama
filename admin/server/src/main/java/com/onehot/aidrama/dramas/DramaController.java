@@ -148,6 +148,7 @@ public class DramaController {
             @RequestParam(required = false) DramaStatus status,
             @RequestParam(required = false) List<String> categoryIds,
             @RequestParam(required = false) DramaAssetState assetState,
+            @RequestParam(required = false) String sourceProvider,
             @RequestParam(required = false) Integer episodeCount,
             @RequestParam(required = false) Instant createdFrom,
             @RequestParam(required = false) Instant createdTo,
@@ -157,6 +158,7 @@ public class DramaController {
                 .containsAny(keyword, "title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "sourcePath")
                 .eq("status", status)
                 .in("categoryIds", categoryIds)
+                .where(sourceProviderCriteria(sourceProvider))
                 .arraySize("episodes", episodeCount)
                 .range("createdAt", createdFrom, createdTo);
         if (assetState == DramaAssetState.MISSING_COVER) {
@@ -176,6 +178,19 @@ public class DramaController {
         );
     }
 
+    ApiResponse<PageResult<Drama>> list(
+            String keyword,
+            DramaStatus status,
+            List<String> categoryIds,
+            DramaAssetState assetState,
+            Integer episodeCount,
+            Instant createdFrom,
+            Instant createdTo,
+            Pageable pageable
+    ) {
+        return list(keyword, status, categoryIds, assetState, null, episodeCount, createdFrom, createdTo, pageable);
+    }
+
     private Pageable adminDramaListPageable(Pageable pageable) {
         if (pageable.getSort().isSorted()) {
             return pageable;
@@ -185,6 +200,35 @@ public class DramaController {
             return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
         }
         return Pageable.unpaged(sort);
+    }
+
+    private Criteria sourceProviderCriteria(String sourceProvider) {
+        if (!hasText(sourceProvider)) {
+            return null;
+        }
+        String provider = sourceProvider.trim();
+        if (DramaSources.BAIDU_PAN.equals(provider)) {
+            return new Criteria().orOperator(
+                    Criteria.where("source").is(DramaSources.BAIDU_PAN),
+                    Criteria.where("source").exists(false),
+                    Criteria.where("source").is(null),
+                    Criteria.where("source").is("")
+            );
+        }
+        if ("52API_HONGGUO".equals(provider)) {
+            return new Criteria().orOperator(
+                    Criteria.where("providerName").in("52API_HONGGUO", "HONGGUO"),
+                    new Criteria().andOperator(
+                            Criteria.where("source").is(DramaSources.HONGGUO_52API),
+                            new Criteria().orOperator(
+                                    Criteria.where("providerName").exists(false),
+                                    Criteria.where("providerName").is(null),
+                                    Criteria.where("providerName").is("")
+                            )
+                    )
+            );
+        }
+        return Criteria.where("providerName").is(provider);
     }
 
     @GetMapping("/api/desktop/dramas")
@@ -201,7 +245,7 @@ public class DramaController {
                 : pageable;
         Query pageQuery = Query.of(query).with(effectivePageable);
         pageQuery.fields()
-                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "publishedAt", "createdAt", "updatedAt", "status", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
+                .include("title", "aiTitle", "aiTitleEn", "summary", "aiSummary", "aiSummaryEn", "coverUrl", "aiCoverUrl", "aiVideoCoverUrl", "aiCoverEnUrl", "aiVideoCoverEnUrl", "rating", "categoryIds", "source", "providerName", "publishedAt", "createdAt", "updatedAt", "status", "totalMinutes", "costAmountWan", "sourcePath", "episodes.episodeNo");
         List<String> prioritizedDramaIds = prioritizedDramaIds(principal);
         Map<String, String> categoryNames = categoryRepository.findByEnabledTrueOrderBySortOrderAsc().stream()
                 .collect(Collectors.toMap(
@@ -231,6 +275,8 @@ public class DramaController {
                             categoryIds.stream()
                                 .map(code -> categoryNames.getOrDefault(code, code))
                                 .toList(),
+                            document.getString("source"),
+                            document.getString("providerName"),
                             episodeCount(document),
                             intValue(document, "totalMinutes"),
                             costAmountWan(document, id),

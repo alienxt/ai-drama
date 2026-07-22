@@ -113,6 +113,37 @@ class HongguoApiClientTest {
     }
 
     @Test
+    void parseMangaSearchItemsReadsXifanTopListFields() throws Exception {
+        JsonNode data = new ObjectMapper().readTree("""
+                {
+                  "lists": [
+                    {
+                      "id": "675524",
+                      "name": "林厨携手创商业传奇",
+                      "summary": "厨师林耀接手负债累累的老味饭店。",
+                      "cover": "https://example.com/xifan.png",
+                      "thumbnail": "https://example.com/xifan.webp",
+                      "score": 6.3,
+                      "episodeNum": 44
+                    }
+                  ]
+                }
+                """);
+        HongguoApiClient client = new HongguoApiClient(null, null, null);
+
+        var items = client.parseMangaSearchItems(data);
+
+        assertThat(items).hasSize(1);
+        HongguoApiModels.MangaSearchItem item = items.getFirst();
+        assertThat(item.providerDramaId()).isEqualTo("675524");
+        assertThat(item.title()).isEqualTo("林厨携手创商业传奇");
+        assertThat(item.summary()).isEqualTo("厨师林耀接手负债累累的老味饭店。");
+        assertThat(item.coverUrl()).isEqualTo("https://example.com/xifan.png");
+        assertThat(item.score()).isEqualTo("6.3");
+        assertThat(item.episodeCount()).isEqualTo(44);
+    }
+
+    @Test
     void formatChinaDateUsesShanghaiDate() {
         assertThat(HongguoApiClient.formatChinaDate(Instant.parse("2026-07-06T17:30:00Z")))
                 .isEqualTo("2026-07-07");
@@ -138,9 +169,85 @@ class HongguoApiClientTest {
         assertThat(decoded).isEqualTo(String.join(",", ids));
     }
 
+    @Test
+    void parseVideoVariantsReadsDouyinNestedVideoUrlAndProviderVideoId() throws Exception {
+        JsonNode data = new ObjectMapper().readTree("""
+                {
+                  "lists": [
+                    {
+                      "id": "episode-1",
+                      "video": {
+                        "duration": "2分钟50秒",
+                        "width": 1080,
+                        "height": 1920,
+                        "url": "https://example.com/episode-1.mp4"
+                      }
+                    }
+                  ]
+                }
+                """);
+        HongguoApiClient client = new HongguoApiClient(null, null, null);
+
+        var variants = parseVideoVariants(client, data, false);
+
+        assertThat(variants).hasSize(1);
+        HongguoApiModels.VideoVariant variant = variants.getFirst();
+        assertThat(variant.providerVideoId()).isEqualTo("episode-1");
+        assertThat(variant.url()).isEqualTo("https://example.com/episode-1.mp4");
+        assertThat(variant.duration()).isEqualTo("2分钟50秒");
+        assertThat(variant.width()).isEqualTo(1080);
+        assertThat(variant.height()).isEqualTo(1920);
+    }
+
+    @Test
+    void parseDramaDetailReadsDouyinNestedEpisodeDownloadUrl() throws Exception {
+        JsonNode data = new ObjectMapper().readTree("""
+                {
+                  "lists": [
+                    {
+                      "id": "episode-1",
+                      "name": "第 1 集",
+                      "video": {
+                        "url": "https://example.com/episode-1.mp4"
+                      }
+                    }
+                  ]
+                }
+                """);
+        HongguoApiClient client = new HongguoApiClient(null, null, null);
+
+        var detail = parseDramaDetail(client, "drama-1", data);
+
+        assertThat(detail.episodes()).hasSize(1);
+        HongguoApiModels.DetailEpisode episode = detail.episodes().getFirst();
+        assertThat(episode.providerVideoId()).isEqualTo("episode-1");
+        assertThat(episode.downloadUrl()).isEqualTo("https://example.com/episode-1.mp4");
+    }
+
     private String joinFilterIds(HongguoApiClient client, List<String> ids) throws Exception {
         Method method = HongguoApiClient.class.getDeclaredMethod("joinFilterIds", List.class);
         method.setAccessible(true);
         return (String) method.invoke(client, ids);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<HongguoApiModels.VideoVariant> parseVideoVariants(
+            HongguoApiClient client,
+            JsonNode data,
+            boolean requireDecryptKey
+    ) throws Exception {
+        Method method = HongguoApiClient.class.getDeclaredMethod("parseVideoVariants", JsonNode.class, boolean.class);
+        method.setAccessible(true);
+        return (List<HongguoApiModels.VideoVariant>) method.invoke(client, data, requireDecryptKey);
+    }
+
+    private HongguoApiModels.DramaDetail parseDramaDetail(
+            HongguoApiClient client,
+            String providerDramaId,
+            JsonNode data
+    ) throws Exception {
+        Method method = HongguoApiClient.class.getDeclaredMethod("parseDramaDetail", String.class, JsonNode.class);
+        method.setAccessible(true);
+        return (HongguoApiModels.DramaDetail) method.invoke(client, providerDramaId, data);
     }
 }

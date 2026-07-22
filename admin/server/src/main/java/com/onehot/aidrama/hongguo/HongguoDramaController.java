@@ -145,8 +145,12 @@ public class HongguoDramaController {
         String keyword = request == null ? null : request.keyword();
         String optionId = request == null ? null : request.optionId();
         int page = request == null || request.page() == null ? 1 : request.page();
+        HongguoDramaService.MangaSearchResult result = service.syncOtherChannel(channel, keyword, optionId, page);
         return ApiResponse.ok(
-                HongguoDtos.MangaSearchResponse.from(service.syncOtherChannel(channel, keyword, optionId, page)),
+                HongguoDtos.MangaSearchResponse.from(
+                        result,
+                        service.listOtherChannelCandidates(channel, keyword, optionId, page)
+                ),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }

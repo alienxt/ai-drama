@@ -40,6 +40,13 @@ public class MongoPageQuery {
         return this;
     }
 
+    public MongoPageQuery where(Criteria criterion) {
+        if (criterion != null) {
+            criteria.add(criterion);
+        }
+        return this;
+    }
+
     public MongoPageQuery missingText(String field) {
         criteria.add(new Criteria().orOperator(
                 Criteria.where(field).exists(false),

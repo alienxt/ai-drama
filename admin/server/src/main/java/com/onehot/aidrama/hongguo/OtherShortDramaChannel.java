@@ -123,7 +123,10 @@ public enum OtherShortDramaChannel {
     }
 
     public static List<OtherShortDramaChannel> visibleChannels() {
-        return Arrays.stream(values()).toList();
+        return Arrays.stream(values())
+                .filter(channel -> channel != XIFAN)
+                .filter(channel -> channel.mode != Mode.RANK || channel == XIFAN_TOP)
+                .toList();
     }
 
     public static OtherShortDramaChannel fromCode(String code) {

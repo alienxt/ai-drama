@@ -180,6 +180,7 @@ public class DistributionService {
         Map<String, Account> ownerById = ownerAccountsById(mediaById);
         var rows = taskPage.getContent().stream().map(task -> {
             MediaAccount mediaAccount = mediaById.get(task.getMediaAccountId());
+            com.onehot.aidrama.dramas.Drama drama = dramaById.get(task.getDramaId());
             if (task.getPlatform() == null && mediaAccount != null) {
                 task.setPlatform(mediaAccount.getPlatform());
             }
@@ -196,9 +197,15 @@ public class DistributionService {
                     Optional.ofNullable(mediaAccount)
                             .map(MediaAccount::getDisplayName)
                             .orElse(task.getMediaAccountId()),
-                    Optional.ofNullable(dramaById.get(task.getDramaId()))
+                    Optional.ofNullable(drama)
                             .map(this::dramaDisplayTitle)
-                            .orElse(task.getDramaId())
+                            .orElse(task.getDramaId()),
+                    Optional.ofNullable(drama)
+                            .map(com.onehot.aidrama.dramas.Drama::getSource)
+                            .orElse(null),
+                    Optional.ofNullable(drama)
+                            .map(com.onehot.aidrama.dramas.Drama::getProviderName)
+                            .orElse(null)
             );
         }).toList();
         return PageResult.from(new PageImpl<>(rows, taskPage.getPageable(), taskPage.getTotalElements()));

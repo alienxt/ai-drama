@@ -3,6 +3,7 @@ from pathlib import Path
 from aidrama_desktop.config.settings import Settings
 from aidrama_desktop.gui.app import DesktopWindow
 from aidrama_desktop.gui.state import AppStatus, desktop_nav_items, settings_rows, update_settings
+from aidrama_desktop.video.reassembly import VideoReassemblyConfigStore
 
 
 def test_app_status_uses_settings_and_login_state(tmp_path: Path):
@@ -107,3 +108,16 @@ def test_settings_rows_include_current_desktop_version(tmp_path: Path):
     rows = settings_rows(settings)
 
     assert any(row.label == "当前版本" and row.value for row in rows)
+
+
+def test_video_reassembly_config_store_uses_screenshot_defaults(tmp_path: Path):
+    config = VideoReassemblyConfigStore(tmp_path / "video-processing.json").load()
+
+    assert config.enabled is True
+    assert config.segment_min_seconds == 50.0
+    assert config.segment_max_seconds == 60.0
+    assert config.trim_head_seconds == 1.0
+    assert config.trim_tail_seconds == 1.0
+    assert config.speed_min_percent == 2.0
+    assert config.speed_max_percent == 5.0
+    assert config.swap_orientation is False

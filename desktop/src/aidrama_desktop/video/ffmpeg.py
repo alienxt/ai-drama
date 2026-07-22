@@ -43,6 +43,21 @@ class _TimelineSource:
     output_end_seconds: float
 
 
+@dataclass(frozen=True)
+class VideoReassemblySourceClip:
+    path: Path
+    start_seconds: float
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class VideoReassemblySegment:
+    index: int
+    start_seconds: float
+    duration_seconds: float
+    target: Path
+
+
 @dataclass
 class FfmpegProcessor:
     ffmpeg_path: str
@@ -138,6 +153,47 @@ class FfmpegProcessor:
         except OSError:
             pass
         return segments
+
+    def reassemble_videos(
+        self,
+        clips: list[VideoReassemblySourceClip],
+        segments: list[VideoReassemblySegment],
+        timeline: Path,
+        *,
+        speed_factor: float = 1.0,
+        swap_orientation: bool = False,
+    ) -> list[Path]:
+        if not clips:
+            raise ValueError("重组分集至少需要 1 个视频")
+        if not segments:
+            raise ValueError("重组分集没有可输出的切片")
+        timeline.parent.mkdir(parents=True, exist_ok=True)
+        for segment in segments:
+            segment.target.parent.mkdir(parents=True, exist_ok=True)
+        concat_file = timeline.with_name(f"{timeline.name}.concat.txt")
+        concat_file.write_text(self._concat_clip_file_content(clips), encoding="utf-8")
+        try:
+            self._run_ffmpeg(
+                self._reassembly_timeline_command(
+                    concat_file,
+                    timeline,
+                    clips[0].path,
+                    speed_factor=speed_factor,
+                    swap_orientation=swap_orientation,
+                ),
+                timeline,
+            )
+            for segment in segments:
+                self._run_ffmpeg(
+                    self._reassembly_segment_command(timeline, segment),
+                    segment.target,
+                )
+        finally:
+            try:
+                concat_file.unlink()
+            except OSError:
+                pass
+        return [segment.target for segment in segments]
 
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         try:
@@ -367,6 +423,67 @@ class FfmpegProcessor:
         command.extend([*self._wechat_video_output_args(), str(target)])
         return command
 
+    def _reassembly_timeline_command(
+        self,
+        concat_file: Path,
+        timeline: Path,
+        first_source: Path,
+        *,
+        speed_factor: float,
+        swap_orientation: bool,
+    ) -> list[str]:
+        command = [
+            self.ffmpeg_path,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+        ]
+        video_filters = self._reassembly_video_filters(first_source, speed_factor, swap_orientation)
+        if video_filters:
+            command.extend(["-vf", ",".join(video_filters)])
+        if self.has_audio_stream(first_source) and self._has_effective_speed_change(speed_factor):
+            command.extend(["-af", self._atempo_filter(speed_factor)])
+        command.extend([*self._wechat_video_output_args(), str(timeline)])
+        return command
+
+    def _reassembly_segment_command(
+        self,
+        timeline: Path,
+        segment: VideoReassemblySegment,
+    ) -> list[str]:
+        return [
+            self.ffmpeg_path,
+            "-y",
+            "-ss",
+            self._format_seconds(segment.start_seconds),
+            "-i",
+            str(timeline),
+            "-t",
+            self._format_seconds(segment.duration_seconds),
+            *self._wechat_video_output_args(),
+            str(segment.target),
+        ]
+
+    def _reassembly_video_filters(
+        self,
+        first_source: Path,
+        speed_factor: float,
+        swap_orientation: bool,
+    ) -> list[str]:
+        filters: list[str] = []
+        if swap_orientation:
+            dimensions = self.video_dimensions(first_source)
+            if dimensions:
+                width, height = dimensions
+                filters.append(self._wechat_video_frame_filter(height, width))
+        if self._has_effective_speed_change(speed_factor):
+            filters.append(f"setpts=PTS/{self._format_filter_number(speed_factor)}")
+        return filters
+
     def _transcode_with_cover_command(self, source: Path, target: Path, cover_path: Path | None) -> list[str]:
         dimensions = self.video_dimensions(source)
         if not cover_path or not cover_path.exists() or not dimensions:
@@ -553,6 +670,9 @@ class FfmpegProcessor:
         return self._positive_float((payload.get("format") or {}).get("duration"))
 
     def video_has_audio(self, source: Path) -> bool:
+        return self.has_audio_stream(source)
+
+    def has_audio_stream(self, source: Path) -> bool:
         command = [
             self.ffprobe_path(),
             "-v",
@@ -560,7 +680,7 @@ class FfmpegProcessor:
             "-select_streams",
             "a",
             "-show_entries",
-            "stream=codec_type",
+            "stream=index",
             "-of",
             "json",
             str(source),
@@ -570,7 +690,7 @@ class FfmpegProcessor:
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return False
-        return any(stream.get("codec_type") == "audio" for stream in payload.get("streams") or [])
+        return bool(payload.get("streams"))
 
     def ffprobe_path(self) -> str:
         ffmpeg = Path(self.ffmpeg_path)
@@ -610,6 +730,43 @@ class FfmpegProcessor:
         if not parsed:
             return None
         return parsed if parsed % 2 == 0 else parsed - 1
+
+    @classmethod
+    def _concat_clip_file_content(cls, clips: list[VideoReassemblySourceClip]) -> str:
+        lines: list[str] = []
+        for clip in clips:
+            start = max(0.0, clip.start_seconds)
+            duration = max(0.001, clip.duration_seconds)
+            lines.append(f"file '{cls._escape_concat_file_path(clip.path)}'")
+            if start > 0:
+                lines.append(f"inpoint {cls._format_seconds(start)}")
+            lines.append(f"outpoint {cls._format_seconds(start + duration)}")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _format_seconds(value: float) -> str:
+        return f"{max(value, 0.0):.3f}".rstrip("0").rstrip(".") or "0"
+
+    @staticmethod
+    def _format_filter_number(value: float) -> str:
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _has_effective_speed_change(speed_factor: float) -> bool:
+        return abs(speed_factor - 1.0) >= 0.0001
+
+    @classmethod
+    def _atempo_filter(cls, speed_factor: float) -> str:
+        factor = max(speed_factor, 0.01)
+        parts: list[float] = []
+        while factor > 2.0:
+            parts.append(2.0)
+            factor /= 2.0
+        while factor < 0.5:
+            parts.append(0.5)
+            factor /= 0.5
+        parts.append(factor)
+        return ",".join(f"atempo={cls._format_filter_number(part)}" for part in parts)
 
     @staticmethod
     def _process_output_tail(stdout: str | None, stderr: str | None, max_lines: int = 8, max_chars: int = 1000) -> str:

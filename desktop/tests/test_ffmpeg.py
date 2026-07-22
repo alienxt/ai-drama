@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from aidrama_desktop.video.ffmpeg import FfmpegError, FfmpegProcessor
+from aidrama_desktop.video.ffmpeg import (
+    FfmpegError,
+    FfmpegProcessor,
+    VideoReassemblySegment,
+    VideoReassemblySourceClip,
+)
 
 
 def test_ffmpeg_processor_reads_video_bitrate(monkeypatch, tmp_path):
@@ -294,7 +299,7 @@ def test_ffmpeg_processor_strategy1_adds_silent_audio_for_sources_without_audio(
         commands.append(command)
         if command[0] == "ffprobe" and "format=duration" in command:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
-        if command[0] == "ffprobe" and "stream=codec_type" in command:
+        if command[0] == "ffprobe" and ("stream=codec_type" in command or "stream=index" in command):
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": []}))
         if "-f" in command and "segment" in command:
             pattern = Path(command[-1])
@@ -328,8 +333,8 @@ def test_ffmpeg_processor_strategy1_forces_keyframes_at_segment_boundaries(monke
         commands.append(command)
         if command[0] == "ffprobe" and "format=duration" in command:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
-        if command[0] == "ffprobe" and "stream=codec_type" in command:
-            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"codec_type": "audio"}]}))
+        if command[0] == "ffprobe" and ("stream=codec_type" in command or "stream=index" in command):
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
         if "-f" in command and "segment" in command:
             pattern = Path(command[-1])
             pattern.parent.mkdir(parents=True, exist_ok=True)
@@ -354,6 +359,61 @@ def test_ffmpeg_processor_strategy1_forces_keyframes_at_segment_boundaries(monke
 
     timeline_command = commands[-2]
     assert timeline_command[timeline_command.index("-force_key_frames") + 1] == "60.000"
+
+
+def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    first_segment = tmp_path / "reassembled" / "001.mp4"
+    second_segment = tmp_path / "reassembled" / "002.mp4"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    commands = []
+    concat_files = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        commands.append(command)
+        if "-f" in command and command[command.index("-f") + 1] == "concat":
+            concat_path = Path(command[command.index("-i") + 1])
+            concat_files.append(concat_path)
+            content = concat_path.read_text(encoding="utf-8")
+            assert f"file '{source_1}'" in content
+            assert "inpoint 1" in content
+            assert "outpoint 61" in content
+            timeline.write_text("timeline")
+        else:
+            Path(command[-1]).write_text("segment")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+    result = processor.reassemble_videos(
+        [
+            VideoReassemblySourceClip(source_1, 1.0, 60.0),
+            VideoReassemblySourceClip(source_2, 1.0, 60.0),
+        ],
+        [
+            VideoReassemblySegment(1, 0.0, 50.0, first_segment),
+            VideoReassemblySegment(2, 50.0, 67.647, second_segment),
+        ],
+        timeline,
+        speed_factor=1.02,
+        swap_orientation=False,
+    )
+
+    assert result == [first_segment, second_segment]
+    timeline_command = commands[0]
+    assert timeline_command[:7] == ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i"]
+    assert timeline_command[timeline_command.index("-vf") + 1] == "setpts=PTS/1.02"
+    assert timeline_command[timeline_command.index("-af") + 1] == "atempo=1.02"
+    assert commands[1][commands[1].index("-ss") + 1] == "0"
+    assert commands[2][commands[2].index("-ss") + 1] == "50"
+    assert commands[2][commands[2].index("-t") + 1] == "67.647"
+    assert not concat_files[0].exists()
 
 
 def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):

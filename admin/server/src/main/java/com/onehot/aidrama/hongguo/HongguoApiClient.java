@@ -219,17 +219,22 @@ public class HongguoApiClient {
         List<HongguoApiModels.DetailEpisode> episodes = new ArrayList<>();
         int sequence = 1;
         for (JsonNode item : records(data, "lists", "list", "items", "records", "episodes", "video_list")) {
+            JsonNode video = item.path("video");
             String providerVideoId = firstText(item, "video_id", "id", "item_id", "episode_id");
             if (providerVideoId == null || providerVideoId.isBlank()) {
                 continue;
             }
             int episodeNo = firstInteger(item, sequence, "index", "episode_no", "episode", "sort", "seq");
+            String downloadUrl = firstText(item, "url", "video_url", "play_url", "download_url", "src");
+            if ((downloadUrl == null || downloadUrl.isBlank()) && !video.isMissingNode()) {
+                downloadUrl = firstText(video, "url", "video_url", "play_url", "download_url", "src");
+            }
             episodes.add(new HongguoApiModels.DetailEpisode(
                     Math.max(episodeNo, sequence),
                     firstText(item, "title", "name"),
                     providerVideoId,
                     firstInteger(item, "duration_num", "duration_seconds", "duration_sec"),
-                    firstText(item, "url", "video_url", "play_url", "download_url", "src")
+                    downloadUrl
             ));
             sequence++;
         }
@@ -269,7 +274,7 @@ public class HongguoApiClient {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("type", detailChannel.videoType());
         params.put(detailChannel.detailIdParam(), providerDramaId);
-        if (hasText(providerVideoId)) {
+        if (hasText(providerVideoId) && detailChannel != OtherShortDramaChannel.DOUYIN) {
             params.put("video_id", providerVideoId.trim());
         }
         if (detailChannel.supportsKeyword()) {
@@ -282,7 +287,11 @@ public class HongguoApiClient {
     private List<HongguoApiModels.VideoVariant> parseVideoVariants(JsonNode data, boolean requireDecryptKey) {
         List<HongguoApiModels.VideoVariant> variants = new ArrayList<>();
         for (JsonNode item : records(data, "video_lists", "lists", "list", "items", "records")) {
+            JsonNode video = item.path("video");
             String url = firstText(item, "url", "video_url", "play_url");
+            if ((url == null || url.isBlank()) && !video.isMissingNode()) {
+                url = firstText(video, "url", "video_url", "play_url", "download_url", "src");
+            }
             String decryptKey = firstText(item, "decrypt_key", "decryptKey", "key");
             if (url == null || url.isBlank()) {
                 continue;
@@ -290,14 +299,23 @@ public class HongguoApiClient {
             if (requireDecryptKey && (decryptKey == null || decryptKey.isBlank())) {
                 continue;
             }
+            Integer width = firstInteger(item, "width");
+            if (width == null) {
+                width = firstInteger(video, "width");
+            }
+            Integer height = firstInteger(item, "height");
+            if (height == null) {
+                height = firstInteger(video, "height");
+            }
             variants.add(new HongguoApiModels.VideoVariant(
                     url,
                     decryptKey,
                     firstText(item, "definition", "quality", "resolution"),
-                    firstText(item, "duration", "duration_text"),
+                    firstText(firstText(item, "duration", "duration_text"), firstText(video, "duration", "duration_text")),
                     firstText(item, "size", "file_size"),
-                    firstInteger(item, "width"),
-                    firstInteger(item, "height")
+                    width,
+                    height,
+                    firstText(item, "video_id", "id", "item_id", "episode_id")
             ));
         }
         variants.sort(Comparator.comparingInt(HongguoApiClient::videoPixels).reversed());

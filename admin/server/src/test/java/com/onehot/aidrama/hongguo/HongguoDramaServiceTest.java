@@ -463,6 +463,51 @@ class HongguoDramaServiceTest {
     }
 
     @Test
+    void syncOtherChannelStoresXifanTopCandidatesFromListResponse() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoDramaService service = new HongguoDramaService(apiClient, candidateRepository, dramaRepository);
+        HongguoApiModels.MangaSearchItem item = new HongguoApiModels.MangaSearchItem(
+                "xifan-1",
+                "林厨携手创商业传奇",
+                "厨师林耀接手负债累累的老味饭店。",
+                "https://example.com/xifan.png",
+                null,
+                "6.3",
+                null,
+                null,
+                44,
+                null,
+                null,
+                List.of(),
+                List.of()
+        );
+        when(apiClient.fetchOtherChannelDramas(OtherShortDramaChannel.XIFAN_TOP, null, "2", 1))
+                .thenReturn(new HongguoApiModels.MangaSearchPage("2", 1, List.of(item)));
+        when(candidateRepository.findByProviderAndProviderDramaId(OtherShortDramaChannel.XIFAN_TOP.providerCode(), "xifan-1"))
+                .thenReturn(Optional.empty());
+        when(candidateRepository.save(any(HongguoDramaCandidate.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        HongguoDramaService.MangaSearchResult result = service.syncOtherChannel("XIFAN_TOP", null, "2", 1);
+
+        assertThat(result.fetched()).isEqualTo(1);
+        assertThat(result.detailed()).isZero();
+        assertThat(result.created()).isEqualTo(1);
+        ArgumentCaptor<HongguoDramaCandidate> captor = ArgumentCaptor.forClass(HongguoDramaCandidate.class);
+        verify(candidateRepository).save(captor.capture());
+        HongguoDramaCandidate saved = captor.getValue();
+        assertThat(saved.getProvider()).isEqualTo("52API_XIFAN");
+        assertThat(saved.getProviderDramaId()).isEqualTo("xifan-1");
+        assertThat(saved.getTitle()).isEqualTo("林厨携手创商业传奇");
+        assertThat(saved.getSummary()).isEqualTo("厨师林耀接手负债累累的老味饭店。");
+        assertThat(saved.getEpisodeCount()).isEqualTo(44);
+        assertThat(saved.getSearchKeyword()).isEqualTo("OTHER:XIFAN_TOP:OPTION:2");
+        assertThat(saved.getSearchPage()).isEqualTo(1);
+        verify(apiClient, never()).fetchOtherDetail(any(), any(), any());
+    }
+
+    @Test
     void syncAiMangaNewDramasPaginatesAndFiltersItemsOlderThanThreeDays() {
         HongguoApiClient apiClient = mock(HongguoApiClient.class);
         HongguoDramaCandidateRepository candidateRepository = mock(HongguoDramaCandidateRepository.class);
@@ -775,6 +820,57 @@ class HongguoDramaServiceTest {
         assertThat(uri).isEqualTo(URI.create("https://cache.example.com/001.mp4"));
         assertThat(episode.getDownloadUrl()).isEqualTo("https://cache.example.com/001.mp4");
         assertThat(episode.getDownloadUrlExpiresAt()).isEqualTo(expiresAt);
+        verify(dramaRepository).save(drama);
+    }
+
+    @Test
+    void createDownloadUriFiltersOtherChannelVariantsByEpisodeVideoId() {
+        HongguoApiClient apiClient = mock(HongguoApiClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        HongguoDramaService service = new HongguoDramaService(
+                apiClient,
+                mock(HongguoDramaCandidateRepository.class),
+                dramaRepository
+        );
+        Drama drama = hongguoDrama();
+        drama.setTitle("抖音剧");
+        drama.setProviderName(OtherShortDramaChannel.DOUYIN.providerCode());
+        drama.setProviderDramaId("douyin-drama-1");
+        DramaEpisode episode = drama.getEpisodes().getFirst();
+        episode.setProviderVideoId("douyin-video-2");
+        when(apiClient.fetchOtherVideoVariants(
+                OtherShortDramaChannel.DOUYIN,
+                "douyin-drama-1",
+                "抖音剧",
+                "douyin-video-2"
+        )).thenReturn(List.of(
+                new HongguoApiModels.VideoVariant(
+                        "https://example.com/episode-1.mp4",
+                        null,
+                        null,
+                        "1分钟",
+                        null,
+                        1080,
+                        1920,
+                        "douyin-video-1"
+                ),
+                new HongguoApiModels.VideoVariant(
+                        "https://example.com/episode-2.mp4",
+                        null,
+                        null,
+                        "2分钟",
+                        null,
+                        1080,
+                        1920,
+                        "douyin-video-2"
+                )
+        ));
+        when(dramaRepository.save(drama)).thenReturn(drama);
+
+        URI uri = service.createDownloadUri(drama, episode);
+
+        assertThat(uri).isEqualTo(URI.create("https://example.com/episode-2.mp4"));
+        assertThat(episode.getDownloadUrl()).isEqualTo("https://example.com/episode-2.mp4");
         verify(dramaRepository).save(drama);
     }
 

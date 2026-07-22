@@ -14,6 +14,8 @@ public class DistributionDtos {
             MediaPlatform platform,
             String dramaId,
             String dramaTitle,
+            String dramaSource,
+            String dramaProviderName,
             DistributionTaskStatus status,
             int progress,
             String failureReason,
@@ -26,7 +28,9 @@ public class DistributionDtos {
                 String ownerAccountId,
                 String ownerUsername,
                 String mediaAccountName,
-                String dramaTitle
+                String dramaTitle,
+                String dramaSource,
+                String dramaProviderName
         ) {
             return new AdminTaskResponse(
                     task.getId(),
@@ -37,6 +41,8 @@ public class DistributionDtos {
                     task.getPlatform(),
                     task.getDramaId(),
                     dramaTitle,
+                    dramaSource,
+                    dramaProviderName,
                     task.getStatus(),
                     task.getProgress(),
                     task.getFailureReason(),

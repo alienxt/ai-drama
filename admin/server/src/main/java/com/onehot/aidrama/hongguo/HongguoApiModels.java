@@ -67,8 +67,20 @@ public class HongguoApiModels {
             String duration,
             String size,
             Integer width,
-            Integer height
+            Integer height,
+            String providerVideoId
     ) {
+        public VideoVariant(
+                String url,
+                String decryptKey,
+                String definition,
+                String duration,
+                String size,
+                Integer width,
+                Integer height
+        ) {
+            this(url, decryptKey, definition, duration, size, width, height, null);
+        }
     }
 
     public record DecryptedUrl(String url, Instant expiresAt) {

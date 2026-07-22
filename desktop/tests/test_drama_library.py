@@ -231,6 +231,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
             "costAmountWan": 3,
             "categoryIds": ["sci-fi"],
             "categoryNames": ["科幻"],
+            "providerName": "52API_DOUYIN",
             "episodes": [{}, {}],
             "status": "READY",
             "createdAt": "2026-06-14T16:42:03Z",
@@ -238,7 +239,7 @@ def test_desktop_drama_row_values_include_rating_and_hide_status_and_updated_at(
         }
     )
 
-    assert values == ["新剧名", "AI一段简介...", "4分", "科幻", "2", "3万", "可分发", "-", "-", "2026-06-14 16:42:03"]
+    assert values == ["新剧名", "抖音短剧", "AI一段简介...", "4分", "科幻", "2", "3万", "可分发", "-", "-", "2026-06-15 00:42:03"]
 
 
 def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
@@ -253,8 +254,8 @@ def test_desktop_drama_row_values_use_episode_count_summary_without_episodes():
         }
     )
 
-    assert values[4] == "12"
-    assert values[5] == "-"
+    assert values[5] == "12"
+    assert values[6] == "-"
 
 
 def test_desktop_drama_row_values_defaults_missing_rating_to_five():
@@ -268,7 +269,7 @@ def test_desktop_drama_row_values_defaults_missing_rating_to_five():
         }
     )
 
-    assert values[2] == "5分"
+    assert values[3] == "5分"
 
 
 def test_desktop_drama_row_values_marks_draft_as_pending_ai_assets():
@@ -284,7 +285,14 @@ def test_desktop_drama_row_values_marks_draft_as_pending_ai_assets():
         }
     )
 
-    assert values[6] == "待生成素材"
+    assert values[7] == "待生成素材"
+
+
+def test_desktop_drama_source_label_uses_readable_channel_names():
+    assert DesktopWindow.drama_source_label({"providerName": "52API_HONGGUO"}) == "红果"
+    assert DesktopWindow.drama_source_label({"providerName": "52API_DOUYIN"}) == "抖音短剧"
+    assert DesktopWindow.drama_source_label({"source": "BAIDU_PAN"}) == "网盘"
+    assert DesktopWindow.drama_source_label({"source": "HONGGUO_52API"}) == "红果"
 
 
 def test_drama_download_info_counts_only_completed_episodes(tmp_path):
@@ -602,7 +610,7 @@ def test_media_row_values_include_binding_time():
         "wx-1",
         "可用",
         "device-1",
-        "2026-06-15 12:02:48",
+        "2026-06-15 20:02:48",
         "已保存",
         "5",
         "30 分钟",
@@ -888,7 +896,7 @@ def test_task_history_selection_updates_current_media_account():
             "dramaTitle": "江城裁梦予君心",
         }
     ]
-    window.task_history_table = QTableWidget(1, 8)
+    window.task_history_table = QTableWidget(1, 9)
     window.task_history_table.setCurrentCell(0, 0)
     window.auto_task_state = QLabel()
     window.current_task_label = QLabel()

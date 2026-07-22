@@ -24,6 +24,80 @@ type HongguoPanelMode = 'manga' | 'new' | 'top' | 'screening';
 
 const HONGGUO_SYNC_TIMEOUT_MS = 180000;
 const OTHER_CHANNEL_SYNC_TIMEOUT_MS = 180000;
+const OTHER_CHANNEL_IMPORT_TIMEOUT_MS = 180000;
+const DOUYIN_OTHER_CHANNEL_CODE = 'DOUYIN';
+const XIFAN_SEARCH_CHANNEL_CODE = 'XIFAN';
+const XIFAN_TOP_CHANNEL_CODE = 'XIFAN_TOP';
+
+const XIFAN_TOP_OPTIONS: OtherShortDramaChannelOption[] = [
+  { id: '5', label: '全网榜' },
+  { id: '4', label: '推荐榜' },
+  { id: '1', label: '热播榜' },
+  { id: '2', label: '新剧榜' },
+  { id: '3', label: '热搜榜' },
+];
+
+const dramaProviderLabels: Record<string, string> = {
+  HONGGUO: '红果',
+  '52API_HONGGUO': '红果',
+  '52API_HEMA': '河马短剧',
+  '52API_XIFAN': '喜番短剧',
+  '52API_HUOLONG': '火龙漫剧',
+  '52API_DONGLI': '东梨短剧',
+  '52API_XINGYA': '星芽短剧',
+  '52API_WEIGUAN': '围观短剧',
+  '52API_DOUYIN': '抖音短剧',
+  '52API_QIMAO': '七猫短剧',
+  '52API_BAIDU': '百度短剧',
+};
+
+const dramaSourceOptions = [
+  { value: 'BAIDU_PAN', label: '网盘' },
+  { value: '52API_HONGGUO', label: '红果' },
+  { value: '52API_DOUYIN', label: '抖音短剧' },
+  { value: '52API_XIFAN', label: '喜番短剧' },
+  { value: '52API_HUOLONG', label: '火龙漫剧' },
+  { value: '52API_HEMA', label: '河马短剧' },
+  { value: '52API_DONGLI', label: '东梨短剧' },
+  { value: '52API_XINGYA', label: '星芽短剧' },
+  { value: '52API_WEIGUAN', label: '围观短剧' },
+  { value: '52API_QIMAO', label: '七猫短剧' },
+  { value: '52API_BAIDU', label: '百度短剧' },
+];
+
+function categoryOptionsFrom(categories?: DramaCategory[]): OtherShortDramaChannelOption[] {
+  return (categories ?? [])
+    .filter((category) => category.enabled)
+    .map((category) => ({ id: category.code, label: category.name }));
+}
+
+function dramaSourceLabel(drama: Drama) {
+  if (drama.providerName && dramaProviderLabels[drama.providerName]) {
+    return dramaProviderLabels[drama.providerName];
+  }
+  if (drama.source === 'BAIDU_PAN' || !drama.source) {
+    return '网盘';
+  }
+  if (drama.source === 'HONGGUO_52API') {
+    return '红果';
+  }
+  return drama.providerName || drama.source;
+}
+
+function normalizeOtherChannelCode(code?: string) {
+  return code === XIFAN_SEARCH_CHANNEL_CODE ? XIFAN_TOP_CHANNEL_CODE : code;
+}
+
+function otherChannelLabel(channel: OtherShortDramaChannel) {
+  return channel.code === XIFAN_TOP_CHANNEL_CODE ? '喜番短剧' : channel.label;
+}
+
+function visibleOtherChannels(channels: OtherShortDramaChannel[]) {
+  return channels.filter((channel) => (
+    channel.code !== XIFAN_SEARCH_CHANNEL_CODE
+    && (channel.mode !== 'RANK' || channel.code === XIFAN_TOP_CHANNEL_CODE)
+  ));
+}
 
 export function DramasPage() {
   const [version, setVersion] = useState(0);
@@ -276,7 +350,11 @@ export function DramasPage() {
       channels = await apiGet<OtherShortDramaChannel[]>('/admin/hongguo/other-channels');
       setOtherChannels(channels);
     }
-    const firstChannel = otherChannelCode || channels[0]?.code;
+    const availableChannels = visibleOtherChannels(channels);
+    const preferredChannel = normalizeOtherChannelCode(otherChannelCode);
+    const firstChannel = availableChannels.some((channel) => channel.code === preferredChannel)
+      ? preferredChannel
+      : availableChannels[0]?.code;
     if (!firstChannel) {
       return;
     }
@@ -284,22 +362,23 @@ export function DramasPage() {
   }
 
   async function selectOtherChannel(code: string, availableChannels = otherChannels) {
-    const channel = availableChannels.find((item) => item.code === code);
-    setOtherChannelCode(code);
+    const normalizedCode = normalizeOtherChannelCode(code) || code;
+    const channel = availableChannels.find((item) => item.code === normalizedCode);
+    setOtherChannelCode(normalizedCode);
     setOtherChannelPage(1);
     setOtherChannelCandidates([]);
     if (channel?.keywordSupported) {
       setOtherChannelKeyword(channel.defaultKeyword || '穿越');
       setOtherChannelOptionId(undefined);
       setOtherChannelOptions([]);
-      await loadOtherChannelCandidates(code, channel.defaultKeyword || '穿越', 1, undefined, channel);
+      await loadOtherChannelCandidates(normalizedCode, channel.defaultKeyword || '穿越', 1, undefined, channel);
       return;
     }
-    const options = await loadOtherChannelOptions(code);
+    const options = await loadOtherChannelOptions(normalizedCode);
     const firstOption = options[0]?.id;
     setOtherChannelOptionId(firstOption);
     if (firstOption) {
-      await loadOtherChannelCandidates(code, undefined, 1, firstOption);
+      await loadOtherChannelCandidates(normalizedCode, undefined, 1, firstOption);
     }
   }
 
@@ -307,8 +386,18 @@ export function DramasPage() {
     if (!code) {
       return [];
     }
+    if (code === XIFAN_TOP_CHANNEL_CODE) {
+      setOtherChannelOptions(XIFAN_TOP_OPTIONS);
+      return XIFAN_TOP_OPTIONS;
+    }
     setLoadingOtherChannelOptions(true);
     try {
+      if (code === DOUYIN_OTHER_CHANNEL_CODE) {
+        const categoryRows = categories?.length ? categories : await apiGet<DramaCategory[]>('/desktop/categories');
+        const rows = categoryOptionsFrom(categoryRows);
+        setOtherChannelOptions(rows);
+        return rows;
+      }
       const rows = await apiGet<OtherShortDramaChannelOption[]>(`/admin/hongguo/other-channels/${code}/options`);
       setOtherChannelOptions(rows);
       return rows;
@@ -367,7 +456,11 @@ export function DramasPage() {
         timeout: OTHER_CHANNEL_SYNC_TIMEOUT_MS,
       });
       appMessage.success(`${selectedOtherChannel?.label || '其他渠道'}已查询：获取 ${result.fetched} 部，查详情 ${result.detailed} 部，跳过 ${result.skipped} 部，新增 ${result.created} 部，更新 ${result.updated} 部`);
-      await loadOtherChannelCandidates(otherChannelCode, otherChannelKeyword, otherChannelPage, otherChannelOptionId);
+      if (result.candidates?.length) {
+        setOtherChannelCandidates(result.candidates);
+      } else {
+        await loadOtherChannelCandidates(otherChannelCode, otherChannelKeyword, otherChannelPage, otherChannelOptionId);
+      }
     } finally {
       setSyncingOtherChannel(false);
     }
@@ -376,7 +469,9 @@ export function DramasPage() {
   async function importOtherChannelCandidate(candidate: HongguoCandidate) {
     setImportingOtherChannelId(candidate.id);
     try {
-      await apiPost<HongguoImportCandidateResponse>(`/admin/hongguo/candidates/${candidate.id}/import`, {});
+      await apiPost<HongguoImportCandidateResponse>(`/admin/hongguo/candidates/${candidate.id}/import`, {}, {
+        timeout: OTHER_CHANNEL_IMPORT_TIMEOUT_MS,
+      });
       appMessage.success('已导入短剧目录并加入可分发池，客户端领取时才会生成 AI 素材和下载剧集视频');
       setVersion((value) => value + 1);
       await loadOtherChannelCandidates(otherChannelCode, otherChannelKeyword, otherChannelPage, otherChannelOptionId);
@@ -741,6 +836,13 @@ export function DramasPage() {
           fields={[
             { name: 'keyword', placeholder: '搜索剧名/AI剧名/简介/AI简介/目录', width: 260 },
             {
+              name: 'sourceProvider',
+              placeholder: '剧源',
+              type: 'select',
+              width: 120,
+              options: dramaSourceOptions,
+            },
+            {
               name: 'status',
               placeholder: '状态',
               type: 'select',
@@ -773,7 +875,7 @@ export function DramasPage() {
     >
       <AdminTable<Drama>
         rowKey="id"
-        scroll={{ x: 2170 }}
+        scroll={{ x: 2290 }}
         tableLayout="fixed"
         reloadKey={`${version}-${JSON.stringify(filters)}`}
         loadPage={(page, size) => apiGetPage<Drama>('/admin/dramas', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
@@ -794,6 +896,12 @@ export function DramasPage() {
             dataIndex: 'aiCoverUrl',
             width: 90,
             render: (aiCoverUrl?: string) => aiCoverUrl ? <Image className="drama-cover" src={aiCoverUrl} alt="AI封面" /> : <span className="muted">未生成</span>,
+          },
+          {
+            title: '剧的来源',
+            dataIndex: 'source',
+            width: 120,
+            render: (_, record) => <Tag color={record.source === 'BAIDU_PAN' || !record.source ? 'blue' : 'orange'}>{dramaSourceLabel(record)}</Tag>,
           },
           { title: '短剧名称', dataIndex: 'title', width: 220 },
           {
@@ -941,6 +1049,7 @@ export function DramasPage() {
                 {detailItem('创建时间', formatDateTime(viewing.createdAt))}
                 {detailItem('发布时间', formatDateTime(viewing.publishedAt))}
                 {detailItem('更新时间', formatDateTime(viewing.updatedAt))}
+                {detailItem('剧的来源', dramaSourceLabel(viewing))}
                 {detailItem('来源目录', <Typography.Text copyable className="mono-id">{viewing.sourcePath || '-'}</Typography.Text>)}
               </div>
             </section>
@@ -1196,7 +1305,7 @@ export function DramasPage() {
               value={otherChannelCode}
               placeholder="选择渠道"
               className="hongguo-keyword-input"
-              options={otherChannels.map((channel) => ({ value: channel.code, label: channel.label }))}
+              options={visibleOtherChannels(otherChannels).map((channel) => ({ value: channel.code, label: otherChannelLabel(channel) }))}
               onChange={(value) => selectOtherChannel(value)}
             />
             {selectedOtherChannel?.keywordSupported ? (

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -77,6 +78,12 @@ from aidrama_desktop.storyboard import StoryboardGenerator
 from aidrama_desktop.tasks.runner import TaskRunner
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
+from aidrama_desktop.video.reassembly import (
+    VIDEO_REASSEMBLY_METHOD_NONE,
+    VIDEO_REASSEMBLY_METHOD_REASSEMBLE,
+    VideoReassemblyConfig,
+    VideoReassemblyConfigStore,
+)
 
 
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
@@ -366,6 +373,8 @@ class DesktopWindow(QMainWindow):
         self.task_skip_event = threading.Event()
         self.contract_store = ContractConfigStore(settings.config_dir / "contract-templates.json")
         self.contract_templates = self.contract_store.load()
+        self.video_reassembly_store = VideoReassemblyConfigStore(settings.config_dir / "video-processing.json")
+        self.video_reassembly_config = self.video_reassembly_store.load()
         self.last_contract_path: Path | None = None
         self.last_contract_paths: list[Path] = []
         self.auto_task_timer = QTimer(self)
@@ -568,13 +577,13 @@ class DesktopWindow(QMainWindow):
         filters.addStretch(1)
         list_layout.addLayout(filters)
 
-        self.drama_table = QTableWidget(0, 12)
-        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "AI简介", "评分", "分类", "集数", "成本金额", "素材状态", "下载状态", "已下载集数", "上架时间", "操作"])
+        self.drama_table = QTableWidget(0, 13)
+        self.drama_table.setHorizontalHeaderLabels(["封面", "短剧名称", "剧源", "AI简介", "评分", "分类", "集数", "成本金额", "素材状态", "下载状态", "已下载集数", "上架时间", "操作"])
         self.align_table_header_left(self.drama_table)
         self.drama_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.drama_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.drama_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.drama_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.drama_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.drama_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Fixed)
@@ -583,16 +592,18 @@ class DesktopWindow(QMainWindow):
         self.drama_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Fixed)
         self.drama_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Fixed)
+        self.drama_table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Fixed)
         self.drama_table.setColumnWidth(0, 82)
-        self.drama_table.setColumnWidth(3, 64)
-        self.drama_table.setColumnWidth(4, 120)
-        self.drama_table.setColumnWidth(5, 70)
-        self.drama_table.setColumnWidth(6, 90)
-        self.drama_table.setColumnWidth(7, 110)
+        self.drama_table.setColumnWidth(2, 100)
+        self.drama_table.setColumnWidth(4, 64)
+        self.drama_table.setColumnWidth(5, 120)
+        self.drama_table.setColumnWidth(6, 70)
+        self.drama_table.setColumnWidth(7, 90)
         self.drama_table.setColumnWidth(8, 110)
         self.drama_table.setColumnWidth(9, 110)
-        self.drama_table.setColumnWidth(10, 165)
-        self.drama_table.setColumnWidth(11, 170)
+        self.drama_table.setColumnWidth(10, 110)
+        self.drama_table.setColumnWidth(11, 165)
+        self.drama_table.setColumnWidth(12, 170)
         self.drama_table.verticalHeader().setVisible(False)
         self.drama_table.setAlternatingRowColors(True)
         self.drama_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -991,9 +1002,9 @@ class DesktopWindow(QMainWindow):
         filters.addWidget(refresh)
         history_layout.addLayout(filters)
 
-        self.task_history_table = QTableWidget(0, 8)
+        self.task_history_table = QTableWidget(0, 9)
         self.task_history_table.setHorizontalHeaderLabels(
-            ["短剧", "媒体号", "状态", "执行链路", "失败原因", "创建时间", "结束时间", "操作"]
+            ["短剧", "剧源", "媒体号", "状态", "执行链路", "失败原因", "创建时间", "结束时间", "操作"]
         )
         self.task_history_table.verticalHeader().setVisible(False)
         self.task_history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1002,16 +1013,18 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
         self.task_history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.task_history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
-        self.task_history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.task_history_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self.task_history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Fixed)
         self.task_history_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
-        self.task_history_table.setColumnWidth(1, 130)
-        self.task_history_table.setColumnWidth(2, 92)
-        self.task_history_table.setColumnWidth(3, 380)
-        self.task_history_table.setColumnWidth(5, 150)
+        self.task_history_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Fixed)
+        self.task_history_table.setColumnWidth(1, 100)
+        self.task_history_table.setColumnWidth(2, 130)
+        self.task_history_table.setColumnWidth(3, 92)
+        self.task_history_table.setColumnWidth(4, 380)
         self.task_history_table.setColumnWidth(6, 150)
-        self.task_history_table.setColumnWidth(7, 220)
+        self.task_history_table.setColumnWidth(7, 150)
+        self.task_history_table.setColumnWidth(8, 220)
         self.align_table_header_left(self.task_history_table)
         self.task_history_table.itemSelectionChanged.connect(self.on_task_history_selection_changed)
         history_layout.addWidget(self.task_history_table, 1)
@@ -1040,6 +1053,7 @@ class DesktopWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+        layout.addWidget(self._video_reassembly_settings_panel())
         panel, panel_layout = self._panel("运行配置")
         update_row = QHBoxLayout()
         update_hint = QLabel(f"当前版本：{__version__}")
@@ -1077,7 +1091,7 @@ class DesktopWindow(QMainWindow):
                 open_button.clicked.connect(lambda _=False, item=setting: self.open_settings_row(item))
                 table.setCellWidget(row, 2, open_button)
             table.setRowHeight(row, 38)
-        table.setMinimumHeight(560)
+        table.setMinimumHeight(420)
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
         panel_layout.addLayout(update_row)
@@ -1085,6 +1099,122 @@ class DesktopWindow(QMainWindow):
         panel_layout.addWidget(table, 1)
         layout.addWidget(panel, 1)
         return page
+
+    def _video_reassembly_settings_panel(self) -> QFrame:
+        panel, panel_layout = self._panel("去重配置")
+        if not hasattr(self, "video_reassembly_store"):
+            self.video_reassembly_store = VideoReassemblyConfigStore(
+                self.settings.config_dir / "video-processing.json",
+            )
+        if not hasattr(self, "video_reassembly_config"):
+            self.video_reassembly_config = self.video_reassembly_store.load()
+        config = self.video_reassembly_config.normalized()
+        self.video_reassembly_summary_label = QLabel(f"当前方案：{config.summary()}")
+        self.video_reassembly_summary_label.setObjectName("mutedText")
+        panel_layout.addWidget(self.video_reassembly_summary_label)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignLeft)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+
+        self.video_reassembly_method_input = QComboBox()
+        self.video_reassembly_method_input.addItem("重组分集", VIDEO_REASSEMBLY_METHOD_REASSEMBLE)
+        self.video_reassembly_method_input.addItem("不启用", VIDEO_REASSEMBLY_METHOD_NONE)
+        self._set_combo_current_data(self.video_reassembly_method_input, config.method)
+        form.addRow("去重方式", self.video_reassembly_method_input)
+
+        self.reassembly_min_seconds_input = self._seconds_spin_box(1.0, 3600.0, config.segment_min_seconds)
+        self.reassembly_max_seconds_input = self._seconds_spin_box(1.0, 3600.0, config.segment_max_seconds)
+        self.reassembly_trim_head_input = self._seconds_spin_box(0.0, 60.0, config.trim_head_seconds)
+        self.reassembly_trim_tail_input = self._seconds_spin_box(0.0, 60.0, config.trim_tail_seconds)
+        self.reassembly_speed_min_input = self._percent_spin_box(config.speed_min_percent)
+        self.reassembly_speed_max_input = self._percent_spin_box(config.speed_max_percent)
+        self.reassembly_swap_input = QCheckBox("横竖互换（黑边填充）")
+        self.reassembly_swap_input.setChecked(config.swap_orientation)
+
+        range_row = QHBoxLayout()
+        range_row.addWidget(self.reassembly_min_seconds_input)
+        range_row.addWidget(QLabel("至"))
+        range_row.addWidget(self.reassembly_max_seconds_input)
+        range_row.addStretch(1)
+        form.addRow("切分时长", range_row)
+
+        trim_row = QHBoxLayout()
+        trim_row.addWidget(QLabel("片头"))
+        trim_row.addWidget(self.reassembly_trim_head_input)
+        trim_row.addSpacing(12)
+        trim_row.addWidget(QLabel("片尾"))
+        trim_row.addWidget(self.reassembly_trim_tail_input)
+        trim_row.addStretch(1)
+        form.addRow("去头去尾", trim_row)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(self.reassembly_speed_min_input)
+        speed_row.addWidget(QLabel("至"))
+        speed_row.addWidget(self.reassembly_speed_max_input)
+        speed_row.addStretch(1)
+        form.addRow("变速区间", speed_row)
+        form.addRow("", self.reassembly_swap_input)
+
+        panel_layout.addLayout(form)
+        hint = QLabel(
+            "全剧按集序接成一条时间线，在切分区间内滚动切出新集；"
+            "剩余不足 30 秒会并入上一集。横竖互换默认不启用。"
+        )
+        hint.setObjectName("mutedText")
+        hint.setWordWrap(True)
+        panel_layout.addWidget(hint)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        save_button = QPushButton("保存配置")
+        save_button.clicked.connect(self.save_video_reassembly_config)
+        actions.addWidget(save_button)
+        panel_layout.addLayout(actions)
+        return panel
+
+    def _seconds_spin_box(self, minimum: float, maximum: float, value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(1)
+        spin.setSingleStep(1.0)
+        spin.setSuffix(" s")
+        spin.setValue(value)
+        return spin
+
+    def _percent_spin_box(self, value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(-50.0, 50.0)
+        spin.setDecimals(1)
+        spin.setSingleStep(1.0)
+        spin.setSuffix(" %")
+        spin.setValue(value)
+        return spin
+
+    @staticmethod
+    def _set_combo_current_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def save_video_reassembly_config(self) -> None:
+        config = VideoReassemblyConfig(
+            method=str(self.video_reassembly_method_input.currentData() or VIDEO_REASSEMBLY_METHOD_NONE),
+            segment_min_seconds=self.reassembly_min_seconds_input.value(),
+            segment_max_seconds=self.reassembly_max_seconds_input.value(),
+            trim_head_seconds=self.reassembly_trim_head_input.value(),
+            trim_tail_seconds=self.reassembly_trim_tail_input.value(),
+            speed_min_percent=self.reassembly_speed_min_input.value(),
+            speed_max_percent=self.reassembly_speed_max_input.value(),
+            swap_orientation=self.reassembly_swap_input.isChecked(),
+        ).normalized()
+        self.video_reassembly_store.save(config)
+        self.video_reassembly_config = config
+        self.video_reassembly_summary_label.setText(f"当前方案：{config.summary()}")
+        self.append_log(f"去重配置已保存：{config.summary()}")
+        QMessageBox.information(self, "去重配置", "去重配置已保存。")
 
     def _logs_page(self) -> QWidget:
         page = QWidget()
@@ -1263,6 +1393,7 @@ class DesktopWindow(QMainWindow):
             contract_buyer=self.contract_party_value("WECHAT_VIDEO", "buyer"),
             contract_seller=self.contract_party_value("WECHAT_VIDEO", "seller"),
             soffice_path=self.settings.soffice_path,
+            video_reassembly_config=self.video_reassembly_config,
             storyboard_generator=StoryboardGenerator(self.settings.ffmpeg_path, chrome_path),
             storyboards_dir=self.settings.work_dir / "storyboards",
         )
@@ -1425,8 +1556,8 @@ class DesktopWindow(QMainWindow):
                 item = self.left_aligned_table_item(value)
                 item.setToolTip(value)
                 self.task_history_table.setItem(row_index, column, item)
-            self.task_history_table.setCellWidget(row_index, 3, self.task_history_chain_widget(task))
-            self.task_history_table.setCellWidget(row_index, 7, self.task_history_actions_widget(task))
+            self.task_history_table.setCellWidget(row_index, 4, self.task_history_chain_widget(task))
+            self.task_history_table.setCellWidget(row_index, 8, self.task_history_actions_widget(task))
             self.task_history_table.setRowHeight(row_index, 46)
 
     def on_task_history_selection_changed(self) -> None:
@@ -1442,6 +1573,7 @@ class DesktopWindow(QMainWindow):
     def task_history_row_values(self, task: dict[str, Any]) -> list[str]:
         return [
             str(task.get("dramaTitle") or task.get("dramaId") or "-"),
+            self.drama_source_label(task),
             str(task.get("mediaAccountName") or task.get("mediaAccountId") or "-"),
             self.distribution_task_status_label(str(task.get("status") or "")),
             self.task_history_chain_summary(task),
@@ -1844,13 +1976,13 @@ class DesktopWindow(QMainWindow):
             self.drama_table.setCellWidget(row_index, 0, self.drama_cover_widget(cover_url))
             values = self.drama_row_values(drama)
             download_status, downloaded_count, _ = self.drama_download_info(drama)
-            values[7] = download_status
-            values[8] = str(downloaded_count)
+            values[8] = download_status
+            values[9] = str(downloaded_count)
             for column, value in enumerate(values, start=1):
                 item = self.left_aligned_table_item(value)
                 item.setToolTip(value)
                 self.drama_table.setItem(row_index, column, item)
-            self.drama_table.setCellWidget(row_index, 11, self.drama_actions_widget(drama))
+            self.drama_table.setCellWidget(row_index, 12, self.drama_actions_widget(drama))
             self.drama_table.setRowHeight(row_index, 86)
 
     def show_drama_detail(self, row: int, _: int = 0) -> None:
@@ -1891,6 +2023,7 @@ class DesktopWindow(QMainWindow):
             info.addWidget(original)
         info.addWidget(QLabel(f"分类：{categories or '-'}"))
         info.addWidget(QLabel(f"评分：{self.format_rating(drama.get('rating'))}"))
+        info.addWidget(QLabel(f"剧源：{self.drama_source_label(drama)}"))
         info.addWidget(QLabel(f"集数：{total_count}"))
         info.addWidget(QLabel(f"成本金额：{self.format_cost_amount_wan(drama)}"))
         info.addWidget(QLabel(f"素材状态：{self.drama_preparation_status_label(drama)}"))
@@ -1944,6 +2077,7 @@ class DesktopWindow(QMainWindow):
             categories = "，".join(str(code) for code in drama.get("categoryIds") or [])
         return [
             str(drama.get("aiTitle") or drama.get("title") or "-"),
+            cls.drama_source_label(drama),
             str(drama.get("aiSummary") or drama.get("summary") or "-"),
             cls.format_rating(drama.get("rating")),
             categories or "-",
@@ -1958,6 +2092,35 @@ class DesktopWindow(QMainWindow):
     @staticmethod
     def drama_listed_at_value(drama: dict[str, Any]) -> Any:
         return drama.get("listedAt") or drama.get("publishedAt") or drama.get("createdAt") or ""
+
+    @classmethod
+    def drama_source_label(cls, drama: dict[str, Any]) -> str:
+        provider = str(drama.get("providerName") or drama.get("dramaProviderName") or "").strip()
+        if provider:
+            return cls.drama_provider_label(provider)
+        source = str(drama.get("source") or drama.get("dramaSource") or "").strip()
+        if source in ("", "BAIDU_PAN"):
+            return "网盘"
+        if source == "HONGGUO_52API":
+            return "红果"
+        return source
+
+    @staticmethod
+    def drama_provider_label(provider: str) -> str:
+        labels = {
+            "HONGGUO": "红果",
+            "52API_HONGGUO": "红果",
+            "52API_HEMA": "河马短剧",
+            "52API_XIFAN": "喜番短剧",
+            "52API_HUOLONG": "火龙漫剧",
+            "52API_DONGLI": "东梨短剧",
+            "52API_XINGYA": "星芽短剧",
+            "52API_WEIGUAN": "围观短剧",
+            "52API_DOUYIN": "抖音短剧",
+            "52API_QIMAO": "七猫短剧",
+            "52API_BAIDU": "百度短剧",
+        }
+        return labels.get(provider, provider)
 
     @classmethod
     def drama_preparation_status_label(cls, drama: dict[str, Any]) -> str:

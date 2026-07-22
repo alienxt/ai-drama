@@ -2,6 +2,8 @@ package com.onehot.aidrama.hongguo;
 
 import com.onehot.aidrama.dramas.Drama;
 
+import java.util.List;
+
 public class HongguoDtos {
     private HongguoDtos() {
     }
@@ -12,8 +14,12 @@ public class HongguoDtos {
     public record NewDramaRequest(Integer page, Integer maxPages) {
     }
 
-    public record MangaSearchResponse(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated) {
+    public record MangaSearchResponse(String keyword, int page, int fetched, int detailed, int skipped, int created, int updated, List<HongguoDramaCandidate> candidates) {
         static MangaSearchResponse from(HongguoDramaService.MangaSearchResult result) {
+            return from(result, List.of());
+        }
+
+        static MangaSearchResponse from(HongguoDramaService.MangaSearchResult result, List<HongguoDramaCandidate> candidates) {
             return new MangaSearchResponse(
                     result.keyword(),
                     result.page(),
@@ -21,7 +27,8 @@ public class HongguoDtos {
                     result.detailed(),
                     result.skipped(),
                     result.created(),
-                    result.updated()
+                    result.updated(),
+                    candidates == null ? List.of() : candidates
             );
         }
     }
