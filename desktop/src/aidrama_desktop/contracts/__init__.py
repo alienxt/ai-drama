@@ -17,11 +17,13 @@ from aidrama_desktop.contracts.generator import (
     generate_agreement_number,
     generate_contract_start_date,
     merge_pngs_vertically,
+    normalize_contract_docx_for_rendering,
     required_contract_party_fields,
     required_contract_template_types,
     render_contract_material_bundle,
     render_contract_docx,
     safe_contract_filename,
+    should_normalize_contract_for_rendering,
 )
 
 __all__ = [
@@ -43,9 +45,11 @@ __all__ = [
     "generate_agreement_number",
     "generate_contract_start_date",
     "merge_pngs_vertically",
+    "normalize_contract_docx_for_rendering",
     "required_contract_party_fields",
     "required_contract_template_types",
     "render_contract_material_bundle",
     "render_contract_docx",
     "safe_contract_filename",
+    "should_normalize_contract_for_rendering",
 ]

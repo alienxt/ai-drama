@@ -361,7 +361,7 @@ def test_render_contract_material_bundle_invalidates_cache_when_data_changes(tmp
     assert len(converter_calls) == 6
 
 
-def test_render_contract_material_bundle_merges_purchase_pages(tmp_path):
+def test_render_contract_material_bundle_merges_purchase_and_rights_pages(tmp_path):
     from PySide6.QtGui import QColor, QImage
 
     templates = {}
@@ -374,7 +374,9 @@ def test_render_contract_material_bundle_merges_purchase_pages(tmp_path):
 
     def fake_converter(docx_path: Path, image_dir: Path, image_stem: str | None):
         image_dir.mkdir(parents=True, exist_ok=True)
-        if image_stem and image_stem.startswith("purchase-"):
+        if image_stem and (
+            image_stem.startswith("purchase-") or image_stem.startswith("rights-")
+        ):
             pages = []
             for index, height in enumerate((10, 12), start=1):
                 image = QImage(20, height, QImage.Format.Format_RGB32)
@@ -407,10 +409,14 @@ def test_render_contract_material_bundle_merges_purchase_pages(tmp_path):
         image_converter=fake_converter,
     )
     purchase = next(material for material in bundle.materials if material.contract_type == "purchase")
-    merged = QImage(str(purchase.image_paths[0]))
+    rights = next(material for material in bundle.materials if material.contract_type == "rights")
+    merged_purchase = QImage(str(purchase.image_paths[0]))
+    merged_rights = QImage(str(rights.image_paths[0]))
 
     assert len(purchase.image_paths) == 1
-    assert merged.height() == 22
+    assert len(rights.image_paths) == 1
+    assert merged_purchase.height() == 22
+    assert merged_rights.height() == 22
 
 
 def test_contract_config_store_round_trips_template_paths(tmp_path):
@@ -504,28 +510,46 @@ def test_merge_pngs_vertically_creates_single_long_image(tmp_path):
     assert merged.height() == 22
 
 
-def test_rights_contract_image_conversion_prefers_quicklook(tmp_path, monkeypatch):
+def test_rights_contract_image_conversion_uses_pdf_export_without_quicklook(tmp_path, monkeypatch):
     docx_path = tmp_path / "rights.docx"
     image_dir = tmp_path / "images"
-    quicklook_image = image_dir / "rights.png"
+    rights_image = image_dir / "rights.png"
     docx_path.write_bytes(b"docx")
     calls = []
 
     def fake_quicklook(path: Path, target_dir: Path, stem: str):
         calls.append(("quicklook", path, target_dir, stem))
         target_dir.mkdir(parents=True, exist_ok=True)
-        quicklook_image.write_bytes(b"png")
-        return quicklook_image
+        return None
 
-    def fake_export(path: Path, target_dir: Path, stem: str):
-        calls.append(("export", path, target_dir, stem))
-        return []
+    def fake_export(
+        path: Path,
+        target_dir: Path,
+        stem: str,
+        *,
+        soffice_path=None,
+        allow_quicklook_fallback=True,
+        allow_single_page_pdf_fallback=True,
+    ):
+        calls.append(
+            (
+                "export",
+                path,
+                target_dir,
+                stem,
+                allow_quicklook_fallback,
+                allow_single_page_pdf_fallback,
+            )
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        rights_image.write_bytes(b"png")
+        return [rights_image]
 
     monkeypatch.setattr("aidrama_desktop.contracts.generator.quicklook_docx_to_image", fake_quicklook)
     monkeypatch.setattr("aidrama_desktop.contracts.generator.export_contract_docx_images", fake_export)
 
-    assert convert_contract_docx_images("rights", docx_path, image_dir, "rights") == [quicklook_image]
-    assert calls == [("quicklook", docx_path, image_dir, "rights")]
+    assert convert_contract_docx_images("rights", docx_path, image_dir, "rights") == [rights_image]
+    assert calls == [("export", docx_path, image_dir, "rights", False, False)]
 
 
 def test_normalize_contract_docx_for_rendering_keeps_template_fonts(tmp_path):
@@ -542,6 +566,9 @@ def test_normalize_contract_docx_for_rendering_keeps_template_fonts(tmp_path):
         <w:t>成本配置比例情况报告</w:t>
       </w:r>
     </w:p>
+    <w:sectPr>
+      <w:docGrid w:type="lines" w:linePitch="312" w:charSpace="0"/>
+    </w:sectPr>
   </w:body>
 </w:document>"""
     with ZipFile(docx_path, "w") as archive:
@@ -555,6 +582,9 @@ def test_normalize_contract_docx_for_rendering_keeps_template_fonts(tmp_path):
 
     assert 'w:eastAsia="仿宋_GB2312"' in updated
     assert 'w:spacing w:val="0"' in updated
+    assert 'w:docGrid w:type="default"' in updated
+    assert "w:linePitch" not in updated
+    assert "w:charSpace" not in updated
     assert "minorEastAsia" in updated
 
 

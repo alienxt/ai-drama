@@ -29,6 +29,7 @@ CONTRACT_TEMPLATE_TYPE_LABELS = {
 CONTRACT_PLATFORM_TEMPLATE_TYPE_LABELS = {
     ("TIKTOK", "purchase"): "TK合作协议",
 }
+CONTRACT_TYPES_NORMALIZED_FOR_RENDERING = {"cost", "purchase", "rights"}
 CONTRACT_PARTY_FIELD_LABELS = {
     "buyer": "买方/甲方",
     "seller": "卖方/乙方",
@@ -105,6 +106,10 @@ def all_required_contract_templates_configured(templates: dict[str, Path | str |
         if not value or not Path(value).exists():
             return False
     return True
+
+
+def should_normalize_contract_for_rendering(contract_type: str) -> bool:
+    return contract_type in CONTRACT_TYPES_NORMALIZED_FOR_RENDERING
 
 
 @dataclass(frozen=True)
@@ -409,7 +414,7 @@ def render_contract_material_bundle(
     for contract_type, label in required_contract_template_types(platform):
         template = Path(templates[contract_template_key(platform, contract_type)])
         data = data_factory(contract_type, label)
-        normalize_for_rendering = contract_type == "cost"
+        normalize_for_rendering = should_normalize_contract_for_rendering(contract_type)
         docx_path = build_contract_output_path(output_dir / "docx", data)
         image_stem = safe_contract_filename(f"{contract_type}-{data.drama_title}")
         cache_key = build_contract_material_cache_key(
@@ -440,7 +445,7 @@ def render_contract_material_bundle(
             image_converter,
             soffice_path=soffice_path,
         )
-        if contract_type == "purchase" and len(image_paths) > 1:
+        if contract_type in {"purchase", "rights"} and len(image_paths) > 1:
             image_paths = [
                 merge_pngs_vertically(
                     image_paths,
@@ -465,11 +470,7 @@ def convert_contract_docx_images(
 ) -> list[Path]:
     if image_converter is not None:
         return image_converter(docx_path, image_dir, image_stem)
-    if contract_type == "rights":
-        quicklook = quicklook_docx_to_image(docx_path, image_dir, image_stem)
-        if quicklook:
-            return [quicklook]
-    allow_single_page_fallback = contract_type != "purchase"
+    allow_single_page_fallback = contract_type not in {"purchase", "rights"}
     return export_contract_docx_images(
         docx_path,
         image_dir,
@@ -575,6 +576,7 @@ def normalize_contract_docx_for_rendering(docx_path: Path) -> bool:
             continue
         changed = False
         changed |= _normalize_run_spacing(root)
+        changed |= _normalize_document_grid(root)
         if changed:
             changed_members[member] = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -598,6 +600,21 @@ def _normalize_run_spacing(root: ElementTree.Element) -> bool:
         if numeric < 0:
             spacing.set(_word_attr("val"), "0")
             changed = True
+    return changed
+
+
+def _normalize_document_grid(root: ElementTree.Element) -> bool:
+    changed = False
+    for doc_grid in root.findall(".//w:docGrid", WORDML_NAMESPACES):
+        type_attr = _word_attr("type")
+        if doc_grid.get(type_attr) != "default":
+            doc_grid.set(type_attr, "default")
+            changed = True
+        for name in ("linePitch", "charSpace"):
+            attr = _word_attr(name)
+            if attr in doc_grid.attrib:
+                del doc_grid.attrib[attr]
+                changed = True
     return changed
 
 
@@ -903,7 +920,7 @@ def merge_pngs_vertically(image_paths: list[Path], target: Path) -> Path:
 
     images = [QImage(str(path)) for path in image_paths]
     if any(image.isNull() for image in images):
-        raise RuntimeError("采购合同图片读取失败，无法合并。")
+        raise RuntimeError("合同图片读取失败，无法合并。")
     width = max(image.width() for image in images)
     height = sum(image.height() for image in images)
     merged = QImage(width, height, QImage.Format.Format_RGB32)
@@ -921,7 +938,7 @@ def merge_pngs_vertically(image_paths: list[Path], target: Path) -> Path:
     if target.exists():
         target.unlink()
     if not merged.save(str(target), "PNG"):
-        raise RuntimeError("采购合同长图保存失败。")
+        raise RuntimeError("合同长图保存失败。")
     for path in image_paths:
         if path != target and path.exists():
             try:

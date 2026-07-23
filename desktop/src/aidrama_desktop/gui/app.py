@@ -66,10 +66,12 @@ from aidrama_desktop.contracts import (
     generate_agreement_number,
     generate_contract_start_date,
     merge_pngs_vertically,
+    normalize_contract_docx_for_rendering,
     required_contract_party_fields,
     required_contract_template_types,
     render_contract_docx,
     safe_contract_filename,
+    should_normalize_contract_for_rendering,
 )
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
 from aidrama_desktop.local_agent import create_local_agent_server
@@ -3099,7 +3101,12 @@ class DesktopWindow(QMainWindow):
             data = self.contract_render_input(contract_type, agreement_number)
             output = self.contract_test_output_path(data, agreement_number)
             generated_paths.append(
-                render_contract_docx(template, output, data, normalize_for_rendering=contract_type == "cost")
+                render_contract_docx(
+                    template,
+                    output,
+                    data,
+                    normalize_for_rendering=should_normalize_contract_for_rendering(contract_type),
+                )
             )
         self.last_contract_path = generated_paths[-1] if generated_paths else None
         self.last_contract_paths = generated_paths
@@ -3201,6 +3208,8 @@ class DesktopWindow(QMainWindow):
 
     def build_generated_contract_images(self, path: Path) -> list[Path]:
         contract_type = self.infer_contract_type_from_path(path)
+        if should_normalize_contract_for_rendering(contract_type):
+            normalize_contract_docx_for_rendering(path)
         image_dir = path.parent / "images"
         image_stem = safe_contract_filename(path.stem)
         image_paths = convert_contract_docx_images(
