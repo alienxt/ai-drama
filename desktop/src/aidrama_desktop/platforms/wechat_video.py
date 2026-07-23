@@ -72,11 +72,12 @@ class WeChatVideoPublisher(PlatformPublisher):
                 context = self._browser_context(browser)
             except Exception as exception:  # noqa: BLE001
                 raise RuntimeError("无法接管视频号发布浏览器，请先通过客户端打开媒体号后台并完成扫码登录") from exception
-            page = self._open_publish_page(context, target_url)
             if metadata:
+                page = self._open_publish_page(context, target_url)
                 self._upload_playlet(page, media_files, title, summary, metadata, PlaywrightTimeoutError)
             else:
                 for media_file in media_files:
+                    page = self._open_single_video_publish_page(context, target_url)
                     self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
@@ -104,19 +105,38 @@ class WeChatVideoPublisher(PlatformPublisher):
             return contexts[0]
         return browser.new_context()
 
-    def _open_publish_page(self, context, target_url: str):
+    def _open_publish_page(self, context, target_url: str, *, require_upload_entry: bool = False):
         startup_pages = list(getattr(context, "pages", []) or [])
-        page = self._target_page(startup_pages, target_url) or self._startup_blank_page(startup_pages) or context.new_page()
+        page = None
         try:
-            if not self._is_target_url(getattr(page, "url", ""), target_url):
+            attempts = 2 if require_upload_entry else 1
+            for attempt in range(attempts):
+                page = context.new_page()
                 page.goto(target_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
+                page.wait_for_timeout(1000)
+                if not require_upload_entry or self._has_single_video_upload_entry(page):
+                    self._close_startup_blank_pages(startup_pages, active_page=page)
+                    return page
+                self._safe_close_page(page)
+                page = None
+                if attempt < attempts - 1:
+                    continue
+            raise RuntimeError("未找到视频号上传入口，请确认已登录并停留在视频号助手后台")
         except Exception as exception:  # noqa: BLE001
+            if page is not None:
+                self._safe_close_page(page)
             if self._is_page_closed_error(exception):
                 raise RuntimeError("浏览器页面已关闭，无法打开视频号发布页面") from exception
+            if isinstance(exception, RuntimeError):
+                raise
             raise RuntimeError("无法打开视频号发布页面，请确认网络正常并已登录视频号助手") from exception
-        self._close_startup_blank_pages(startup_pages, active_page=page)
-        return page
+
+    def _open_single_video_publish_page(self, context, target_url: str):
+        return self._open_publish_page(
+            context,
+            target_url,
+            require_upload_entry=True,
+        )
 
     @staticmethod
     def _target_page(pages, target_url: str):
@@ -144,10 +164,34 @@ class WeChatVideoPublisher(PlatformPublisher):
             url = str(getattr(page, "url", "") or "")
             close = getattr(page, "close", None)
             if callable(close) and url in {"", "about:blank"}:
-                try:
-                    close()
-                except Exception:
-                    pass
+                self._safe_close_page(page)
+
+    @staticmethod
+    def _safe_close_page(page) -> None:
+        close = getattr(page, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _has_single_video_upload_entry(page) -> bool:
+        try:
+            if page.locator('input[type="file"]').first.count() > 0:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        for pattern in (
+            re.compile("发表视频|发布视频|上传视频|创建"),
+            re.compile("选取视频|选择视频|添加视频"),
+        ):
+            try:
+                if page.get_by_text(pattern).first.count() > 0:
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
 
     @staticmethod
     def _terminate_process(process) -> None:

@@ -142,7 +142,7 @@ def test_wechat_video_publisher_opens_playlet_management_for_drama_publish(tmp_p
     assert uploaded == [([media_file], "神医归来", "简介", {"coverFile": tmp_path / "cover.jpg"})]
 
 
-def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tmp_path: Path, monkeypatch):
+def test_wechat_video_publisher_opens_fresh_page_for_playlet_publish(tmp_path: Path, monkeypatch):
     uploaded_pages = []
     opened = []
     connected = []
@@ -164,15 +164,15 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
             self.closed = True
 
     blank_page = FakePage()
-    unexpected_page = FakePage()
+    publish_page = FakePage()
 
     class FakeContext:
         def __init__(self):
             self.pages = [blank_page]
 
         def new_page(self):
-            self.pages.append(unexpected_page)
-            return unexpected_page
+            self.pages.append(publish_page)
+            return publish_page
 
     context = FakeContext()
 
@@ -212,39 +212,44 @@ def test_wechat_video_publisher_reuses_startup_blank_page_for_playlet_publish(tm
 
     publisher.publish([media_file], "神医归来", metadata={"coverFile": tmp_path / "cover.jpg"})
 
-    assert blank_page.closed is False
-    assert uploaded_pages == [blank_page]
+    assert blank_page.closed is True
+    assert uploaded_pages == [publish_page]
     profile_dir = tmp_path / "wechat_video" / "media-1"
     port = remote_debugging_port_for_profile(profile_dir)
     assert opened == [(profile_dir, "about:blank", port)]
     assert connected == [f"http://127.0.0.1:{port}"]
-    assert blank_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
-    assert unexpected_page.visited == []
+    assert blank_page.visited == []
+    assert publish_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
 
 
-def test_wechat_video_publisher_reuses_existing_playlet_tab(tmp_path: Path, monkeypatch):
+def test_wechat_video_publisher_does_not_reuse_existing_playlet_tab(tmp_path: Path, monkeypatch):
     uploaded_pages = []
 
     class FakePage:
         def __init__(self, url):
             self.url = url
             self.visited = []
+            self.closed = False
 
         def goto(self, url, wait_until=None):
+            self.url = url
             self.visited.append((url, wait_until))
 
         def wait_for_timeout(self, _timeout):
             return None
 
+        def close(self):
+            self.closed = True
+
     playlet_page = FakePage(WeChatVideoPublisher.playlet_url)
-    unexpected_page = FakePage("about:blank")
+    publish_page = FakePage("about:blank")
 
     class FakeContext:
         pages = [playlet_page]
 
         def new_page(self):
-            self.pages.append(unexpected_page)
-            return unexpected_page
+            self.pages.append(publish_page)
+            return publish_page
 
     monkeypatch.setattr(
         WeChatVideoPublisher,
@@ -256,10 +261,71 @@ def test_wechat_video_publisher_reuses_existing_playlet_tab(tmp_path: Path, monk
     page = publisher._open_publish_page(FakeContext(), WeChatVideoPublisher.playlet_url)
     publisher._upload_playlet(page, [tmp_path / "001.mp4"], "神医归来", None, {}, TimeoutError)
 
-    assert page is playlet_page
-    assert uploaded_pages == [playlet_page]
+    assert page is publish_page
+    assert uploaded_pages == [publish_page]
     assert playlet_page.visited == []
-    assert unexpected_page not in FakeContext.pages
+    assert publish_page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
+    assert publish_page in FakeContext.pages
+
+
+def test_wechat_video_publisher_reopens_single_video_page_when_upload_entry_missing(tmp_path: Path):
+    class FakeLocator:
+        def __init__(self, count: int):
+            self._count = count
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return self._count
+
+    class FakePage:
+        def __init__(self, upload_entry_count=0, url="about:blank"):
+            self.upload_entry_count = upload_entry_count
+            self.url = url
+            self.closed = False
+            self.visited = []
+
+        def goto(self, url, wait_until=None):
+            self.url = url
+            self.visited.append((url, wait_until))
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+        def locator(self, _selector):
+            return FakeLocator(self.upload_entry_count)
+
+        def get_by_text(self, _pattern):
+            return FakeLocator(0)
+
+        def close(self):
+            self.closed = True
+
+    stale_blank_page = FakePage()
+    first_publish_page = FakePage(upload_entry_count=0)
+    second_publish_page = FakePage(upload_entry_count=1)
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = [stale_blank_page]
+            self.new_pages = [first_publish_page, second_publish_page]
+
+        def new_page(self):
+            page = self.new_pages.pop(0)
+            self.pages.append(page)
+            return page
+
+    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+
+    page = publisher._open_single_video_publish_page(FakeContext(), WeChatVideoPublisher.login_url)
+
+    assert page is second_publish_page
+    assert stale_blank_page.closed is True
+    assert first_publish_page.closed is True
+    assert first_publish_page.visited == [(WeChatVideoPublisher.login_url, "domcontentloaded")]
+    assert second_publish_page.visited == [(WeChatVideoPublisher.login_url, "domcontentloaded")]
 
 
 def test_wechat_video_publisher_limits_playlet_summary_to_100_chars(tmp_path: Path):
@@ -625,7 +691,9 @@ def test_wechat_video_publisher_connects_to_open_profile_for_publishing(tmp_path
     port = remote_debugging_port_for_profile(profile_dir)
     assert opened == [(profile_dir, "about:blank", port)]
     assert connected == [f"http://127.0.0.1:{port}"]
-    assert uploaded_pages == [fallback_context.pages[0]]
+    assert uploaded_pages == [fallback_context.pages[1]]
+    assert fallback_context.pages[0].url == "about:blank"
+    assert fallback_context.pages[1].url == WeChatVideoPublisher.playlet_url
 
 
 def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp_path: Path, monkeypatch):
