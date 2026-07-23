@@ -671,12 +671,12 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
         {
             "episodeNo": 1,
             "title": None,
-            "file": drama_processed_dir(tmp_path) / "001.mp4",
+            "file": drama_download_dir(tmp_path) / "001.mp4",
         },
         {
             "episodeNo": 2,
             "title": None,
-            "file": drama_processed_dir(tmp_path) / "002.mp4",
+            "file": drama_download_dir(tmp_path) / "002.mp4",
         },
     ]
 
@@ -1197,7 +1197,7 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v4"
+    assert manifest["reassemblyVersion"] == "video-reassembly-v5"
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
@@ -1304,6 +1304,40 @@ def test_upload_cache_ignores_hidden_reassembly_full_video(tmp_path):
     assert hidden_full not in [item.file for item in items]
 
 
+def test_upload_cache_rejects_stale_reassembly_manifest(tmp_path):
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(method="fixed"),
+    )
+    final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
+    final_dir.mkdir(parents=True)
+    first = final_dir / "神医归来-第1集.mp4"
+    first.write_bytes(b"video-1")
+    write_download_episode_manifest(
+        final_dir,
+        {
+            "reassemblyVersion": "video-reassembly-v4",
+            "episodeCount": 1,
+            "files": [
+                {
+                    "file": first.name,
+                    "episodeIndex": 1,
+                    "episode": {"episodeNo": 1, "title": "第1集"},
+                    "sourceEpisodeIndexes": [1],
+                },
+            ],
+        },
+    )
+
+    items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
+
+    assert items == []
+
+
 def test_upload_cache_rejects_partial_reassembly_manifest(tmp_path):
     runner = TaskRunner(
         api=FakeApi(),
@@ -1363,7 +1397,7 @@ def test_upload_cache_requires_manifest_for_reassembly_cache(tmp_path):
     assert items == []
 
 
-def test_reassembly_outputs_final_upload_files_with_cover_frame(tmp_path):
+def test_reassembly_outputs_final_upload_files_without_cover_frame(tmp_path):
     processor = FakeProcessor()
     source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
     source_dir.mkdir(parents=True)
@@ -1409,8 +1443,8 @@ def test_reassembly_outputs_final_upload_files_with_cover_frame(tmp_path):
     assert upload_items == reassembled
     assert len(upload_items) == 50
     assert upload_items[0].file.parent == final_dir
-    assert upload_items[0].episode["coverFrameApplied"] is True
-    assert processor.reassemble_calls[0][-1] == cover
+    assert upload_items[0].episode["coverFrameApplied"] is False
+    assert processor.reassemble_calls[0][-1] is None
     assert processor.calls == []
 
 
@@ -1552,7 +1586,7 @@ def test_publish_once_transcodes_low_resolution_video(tmp_path, monkeypatch):
     assert signature["minHeight"] == 1280
 
 
-def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch):
+def test_publish_once_does_not_transcode_only_to_add_cover_frame(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = FakePublisher()
     processor = LowBitrateProcessor()
@@ -1580,30 +1614,24 @@ def test_publish_once_adds_cover_frame_to_processed_videos(tmp_path, monkeypatch
 
     assert runner.publish_once() == "succeeded"
 
-    cover_file = drama_download_dir(tmp_path) / "fengmian.jpg"
     processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
-    processed_2 = drama_processed_dir(tmp_path) / "002.mp4"
-    assert publisher.files == [processed_1, processed_2]
+    downloaded_2 = drama_download_dir(tmp_path) / "002.mp4"
+    assert publisher.files == [processed_1, downloaded_2]
     assert processor.calls == [
         (
             drama_download_dir(tmp_path) / "001.mp4",
             processed_1,
-            cover_file,
-        ),
-        (
-            drama_download_dir(tmp_path) / "002.mp4",
-            processed_2,
-            cover_file,
-        ),
+            None,
+        )
     ]
     marker = processed_1.with_name("001.mp4.aidrama.json")
-    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(cover_file)
+    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] is None
     assert json.loads(marker.read_text(encoding="utf-8"))["source"] == str(
         drama_download_dir(tmp_path) / "001.mp4"
     )
 
 
-def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypatch):
+def test_publish_once_does_not_embed_video_cover_for_horizontal_videos(tmp_path, monkeypatch):
     api = FakeApi()
     publisher = FakePublisher()
     processor = LowBitrateProcessor()
@@ -1633,15 +1661,14 @@ def test_publish_once_uses_video_cover_for_horizontal_videos(tmp_path, monkeypat
 
     assert runner.publish_once() == "succeeded"
 
-    video_cover_file = drama_download_dir(tmp_path) / "video-cover.jpg"
     processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
     assert processor.calls[0] == (
         drama_download_dir(tmp_path) / "001.mp4",
         processed_1,
-        video_cover_file,
+        None,
     )
     marker = processed_1.with_name("001.mp4.aidrama.json")
-    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] == str(video_cover_file)
+    assert json.loads(marker.read_text(encoding="utf-8"))["cover"] is None
 
 
 def test_publish_metadata_uses_stable_free_episode_count():

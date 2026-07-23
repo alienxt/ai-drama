@@ -31,7 +31,6 @@ from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
     VideoReassemblySegment,
     VideoReassemblySourceClip,
-    WECHAT_VIDEO_COVER_FRAME_VERSION,
     WECHAT_VIDEO_MIN_BITRATE_BPS,
     WECHAT_VIDEO_MIN_HEIGHT,
     WECHAT_VIDEO_MIN_WIDTH,
@@ -57,7 +56,7 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v4"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v5"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
@@ -941,7 +940,7 @@ class TaskRunner:
         if not source_clips:
             raise RuntimeError("重组分集失败：没有可用的视频时长，请确认 FFmpeg/FFprobe 可正常读取原片。")
 
-        cover_file = self._cover_file_for_sources([item.file for item in media_items])
+        cover_file: Path | None = None
         base_signature = self._video_reassembly_base_signature(source_clips, config, cover_file, len(media_items))
         rng = self._video_reassembly_random(base_signature)
         speed_percent = rng.uniform(config.speed_min_percent, config.speed_max_percent)
@@ -991,7 +990,7 @@ class TaskRunner:
                     timeline,
                     speed_factor=speed_factor,
                     swap_orientation=config.swap_orientation,
-                    cover_path=cover_file,
+                    cover_path=None,
                 )
                 expected_files = {
                     path
@@ -1009,7 +1008,7 @@ class TaskRunner:
 
         clip_ranges = self._video_reassembly_clip_ranges(source_clips, speed_factor)
         reassembled_items = [
-            self._reassembled_episode_item(segment, clip_ranges, cover_frame_applied=cover_file is not None)
+            self._reassembled_episode_item(segment, clip_ranges, cover_frame_applied=False)
             for segment in segments
         ]
         self._write_reassembled_episode_manifest(target_dir, media_items, reassembled_items)
@@ -1309,7 +1308,7 @@ class TaskRunner:
         single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
         if not callable(single_transcode):
             return source_items
-        cover_file = self._cover_file_for_sources([item.file for item in source_items])
+        cover_file: Path | None = None
         upload_items: list[EpisodeMediaFile] = []
         processed_count = 0
         skipped_count = self._covered_source_skipped_count(original_episode_count, source_items)
@@ -1361,8 +1360,7 @@ class TaskRunner:
                 else self._needs_tiktok_upload_transcode(source_file) if platform == "TIKTOK" else False
             )
             source_needs_transcode = source_needs_transcode or source_needs_tiktok_upload_transcode
-            cover_frame_applied = bool(item.episode.get("coverFrameApplied"))
-            should_add_cover_frame = cover_file is not None and not cover_frame_applied
+            should_add_cover_frame = False
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
                 continue
@@ -1388,12 +1386,10 @@ class TaskRunner:
                 action_parts.append("规范分辨率")
             if source_needs_tiktok_upload_transcode:
                 action_parts.append("满足TK格式和大小")
-            if should_add_cover_frame:
-                action_parts.append("添加封面帧")
             action = "、".join(action_parts) or "统一转码"
             self._notify(f"转码：{drama_title} 第 {episode_no} 集（{action}）", task_id)
             try:
-                processed_file = single_transcode(source_file, target, cover_path=cover_file)
+                processed_file = single_transcode(source_file, target, cover_path=None)
                 self._write_processed_media_signature(processed_file, signature)
                 upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file, item.source_episode_indexes))
             except Exception as exception:  # noqa: BLE001
@@ -1414,8 +1410,7 @@ class TaskRunner:
         if not upload_items and last_skip_message:
             raise RuntimeError(f"没有可上传的剧集：{last_skip_message}")
         if processed_count:
-            label = "视频转码和封面帧处理完成" if cover_file else "视频转码处理完成"
-            self._notify(f"{label}：{drama_title}（{processed_count} 集）", task_id)
+            self._notify(f"视频转码处理完成：{drama_title}（{processed_count} 集）", task_id)
         self._copy_source_manifest_for_upload_items(source_items, upload_items)
         return upload_items
 
@@ -1773,7 +1768,7 @@ class TaskRunner:
     def _processed_media_signature(source_file: Path, cover_file: Path | None) -> dict[str, Any]:
         source_stat = source_file.stat()
         signature: dict[str, Any] = {
-            "version": WECHAT_VIDEO_COVER_FRAME_VERSION,
+            "version": WECHAT_VIDEO_TRANSCODE_VERSION,
             "minWidth": WECHAT_VIDEO_MIN_WIDTH,
             "minHeight": WECHAT_VIDEO_MIN_HEIGHT,
             "source": str(source_file),
@@ -1852,6 +1847,9 @@ class TaskRunner:
         manifest = read_download_episode_manifest(manifest_dir or files[0].parent)
         entries = manifest.get("files")
         if not isinstance(entries, list):
+            return []
+        reassembly_version = manifest.get("reassemblyVersion")
+        if reassembly_version is not None and reassembly_version != VIDEO_REASSEMBLY_VERSION:
             return []
         manifest_file_names = [
             str(entry.get("file"))

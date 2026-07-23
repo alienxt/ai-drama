@@ -192,6 +192,14 @@ public class DistributionTaskController {
         return ApiResponse.ok(repository.save(task), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @PatchMapping("/api/admin/distribution-tasks/{id}/status")
+    ApiResponse<DistributionTask> updateStatus(
+            @PathVariable String id,
+            @RequestBody DistributionDtos.AdminTaskStatusUpdateRequest request
+    ) {
+        return ApiResponse.ok(service.updateTaskStatusFromAdmin(id, request), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
     private DistributionTask get(String id) {
         return repository.findById(id)
                 .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));

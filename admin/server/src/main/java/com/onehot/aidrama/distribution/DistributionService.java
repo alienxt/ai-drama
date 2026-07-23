@@ -156,6 +156,42 @@ public class DistributionService {
                 .toList();
     }
 
+    public DistributionTask updateTaskStatusFromAdmin(
+            String taskId,
+            DistributionDtos.AdminTaskStatusUpdateRequest request
+    ) {
+        if (request == null) {
+            throw new BusinessException("TASK_STATUS_REQUIRED", "请选择任务状态", HttpStatus.BAD_REQUEST);
+        }
+        DistributionTaskStatus status = request.status();
+        if (status == null) {
+            throw new BusinessException("TASK_STATUS_REQUIRED", "请选择任务状态", HttpStatus.BAD_REQUEST);
+        }
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        task.setStatus(status);
+        task.setProgress(clampProgress(request.progress() == null ? defaultProgressForStatus(status) : request.progress()));
+        task.setFailureReason(cleanFailureReason(request.failureReason()));
+        if (Boolean.TRUE.equals(request.clearPlatformPublishMarker())) {
+            task.setPlatformPublishId(null);
+            task.setPlatformSubmittedAt(null);
+        }
+        if (isFinishedStatus(status)) {
+            task.setFinishedAt(Instant.now());
+            task.setLockedByDeviceId(null);
+            if (status == DistributionTaskStatus.SUCCEEDED) {
+                task.setProgress(100);
+                task.setFailureReason(null);
+            }
+        } else {
+            task.setFinishedAt(null);
+            if (status == DistributionTaskStatus.PENDING) {
+                task.setLockedByDeviceId(null);
+            }
+        }
+        return taskRepository.save(task);
+    }
+
     public PageResult<DistributionDtos.AdminTaskResponse> listDesktopTasks(
             String ownerAccountId,
             String keyword,
@@ -676,6 +712,34 @@ public class DistributionService {
 
     private boolean isForceStoppable(DistributionTaskStatus status) {
         return status == DistributionTaskStatus.PENDING || ACTIVE_TASK_STATUSES.contains(status);
+    }
+
+    private boolean isFinishedStatus(DistributionTaskStatus status) {
+        return status == DistributionTaskStatus.SUCCEEDED
+                || status == DistributionTaskStatus.FAILED
+                || status == DistributionTaskStatus.CANCELLED;
+    }
+
+    private int defaultProgressForStatus(DistributionTaskStatus status) {
+        return switch (status) {
+            case PENDING, CLAIMED -> 0;
+            case DOWNLOADING -> 10;
+            case PROCESSING -> 70;
+            case UPLOADING -> 75;
+            case SUCCEEDED -> 100;
+            case FAILED, CANCELLED -> 70;
+        };
+    }
+
+    private int clampProgress(int progress) {
+        return Math.max(0, Math.min(100, progress));
+    }
+
+    private String cleanFailureReason(String failureReason) {
+        if (failureReason == null || failureReason.isBlank()) {
+            return null;
+        }
+        return failureReason.trim();
     }
 
     public DistributionDtos.PreparationResponse prepareTaskDramaForOwner(String ownerAccountId, String taskId) {

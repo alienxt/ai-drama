@@ -87,6 +87,14 @@ public class DistributionDtos {
     public record ResultRequest(boolean success, String platformPublishId, String failureReason, Boolean platformSubmitted) {
     }
 
+    public record AdminTaskStatusUpdateRequest(
+            DistributionTaskStatus status,
+            Integer progress,
+            String failureReason,
+            Boolean clearPlatformPublishMarker
+    ) {
+    }
+
     public record HeartbeatRequest(String deviceId, String appVersion, String osName, boolean idle) {
     }
 }

@@ -1,19 +1,29 @@
-import { CloseCircleOutlined, PlusCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button, Space, Tag, Tooltip } from 'antd';
+import { CloseCircleOutlined, EditOutlined, PlusCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, Tag, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
-import { apiGet, apiGetPage, apiPost } from '../../shared/http';
+import { apiGet, apiGetPage, apiPatch, apiPost } from '../../shared/http';
 import { distributionTaskStatusColors, distributionTaskStatusLabel, distributionTaskStatusOptions, mediaPlatformLabel } from '../../shared/labels';
 import type { DistributionTask, DistributionTaskStatusCount } from '../../shared/types';
+
+type TaskStatusFormValues = {
+  status: DistributionTask['status'];
+  progress: number;
+  failureReason?: string;
+  clearPlatformPublishMarker?: boolean;
+};
 
 export function TasksPage() {
   const [version, setVersion] = useState(0);
   const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [stats, setStats] = useState<DistributionTaskStatusCount[]>([]);
+  const [editingStatusTask, setEditingStatusTask] = useState<DistributionTask | null>(null);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [statusForm] = Form.useForm<TaskStatusFormValues>();
   const statsKeyword = String(filters.keyword ?? '').trim();
 
   useEffect(() => {
@@ -49,68 +59,138 @@ export function TasksPage() {
     setVersion((value) => value + 1);
   }
 
+  function openStatusEditor(task: DistributionTask) {
+    setEditingStatusTask(task);
+    statusForm.setFieldsValue({
+      status: task.status,
+      progress: task.progress ?? defaultProgressForStatus(task.status),
+      failureReason: task.failureReason || '',
+      clearPlatformPublishMarker: false,
+    });
+  }
+
+  async function updateTaskStatus(values: TaskStatusFormValues) {
+    if (!editingStatusTask) {
+      return;
+    }
+    setStatusSaving(true);
+    try {
+      await apiPatch(`/admin/distribution-tasks/${editingStatusTask.id}/status`, values);
+      appMessage.success('任务状态已更新');
+      setEditingStatusTask(null);
+      setVersion((value) => value + 1);
+    } finally {
+      setStatusSaving(false);
+    }
+  }
+
   return (
-    <DataPage
-      title="分发任务"
-      actions={<Button type="primary" icon={<PlusCircleOutlined />} onClick={generate}>生成任务</Button>}
-      extra={(
-        <div className="task-monitor-tools">
-          <TaskStatusOverview stats={stats} />
-          <TableToolbar
-            fields={[
-              { name: 'keyword', placeholder: '搜索任务/账户/媒体号/短剧', width: 260 },
-              {
-                name: 'status',
-                placeholder: '状态',
-                type: 'select',
-                options: distributionTaskStatusOptions,
-              },
-            ]}
-            onSearch={setFilters}
-          />
-        </div>
-      )}
-    >
-      <AdminTable<DistributionTask>
-        rowKey="id"
-        scroll={{ x: 1680 }}
-        reloadKey={`${version}-${JSON.stringify(filters)}`}
-        loadPage={(page, size) => apiGetPage<DistributionTask>('/admin/distribution-tasks', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
-        columns={[
-          { title: '任务', dataIndex: 'id', width: 190, render: (id: string) => <span className="mono-id">{id}</span> },
-          { title: '所属账户', dataIndex: 'ownerUsername', width: 130, render: (_: string | undefined, record) => record.ownerUsername || record.ownerAccountId || '-' },
-          { title: '媒体号', dataIndex: 'mediaAccountName', width: 180, render: renderTaskCellText },
-          { title: '平台', dataIndex: 'platform', width: 100, render: (platform?: string) => <Tag>{mediaPlatformLabel(platform || '')}</Tag> },
-          { title: '短剧', dataIndex: 'dramaTitle', width: 260, render: renderTaskCellText },
-          {
-            title: '状态',
-            dataIndex: 'status',
-            width: 110,
-            render: (status: DistributionTask['status']) => (
-              <Tag color={distributionTaskStatusColors[status]}>{distributionTaskStatusLabel(status)}</Tag>
-            ),
-          },
-          { title: '执行链路', dataIndex: 'progress', width: 420, render: (_: number, record) => <TaskExecutionChain task={record} /> },
-          { title: '失败原因', dataIndex: 'failureReason', width: 260, render: renderTaskCellText },
-          { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
-          { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
-          {
-            title: '操作',
-            width: 90,
-            render: (_, record) => (
-              <Space size={4}>
-                <Tooltip title="重试">
-                  <Button className="table-action" size="small" type="text" icon={<ReloadOutlined />} onClick={() => action(record.id, 'retry')} />
-                </Tooltip>
-                <Tooltip title="取消">
-                  <Button className="table-action" size="small" type="text" danger icon={<CloseCircleOutlined />} onClick={() => action(record.id, 'cancel')} />
-                </Tooltip>
-              </Space>
-            ),
-          },
-        ]}
-      />
-    </DataPage>
+    <>
+      <DataPage
+        title="分发任务"
+        actions={<Button type="primary" icon={<PlusCircleOutlined />} onClick={generate}>生成任务</Button>}
+        extra={(
+          <div className="task-monitor-tools">
+            <TaskStatusOverview stats={stats} />
+            <TableToolbar
+              fields={[
+                { name: 'keyword', placeholder: '搜索任务/账户/媒体号/短剧', width: 260 },
+                {
+                  name: 'status',
+                  placeholder: '状态',
+                  type: 'select',
+                  options: distributionTaskStatusOptions,
+                },
+              ]}
+              onSearch={setFilters}
+            />
+          </div>
+        )}
+      >
+        <AdminTable<DistributionTask>
+          rowKey="id"
+          scroll={{ x: 1740 }}
+          reloadKey={`${version}-${JSON.stringify(filters)}`}
+          loadPage={(page, size) => apiGetPage<DistributionTask>('/admin/distribution-tasks', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
+          columns={[
+            { title: '任务', dataIndex: 'id', width: 190, render: (id: string) => <span className="mono-id">{id}</span> },
+            { title: '所属账户', dataIndex: 'ownerUsername', width: 130, render: (_: string | undefined, record) => record.ownerUsername || record.ownerAccountId || '-' },
+            { title: '媒体号', dataIndex: 'mediaAccountName', width: 180, render: renderTaskCellText },
+            { title: '平台', dataIndex: 'platform', width: 100, render: (platform?: string) => <Tag>{mediaPlatformLabel(platform || '')}</Tag> },
+            { title: '短剧', dataIndex: 'dramaTitle', width: 260, render: renderTaskCellText },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 110,
+              render: (status: DistributionTask['status']) => (
+                <Tag color={distributionTaskStatusColors[status]}>{distributionTaskStatusLabel(status)}</Tag>
+              ),
+            },
+            { title: '执行链路', dataIndex: 'progress', width: 420, render: (_: number, record) => <TaskExecutionChain task={record} /> },
+            { title: '失败原因', dataIndex: 'failureReason', width: 260, render: renderTaskCellText },
+            { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
+            { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
+            {
+              title: '操作',
+              width: 124,
+              render: (_, record) => (
+                <Space size={4}>
+                  <Tooltip title="改状态">
+                    <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => openStatusEditor(record)} />
+                  </Tooltip>
+                  <Tooltip title="重试">
+                    <Button className="table-action" size="small" type="text" icon={<ReloadOutlined />} onClick={() => action(record.id, 'retry')} />
+                  </Tooltip>
+                  <Tooltip title="取消">
+                    <Button className="table-action" size="small" type="text" danger icon={<CloseCircleOutlined />} onClick={() => action(record.id, 'cancel')} />
+                  </Tooltip>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </DataPage>
+      <Modal
+        title={`修改任务状态${editingStatusTask?.dramaTitle ? `：${editingStatusTask.dramaTitle}` : ''}`}
+        open={!!editingStatusTask}
+        onCancel={() => {
+          if (!statusSaving) {
+            setEditingStatusTask(null);
+          }
+        }}
+        onOk={() => statusForm.submit()}
+        confirmLoading={statusSaving}
+        destroyOnClose
+      >
+        <Form<TaskStatusFormValues> form={statusForm} layout="vertical" onFinish={updateTaskStatus}>
+          <Form.Item name="status" label="任务状态" rules={[{ required: true, message: '请选择任务状态' }]}>
+            <Select
+              options={distributionTaskStatusOptions}
+              onChange={(status: DistributionTask['status']) => {
+                statusForm.setFieldValue('progress', defaultProgressForStatus(status));
+                if (status === 'SUCCEEDED') {
+                  statusForm.setFieldValue('failureReason', '');
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            name="progress"
+            label="任务进度"
+            rules={[{ required: true, message: '请填写任务进度' }]}
+            extra="执行链路按进度判断失败位置：10 下载，70 处理，75 上传，100 完成。"
+          >
+            <InputNumber min={0} max={100} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="failureReason" label="失败原因">
+            <Input.TextArea rows={3} maxLength={300} showCount placeholder="失败/取消状态下可填写原因" />
+          </Form.Item>
+          <Form.Item name="clearPlatformPublishMarker" valuePropName="checked">
+            <Checkbox>清除平台提交标记和发布 ID</Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
   );
 }
 
@@ -130,6 +210,20 @@ function taskStatsPath(keyword: string) {
   }
   const query = params.toString();
   return query ? `/admin/distribution-tasks/stats?${query}` : '/admin/distribution-tasks/stats';
+}
+
+function defaultProgressForStatus(status: DistributionTask['status']) {
+  const progressByStatus: Record<DistributionTask['status'], number> = {
+    PENDING: 0,
+    CLAIMED: 0,
+    DOWNLOADING: 10,
+    PROCESSING: 70,
+    UPLOADING: 75,
+    SUCCEEDED: 100,
+    FAILED: 70,
+    CANCELLED: 70,
+  };
+  return progressByStatus[status] ?? 0;
 }
 
 function TaskStatusOverview({ stats }: { stats: DistributionTaskStatusCount[] }) {

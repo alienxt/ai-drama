@@ -1369,6 +1369,80 @@ class DistributionServiceTest {
     }
 
     @Test
+    void adminUpdateTaskStatusMarksProcessingFailureAndClearsPublishMarker() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setStatus(DistributionTaskStatus.UPLOADING);
+        task.setProgress(75);
+        task.setLockedByDeviceId("device-1");
+        task.setPlatformPublishId("old-publish");
+        task.setPlatformSubmittedAt(Instant.now());
+
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(taskRepository.save(task)).thenReturn(task);
+
+        DistributionTask updated = service.updateTaskStatusFromAdmin(
+                "task-1",
+                new DistributionDtos.AdminTaskStatusUpdateRequest(
+                        DistributionTaskStatus.FAILED,
+                        70,
+                        "重新处理视频",
+                        true
+                )
+        );
+
+        assertThat(updated.getStatus()).isEqualTo(DistributionTaskStatus.FAILED);
+        assertThat(updated.getProgress()).isEqualTo(70);
+        assertThat(updated.getFailureReason()).isEqualTo("重新处理视频");
+        assertThat(updated.getLockedByDeviceId()).isNull();
+        assertThat(updated.getPlatformPublishId()).isNull();
+        assertThat(updated.getPlatformSubmittedAt()).isNull();
+        assertThat(updated.getFinishedAt()).isNotNull();
+        verify(taskRepository).save(task);
+    }
+
+    @Test
+    void adminUpdateTaskStatusReturnsTaskToPendingState() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask task = new DistributionTask();
+        task.setId("task-1");
+        task.setStatus(DistributionTaskStatus.FAILED);
+        task.setProgress(75);
+        task.setFailureReason("old error");
+        task.setLockedByDeviceId("device-1");
+        task.setFinishedAt(Instant.now());
+
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
+        when(taskRepository.save(task)).thenReturn(task);
+
+        DistributionTask updated = service.updateTaskStatusFromAdmin(
+                "task-1",
+                new DistributionDtos.AdminTaskStatusUpdateRequest(
+                        DistributionTaskStatus.PENDING,
+                        null,
+                        "",
+                        false
+                )
+        );
+
+        assertThat(updated.getStatus()).isEqualTo(DistributionTaskStatus.PENDING);
+        assertThat(updated.getProgress()).isZero();
+        assertThat(updated.getFailureReason()).isNull();
+        assertThat(updated.getLockedByDeviceId()).isNull();
+        assertThat(updated.getFinishedAt()).isNull();
+        verify(taskRepository).save(task);
+    }
+
+    @Test
     void desktopReleaseTaskReturnsItToPendingPoolForCurrentOwner() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
