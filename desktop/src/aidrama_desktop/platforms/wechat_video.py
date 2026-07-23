@@ -1797,23 +1797,13 @@ class WeChatVideoPublisher(PlatformPublisher):
             raise
 
     def _set_submit_identity(self, page, timeout_error) -> None:
-        combined_patterns = [
-            re.compile("剧目制作方版权方/授权播出方"),
-            re.compile("剧目制作方/版权方/授权播出方"),
-            re.compile("剧目制作方.*版权方/授权播出方"),
-        ]
         target_patterns = [
-            re.compile("^版权方/授权播出方$"),
-            re.compile("版权方/授权播出方"),
-            re.compile("授权播出方"),
+            re.compile("^剧目制作方$"),
         ]
-        if self._click_radio_near_text(page, combined_patterns):
-            return
         if self._click_radio_near_text(page, target_patterns):
             return
         if self._click_text_option(page, target_patterns, timeout_error):
             return
-        self._click_text_option(page, [re.compile("^剧目制作方$")], timeout_error)
 
     @staticmethod
     def _enable_switch_near_text(page, pattern: re.Pattern[str]) -> bool:

@@ -906,7 +906,7 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
     assert submit_steps == [page]
     assert "^数字真人$" in option_clicks
     assert "AI内容声明|AI\\s*内容声明|AI生成|AI\\s*生成" in option_clicks
-    assert any("版权方/授权播出方" in pattern for pattern in option_clicks)
+    assert "^剧目制作方$" in option_clicks
     assert "^其他微短剧$" in option_clicks
     assert events.index("field:剧目名称") > events.index("option:^其他微短剧$")
     assert events.index("summary") > events.index("option:^其他微短剧$")
@@ -1310,24 +1310,23 @@ def test_wechat_video_publisher_success_text_can_be_inside_frame(tmp_path: Path)
     assert publisher._page_has_text(FakePage(), re.compile("提审成功"))
 
 
-def test_wechat_video_publisher_prefers_authorized_submit_identity(tmp_path: Path):
+def test_wechat_video_publisher_defaults_to_producer_submit_identity(tmp_path: Path):
     evaluated = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 
-    combined = ["剧目制作方版权方/授权播出方", "剧目制作方/版权方/授权播出方", "剧目制作方.*版权方/授权播出方"]
-    authorized = ["^版权方/授权播出方$", "版权方/授权播出方", "授权播出方"]
+    producer = ["^剧目制作方$"]
 
     class FakePage:
         def evaluate(self, script, payload):
             evaluated.append((script, payload))
-            return payload != combined
+            return payload == producer
 
         def get_by_text(self, pattern):
             raise AssertionError(f"unexpected text fallback: {pattern.pattern}")
 
     publisher._set_submit_identity(FakePage(), TimeoutError)
 
-    assert [payload for _script, payload in evaluated] == [combined, authorized]
+    assert [payload for _script, payload in evaluated] == [producer]
 
 
 def test_wechat_video_publisher_uses_cdp_when_file_is_too_large_for_playwright(tmp_path: Path):
