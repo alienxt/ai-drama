@@ -662,7 +662,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["totalMinutes"] == 20
     assert publisher.metadata["costAmountWan"] == 3
     assert publisher.metadata["productionCostWan"] == 3
-    assert publisher.metadata["producerName"] == "乙方公司"
+    assert publisher.metadata["producerName"] == "甲方公司"
     assert publisher.metadata["aiContentDeclaration"] is True
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"

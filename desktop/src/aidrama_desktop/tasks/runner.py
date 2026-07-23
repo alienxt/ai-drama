@@ -2144,7 +2144,11 @@ class TaskRunner:
             "totalMinutes": download_plan.get("totalMinutes"),
             "costAmountWan": download_plan.get("costAmountWan"),
             "productionCostWan": download_plan.get("costAmountWan"),
-            "producerName": self.contract_seller or self.contract_buyer,
+            "producerName": (
+                (self.contract_buyer or self.contract_seller)
+                if platform == "WECHAT_VIDEO"
+                else (self.contract_seller or self.contract_buyer)
+            ),
             "aiContentDeclaration": True,
             "monetizationType": "IAA_AD",
             "monetizationLabel": "IAA广告变现",
