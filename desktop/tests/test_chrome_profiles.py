@@ -268,6 +268,51 @@ def test_wechat_video_publisher_does_not_reuse_existing_playlet_tab(tmp_path: Pa
     assert publish_page in FakeContext.pages
 
 
+def test_wechat_video_publisher_waits_for_login_page_and_shows_media_account_prompt(tmp_path: Path):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://channels.weixin.qq.com/login.html"
+            self.messages = []
+            self.visited = []
+            self.waits = []
+
+        def evaluate(self, _script, payload):
+            self.messages.append(payload["message"])
+
+        def wait_for_timeout(self, timeout):
+            self.waits.append(timeout)
+            if len(self.waits) == 1:
+                self.url = "https://channels.weixin.qq.com/platform"
+
+        def goto(self, url, wait_until=None):
+            self.url = url
+            self.visited.append((url, wait_until))
+
+    page = FakePage()
+    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+
+    publisher._wait_for_login_if_needed(
+        page,
+        WeChatVideoPublisher.playlet_url,
+        "柒柒剧作 (sphempW8BejrAzm)",
+    )
+
+    assert page.messages
+    assert page.messages[-1] == "请使用对应微信扫码登录视频号：柒柒剧作 (sphempW8BejrAzm)"
+    assert page.visited == [(WeChatVideoPublisher.playlet_url, "domcontentloaded")]
+    assert page.url == WeChatVideoPublisher.playlet_url
+
+
+def test_wechat_video_publisher_builds_login_prompt_from_metadata(tmp_path: Path):
+    publisher = get_publisher("WECHAT_VIDEO", ChromeController("chrome", tmp_path), account_id="media-1")
+
+    prompt = publisher._login_prompt_from_metadata(
+        {"mediaAccountName": "柒柒剧作", "mediaAccountExternalId": "sphempW8BejrAzm"}
+    )
+
+    assert prompt == "柒柒剧作 (sphempW8BejrAzm)"
+
+
 def test_wechat_video_publisher_reopens_single_video_page_when_upload_entry_missing(tmp_path: Path):
     class FakeLocator:
         def __init__(self, count: int):

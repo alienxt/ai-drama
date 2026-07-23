@@ -357,6 +357,7 @@ class TaskRunner:
         self._notify(f"发布：{drama_title}", task_id, task_with_title)
         metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
         metadata.update(contract_metadata)
+        metadata.update(self._task_media_account_publish_metadata(task))
         publish_title = str(metadata.get("publishTitle") or drama_title)
         publish_summary = metadata.get("publishSummary")
         publish_id = self._publisher_for(task).publish(
@@ -571,22 +572,55 @@ class TaskRunner:
         return max(candidates, key=lambda item: item[0])[1]
 
     def _task_media_account_name(self, task: dict) -> str:
+        return self._task_media_account_label_parts(task)[0]
+
+    def _task_media_account_publish_metadata(self, task: dict) -> dict[str, str]:
+        name, external_id = self._task_media_account_label_parts(task)
+        metadata = {"mediaAccountName": name}
+        if external_id:
+            metadata["mediaAccountExternalId"] = external_id
+        label = self._media_account_login_label(name, external_id)
+        if label:
+            metadata["mediaAccountLoginLabel"] = label
+        return metadata
+
+    def _task_media_account_label_parts(self, task: dict) -> tuple[str, str]:
         for key in ("mediaAccountName", "mediaAccountDisplayName", "displayName"):
-            value = str(task.get(key) or "").strip()
-            if value:
-                return value
+            name = str(task.get(key) or "").strip()
+            if name:
+                break
+        else:
+            name = ""
+        external_id = str(
+            task.get("mediaAccountExternalId")
+            or task.get("externalAccountId")
+            or task.get("mediaExternalAccountId")
+            or ""
+        ).strip()
         media_account_id = str(task.get("mediaAccountId") or "").strip()
-        if not media_account_id:
-            return DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME
-        try:
-            accounts = self.api.get("/desktop/media-accounts")
-        except Exception:  # noqa: BLE001
-            return media_account_id
-        for account in accounts or []:
-            if not isinstance(account, dict) or str(account.get("id") or "") != media_account_id:
-                continue
-            return str(account.get("displayName") or account.get("externalAccountId") or media_account_id)
-        return media_account_id
+        if media_account_id and (not name or not external_id):
+            try:
+                accounts = self.api.get("/desktop/media-accounts")
+            except Exception:  # noqa: BLE001
+                accounts = []
+            for account in accounts or []:
+                if not isinstance(account, dict) or str(account.get("id") or "") != media_account_id:
+                    continue
+                name = name or str(account.get("displayName") or account.get("externalAccountId") or "").strip()
+                external_id = external_id or str(account.get("externalAccountId") or "").strip()
+                break
+        return (
+            name or external_id or media_account_id or DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME,
+            external_id,
+        )
+
+    @staticmethod
+    def _media_account_login_label(name: str, external_id: str) -> str:
+        name = str(name or "").strip()
+        external_id = str(external_id or "").strip()
+        if name and external_id and name != external_id:
+            return f"{name} ({external_id})"
+        return name or external_id
 
     @staticmethod
     def _append_storyboard_to_contract_metadata(

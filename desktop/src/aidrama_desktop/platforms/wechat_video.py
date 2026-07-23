@@ -13,6 +13,11 @@ from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishSub
 PLAYLET_SUMMARY_MAX_CHARS = 100
 PLAYLET_SUMMARY_ELLIPSIS = "......"
 PLAYLET_EPISODE_UPLOAD_MAX_WAIT_SECONDS = 30 * 60
+WECHAT_LOGIN_PAGE_PATTERN = re.compile(
+    r"^https://channels\.weixin\.qq\.com/login\.html(?:[?#].*)?$"
+)
+WECHAT_LOGIN_WAIT_SECONDS = 30 * 60
+WECHAT_LOGIN_WAIT_POLL_MS = 1000
 
 
 class WeChatVideoPublisher(PlatformPublisher):
@@ -73,11 +78,19 @@ class WeChatVideoPublisher(PlatformPublisher):
             except Exception as exception:  # noqa: BLE001
                 raise RuntimeError("无法接管视频号发布浏览器，请先通过客户端打开媒体号后台并完成扫码登录") from exception
             if metadata:
-                page = self._open_publish_page(context, target_url)
+                page = self._open_publish_page(
+                    context,
+                    target_url,
+                    login_prompt=self._login_prompt_from_metadata(metadata),
+                )
                 self._upload_playlet(page, media_files, title, summary, metadata, PlaywrightTimeoutError)
             else:
                 for media_file in media_files:
-                    page = self._open_single_video_publish_page(context, target_url)
+                    page = self._open_single_video_publish_page(
+                        context,
+                        target_url,
+                        login_prompt=str(self.account_id or "").strip(),
+                    )
                     self._upload_single(page, media_file, title, summary, PlaywrightTimeoutError)
         prefix = "wechat-playlet" if metadata else "wechat-video"
         return f"{prefix}:{title}:{len(media_files)}"
@@ -105,7 +118,14 @@ class WeChatVideoPublisher(PlatformPublisher):
             return contexts[0]
         return browser.new_context()
 
-    def _open_publish_page(self, context, target_url: str, *, require_upload_entry: bool = False):
+    def _open_publish_page(
+        self,
+        context,
+        target_url: str,
+        *,
+        require_upload_entry: bool = False,
+        login_prompt: str | None = None,
+    ):
         startup_pages = list(getattr(context, "pages", []) or [])
         page = None
         try:
@@ -114,6 +134,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                 page = context.new_page()
                 page.goto(target_url, wait_until="domcontentloaded")
                 page.wait_for_timeout(1000)
+                self._wait_for_login_if_needed(page, target_url, login_prompt)
                 if not require_upload_entry or self._has_single_video_upload_entry(page):
                     self._close_startup_blank_pages(startup_pages, active_page=page)
                     return page
@@ -131,12 +152,111 @@ class WeChatVideoPublisher(PlatformPublisher):
                 raise
             raise RuntimeError("无法打开视频号发布页面，请确认网络正常并已登录视频号助手") from exception
 
-    def _open_single_video_publish_page(self, context, target_url: str):
+    def _open_single_video_publish_page(
+        self,
+        context,
+        target_url: str,
+        *,
+        login_prompt: str | None = None,
+    ):
         return self._open_publish_page(
             context,
             target_url,
             require_upload_entry=True,
+            login_prompt=login_prompt,
         )
+
+    def _wait_for_login_if_needed(
+        self,
+        page,
+        target_url: str,
+        login_prompt: str | None = None,
+    ) -> None:
+        if not self._is_login_page_url(getattr(page, "url", "")):
+            return
+        prompt = self._login_prompt_message(login_prompt)
+        self._show_login_prompt(page, prompt)
+        deadline = time.monotonic() + WECHAT_LOGIN_WAIT_SECONDS
+        while self._is_login_page_url(getattr(page, "url", "")):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"视频号登录已过期，已等待30分钟仍未完成扫码登录：{login_prompt or '当前媒体号'}"
+                )
+            page.wait_for_timeout(WECHAT_LOGIN_WAIT_POLL_MS)
+            self._show_login_prompt(page, prompt)
+        page.goto(target_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1000)
+
+    @staticmethod
+    def _is_login_page_url(url: str) -> bool:
+        return bool(WECHAT_LOGIN_PAGE_PATTERN.match(str(url or "").strip()))
+
+    @staticmethod
+    def _login_prompt_message(login_prompt: str | None) -> str:
+        prompt = str(login_prompt or "").strip()
+        if prompt:
+            return f"请使用对应微信扫码登录视频号：{prompt}"
+        return "请使用对应微信扫码登录视频号"
+
+    @staticmethod
+    def _login_prompt_from_metadata(metadata: dict[str, Any] | None) -> str:
+        if not metadata:
+            return ""
+        label = str(
+            metadata.get("mediaAccountLoginLabel") or metadata.get("mediaAccountLabel") or ""
+        ).strip()
+        if label:
+            return label
+        name = str(
+            metadata.get("mediaAccountName")
+            or metadata.get("mediaAccountDisplayName")
+            or metadata.get("displayName")
+            or ""
+        ).strip()
+        external_id = str(
+            metadata.get("mediaAccountExternalId") or metadata.get("externalAccountId") or ""
+        ).strip()
+        if name and external_id and name != external_id:
+            return f"{name} ({external_id})"
+        return name or external_id
+
+    @staticmethod
+    def _show_login_prompt(page, message: str) -> None:
+        try:
+            page.evaluate(
+                """
+                (payload) => {
+                    const id = 'aidrama-wechat-login-prompt';
+                    let prompt = document.getElementById(id);
+                    if (!prompt) {
+                        prompt = document.createElement('div');
+                        prompt.id = id;
+                        prompt.style.position = 'fixed';
+                        prompt.style.top = '18px';
+                        prompt.style.left = '50%';
+                        prompt.style.transform = 'translateX(-50%)';
+                        prompt.style.zIndex = '2147483647';
+                        prompt.style.maxWidth = 'min(860px, calc(100vw - 48px))';
+                        prompt.style.padding = '12px 22px';
+                        prompt.style.border = '1px solid #f59e0b';
+                        prompt.style.borderRadius = '8px';
+                        prompt.style.background = '#fff8dc';
+                        prompt.style.boxShadow = '0 6px 20px rgba(15, 23, 42, 0.22)';
+                        prompt.style.color = '#111827';
+                        prompt.style.fontSize = '16px';
+                        prompt.style.fontWeight = '700';
+                        prompt.style.lineHeight = '1.4';
+                        prompt.style.textAlign = 'center';
+                        prompt.style.pointerEvents = 'none';
+                        (document.body || document.documentElement).appendChild(prompt);
+                    }
+                    prompt.textContent = payload.message;
+                }
+                """,
+                {"message": message},
+            )
+        except Exception:  # noqa: BLE001
+            return
 
     @staticmethod
     def _target_page(pages, target_url: str):

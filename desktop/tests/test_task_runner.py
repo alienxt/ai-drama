@@ -58,6 +58,8 @@ class FakeApi:
 
     def get(self, path):
         self.calls.append(("GET", path, None))
+        if path == "/desktop/media-accounts":
+            return [{"id": "media-1", "displayName": "用户1161", "externalAccountId": "wx-1"}]
         return {
             "dramaId": "drama-1",
             "title": "神医归来",
@@ -664,6 +666,9 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["aiContentDeclaration"] is True
     assert publisher.metadata["monetizationType"] == "IAA_AD"
     assert publisher.metadata["monetizationLabel"] == "IAA广告变现"
+    assert publisher.metadata["mediaAccountName"] == "用户1161"
+    assert publisher.metadata["mediaAccountExternalId"] == "wx-1"
+    assert publisher.metadata["mediaAccountLoginLabel"] == "用户1161 (wx-1)"
     assert publisher.metadata["freeEpisodeCount"] == 2
     assert publisher.metadata["episodeCount"] == 2
     assert publisher.metadata["originalEpisodeCount"] == 2
