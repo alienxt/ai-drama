@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.repository.query.parser.PartTree;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
@@ -35,6 +36,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DistributionServiceTest {
+    @Test
+    void dailyLimitRepositoryMethodsAreParseableBySpringData() {
+        assertThat(new PartTree(
+                "countByMediaAccountIdInAndClaimedAtGreaterThanEqual",
+                DistributionTaskClaim.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn",
+                DistributionTask.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus",
+                DistributionTask.class
+        )).isNotNull();
+    }
+
     @Test
     void preparesAndClaimsExistingTaskForCurrentOwnerWithoutGeneratingQueue() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
@@ -70,6 +87,7 @@ class DistributionServiceTest {
         assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-owned");
         assertThat(claimed.get().getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(claimed.get().getClaimedAt()).isNotNull();
         verify(dramaRepository, never()).findByStatusInAndCreatedAtGreaterThanEqual(
                 any(),
                 any(Instant.class),
@@ -79,7 +97,41 @@ class DistributionServiceTest {
     }
 
     @Test
-    void claimRejectsWhenDailyPublishLimitReached() {
+    void claimRecordsClaimEventForDailyLimitCounting() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionTaskClaimRepository taskClaimRepository = mock(DistributionTaskClaimRepository.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                taskClaimRepository,
+                null,
+                null,
+                null,
+                null
+        );
+        DistributionTask pending = pendingTask("task-1", "media-1", "drama-1");
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(List.of(pending));
+        when(taskRepository.save(pending)).thenReturn(pending);
+        when(taskClaimRepository.save(any(DistributionTaskClaim.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(pending);
+        verify(taskClaimRepository).save(any(DistributionTaskClaim.class));
+    }
+
+    @Test
+    void claimRejectsWhenDailySuccessfulUploadLimitReached() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -94,7 +146,59 @@ class DistributionServiceTest {
         )).thenReturn(10L);
 
         assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
-                .hasMessageContaining("今日发布次数已达 10 次");
+                .hasMessageContaining("今日成功上传次数已达 10 次");
+
+        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void claimRejectsWhenDailyClaimLimitReached() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+                eq(List.of("media-1")),
+                any(Instant.class)
+        )).thenReturn(20L);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
+                .hasMessageContaining("今日领取任务次数已达 20 次");
+
+        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void claimRejectsWhenDailyClaimEventLimitReached() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionTaskClaimRepository taskClaimRepository = mock(DistributionTaskClaimRepository.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                taskClaimRepository,
+                null,
+                null,
+                null,
+                null
+        );
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskClaimRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+                eq(List.of("media-1")),
+                any(Instant.class)
+        )).thenReturn(20L);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
+                .hasMessageContaining("今日领取任务次数已达 20 次");
 
         verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
         verify(taskRepository, never()).save(any(DistributionTask.class));
@@ -116,16 +220,6 @@ class DistributionServiceTest {
                 any(Instant.class),
                 any()
         )).thenReturn(9L);
-        when(taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
-                eq(List.of("media-1")),
-                any(Instant.class),
-                any()
-        )).thenReturn(0L);
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
-                eq(List.of("media-1")),
-                any(Instant.class),
-                any()
-        )).thenReturn(0L);
         when(taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 List.of("media-1")
@@ -139,11 +233,12 @@ class DistributionServiceTest {
     }
 
     @Test
-    void claimRejectsWhenSubmittedFailuresReachDailyPublishLimit() {
+    void claimAllowsWhenSubmittedFailuresDoNotCountAsSuccessfulUploads() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
         DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+        DistributionTask pending = pendingTask("task-1", "media-1", "drama-1");
 
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
                 .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
@@ -152,21 +247,20 @@ class DistributionServiceTest {
                 any(Instant.class),
                 any()
         )).thenReturn(9L);
-        when(taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
-                eq(List.of("media-1")),
-                any(Instant.class),
-                any()
-        )).thenReturn(1L);
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(List.of(pending));
+        when(taskRepository.save(pending)).thenReturn(pending);
 
-        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
-                .hasMessageContaining("今日发布次数已达 10 次");
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
 
-        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
-        verify(taskRepository, never()).save(any(DistributionTask.class));
+        assertThat(claimed).contains(pending);
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
     }
 
     @Test
-    void claimUsesSeparateDailyPublishLimitByPlatform() {
+    void claimUsesSeparateDailyLimitsByMediaAccount() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -600,7 +694,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void prepareNextUsesSeparateDailyPublishLimitByPlatform() {
+    void prepareNextUsesSeparateDailyLimitsByMediaAccount() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1131,7 +1225,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void desktopRetryRejectsWhenDailyPublishLimitReached() {
+    void desktopRetryRejectsWhenDailySuccessfulUploadLimitReached() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1156,13 +1250,13 @@ class DistributionServiceTest {
         )).thenReturn(10L);
 
         assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
-                .hasMessageContaining("今日发布次数已达 10 次");
+                .hasMessageContaining("今日成功上传次数已达 10 次");
 
         verify(taskRepository, never()).save(any(DistributionTask.class));
     }
 
     @Test
-    void desktopRetryUsesSeparateDailyPublishLimitByPlatform() {
+    void desktopRetryChecksOnlyTaskMediaAccountDailyLimits() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1203,7 +1297,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void desktopRetryBypassesDailyPublishLimitForTasksCreatedWithin24Hours() {
+    void desktopRetryChecksDailyClaimLimitForTasksCreatedWithin24Hours() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1228,11 +1322,14 @@ class DistributionServiceTest {
         assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(task.getFailureReason()).isNull();
-        verify(taskRepository, never()).countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(any(), any(), any());
+        verify(taskRepository).countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+                eq(List.of("media-1")),
+                any(Instant.class)
+        );
     }
 
     @Test
-    void desktopRetryChecksDailyPublishLimitForRecentlySubmittedFailure() {
+    void desktopRetryRejectsWhenDailyClaimLimitReached() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1251,14 +1348,13 @@ class DistributionServiceTest {
         when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
                 .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
-        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+        when(taskRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
                 eq(List.of("media-1")),
-                any(Instant.class),
-                any()
-        )).thenReturn(10L);
+                any(Instant.class)
+        )).thenReturn(20L);
 
         assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
-                .hasMessageContaining("今日发布次数已达 10 次");
+                .hasMessageContaining("今日领取任务次数已达 20 次");
 
         verify(taskRepository, never()).save(any(DistributionTask.class));
     }

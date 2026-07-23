@@ -1090,7 +1090,7 @@ def test_auto_daily_limit_error_stops_auto_and_shows_once(monkeypatch):
     window.last_auto_error_popup_message = None
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
 
-    error = "Traceback\nApiError: 今日发布次数已达 10 次，请明天再发布。"
+    error = "Traceback\nApiError: 今日领取任务次数已达 20 次，请明天再执行。"
 
     DesktopWindow.handle_auto_task_failed(window, error)
     DesktopWindow.handle_auto_task_failed(window, error)
@@ -1101,5 +1101,5 @@ def test_auto_daily_limit_error_stops_auto_and_shows_once(monkeypatch):
     assert len(warnings) == 1
     assert window.auto_task_button.text() == "启动自动执行"
     assert window.current_task_label.text() == "当前任务：-"
-    assert window.task_stage_label.text() == "当前阶段：自动执行已停止：今日发布次数已达 10 次，请明天再发布。"
-    assert window.task_error_label.text() == "最近错误：今日发布次数已达 10 次，请明天再发布。"
+    assert window.task_stage_label.text() == "当前阶段：自动执行已停止：今日领取任务次数已达 20 次，请明天再执行。"
+    assert window.task_error_label.text() == "最近错误：今日领取任务次数已达 20 次，请明天再执行。"

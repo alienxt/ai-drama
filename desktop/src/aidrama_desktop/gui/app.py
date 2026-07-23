@@ -3486,7 +3486,13 @@ class DesktopWindow(QMainWindow):
 
     @staticmethod
     def is_daily_publish_limit_error(message: str) -> bool:
-        return "今日发布次数已达" in message or "明天再发布" in message
+        return (
+            "今日发布次数已达" in message
+            or "今日成功上传次数已达" in message
+            or "今日领取任务次数已达" in message
+            or "明天再发布" in message
+            or "明天再执行" in message
+        )
 
     def set_task_error_message(self, message: str) -> None:
         if hasattr(self, "task_error_label"):

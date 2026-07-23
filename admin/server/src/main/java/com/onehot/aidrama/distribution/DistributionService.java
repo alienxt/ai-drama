@@ -52,22 +52,28 @@ public class DistributionService {
     private static final int PREPARATION_RETRY_AFTER_SECONDS = 3;
     private static final String PREPARATION_FAILURE_PREFIX = "AI 素材生成失败：";
     private static final String FORCE_STOP_FAILURE_REASON = "用户强制停止任务";
-    private static final int DAILY_PUBLISH_LIMIT = 10;
-    private static final Duration DAILY_LIMIT_RECENT_RETRY_WINDOW = Duration.ofHours(24);
-    private static final ZoneId DAILY_PUBLISH_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int DAILY_CLAIM_LIMIT = 20;
+    private static final int DAILY_SUCCESSFUL_UPLOAD_LIMIT = 10;
+    private static final ZoneId DAILY_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
             DistributionTaskStatus.CLAIMED,
             DistributionTaskStatus.DOWNLOADING,
             DistributionTaskStatus.PROCESSING,
             DistributionTaskStatus.UPLOADING
     );
-    private static final List<DistributionTaskStatus> DAILY_SUBMITTED_FAILURE_STATUSES = List.of(
+    private static final List<DistributionTaskStatus> DAILY_CLAIMED_TASK_STATUSES = List.of(
+            DistributionTaskStatus.CLAIMED,
+            DistributionTaskStatus.DOWNLOADING,
+            DistributionTaskStatus.PROCESSING,
+            DistributionTaskStatus.UPLOADING,
+            DistributionTaskStatus.SUCCEEDED,
             DistributionTaskStatus.FAILED,
             DistributionTaskStatus.CANCELLED
     );
     private final DramaRepository dramaRepository;
     private final MediaAccountRepository mediaAccountRepository;
     private final DistributionTaskRepository taskRepository;
+    private final DistributionTaskClaimRepository taskClaimRepository;
     private final AccountRepository accountRepository;
     private final MongoTemplate mongoTemplate;
     private final BaiduDramaPreparationService preparationService;
@@ -80,6 +86,7 @@ public class DistributionService {
             DramaRepository dramaRepository,
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository,
+            DistributionTaskClaimRepository taskClaimRepository,
             AccountRepository accountRepository,
             MongoTemplate mongoTemplate,
             BaiduDramaPreparationService preparationService,
@@ -88,6 +95,7 @@ public class DistributionService {
         this.dramaRepository = dramaRepository;
         this.mediaAccountRepository = mediaAccountRepository;
         this.taskRepository = taskRepository;
+        this.taskClaimRepository = taskClaimRepository;
         this.accountRepository = accountRepository;
         this.mongoTemplate = mongoTemplate;
         this.preparationService = preparationService;
@@ -101,7 +109,7 @@ public class DistributionService {
             AccountRepository accountRepository,
             MongoTemplate mongoTemplate
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, accountRepository, mongoTemplate, null, null);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, accountRepository, mongoTemplate, null, null);
     }
 
     DistributionService(
@@ -109,7 +117,7 @@ public class DistributionService {
             MediaAccountRepository mediaAccountRepository,
             DistributionTaskRepository taskRepository
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, null, null);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, null, null, null);
     }
 
     DistributionService(
@@ -118,7 +126,7 @@ public class DistributionService {
             DistributionTaskRepository taskRepository,
             BaiduDramaPreparationService preparationService
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, preparationService, null);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, null, preparationService, null);
     }
 
     DistributionService(
@@ -128,7 +136,7 @@ public class DistributionService {
             BaiduDramaPreparationService preparationService,
             TaskExecutor taskExecutor
     ) {
-        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, preparationService, taskExecutor);
+        this(dramaRepository, mediaAccountRepository, taskRepository, null, null, null, preparationService, taskExecutor);
     }
 
     public List<DistributionTask> generateTasks() {
@@ -493,7 +501,7 @@ public class DistributionService {
         if (mediaAccounts.isEmpty()) {
             return Optional.empty();
         }
-        List<String> mediaAccountIds = mediaAccountIdsWithDailyPublishLimitAvailable(mediaAccounts);
+        List<String> mediaAccountIds = mediaAccountIdsWithDailyAutomationLimitAvailable(mediaAccounts);
         return nextPendingTask(mediaAccountIds)
                 .map(task -> prepareAndClaim(task, deviceId, asyncPreparation));
     }
@@ -513,7 +521,7 @@ public class DistributionService {
 
     private Optional<DistributionTask> generateNextTaskForOwner(String ownerAccountId) {
         var dramas = recentTaskCandidateDramas();
-        var mediaAccounts = mediaAccountsWithDailyPublishLimitAvailable(
+        var mediaAccounts = mediaAccountsWithDailyAutomationLimitAvailable(
                 claimableOwnerMediaAccounts(ownerAccountId)
         );
         for (var drama : dramas) {
@@ -550,79 +558,102 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
-        if (!canRetryWithoutDailyPublishLimit(task)) {
-            assertDailyPublishLimitAvailable(mediaAccountIdsForTaskPlatform(mediaAccounts, task));
-        }
+        assertDailyAutomationLimitAvailable(List.of(task.getMediaAccountId()));
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation);
     }
 
-    private boolean canRetryWithoutDailyPublishLimit(DistributionTask task) {
-        return isRecentRetryTask(task) && !hasPlatformSubmissionMarker(task);
-    }
-
-    private boolean isRecentRetryTask(DistributionTask task) {
-        Instant createdAt = task.getCreatedAt();
-        return createdAt != null && !createdAt.isBefore(Instant.now().minus(DAILY_LIMIT_RECENT_RETRY_WINDOW));
-    }
-
-    private boolean hasPlatformSubmissionMarker(DistributionTask task) {
-        return task.getPlatformSubmittedAt() != null || hasText(task.getPlatformPublishId());
-    }
-
-    private List<MediaAccount> mediaAccountsWithDailyPublishLimitAvailable(List<MediaAccount> mediaAccounts) {
+    private List<MediaAccount> mediaAccountsWithDailyAutomationLimitAvailable(List<MediaAccount> mediaAccounts) {
         List<MediaAccount> available = new ArrayList<>();
-        for (var platformMediaAccounts : mediaAccountsByPlatform(mediaAccounts).values()) {
-            if (isDailyPublishLimitAvailable(mediaAccountIds(platformMediaAccounts))) {
-                available.addAll(platformMediaAccounts);
+        for (var media : mediaAccounts) {
+            if (isDailyAutomationLimitAvailable(List.of(media.getId()))) {
+                available.add(media);
             }
         }
         if (mediaAccounts.isEmpty() || !available.isEmpty()) {
             return available;
         }
-        throw dailyPublishLimitReachedException();
+        throw dailyAutomationLimitReachedException(mediaAccountIds(mediaAccounts));
     }
 
-    private List<String> mediaAccountIdsWithDailyPublishLimitAvailable(List<MediaAccount> mediaAccounts) {
-        return mediaAccountIds(mediaAccountsWithDailyPublishLimitAvailable(mediaAccounts));
+    private List<String> mediaAccountIdsWithDailyAutomationLimitAvailable(List<MediaAccount> mediaAccounts) {
+        return mediaAccountIds(mediaAccountsWithDailyAutomationLimitAvailable(mediaAccounts));
     }
 
-    private void assertDailyPublishLimitAvailable(List<String> mediaAccountIds) {
-        if (!isDailyPublishLimitAvailable(mediaAccountIds)) {
-            throw dailyPublishLimitReachedException();
+    private void assertDailyAutomationLimitAvailable(List<String> mediaAccountIds) {
+        BusinessException exception = dailyAutomationLimitException(mediaAccountIds);
+        if (exception != null) {
+            throw exception;
         }
     }
 
-    private boolean isDailyPublishLimitAvailable(List<String> mediaAccountIds) {
-        Instant dayStart = publishLimitDayStart();
+    private boolean isDailyAutomationLimitAvailable(List<String> mediaAccountIds) {
+        return dailyAutomationLimitException(mediaAccountIds) == null;
+    }
+
+    private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds) {
+        if (!isDailyClaimLimitAvailable(mediaAccountIds)) {
+            return dailyClaimLimitReachedException();
+        }
+        if (!isDailySuccessfulUploadLimitAvailable(mediaAccountIds)) {
+            return dailySuccessfulUploadLimitReachedException();
+        }
+        return null;
+    }
+
+    private BusinessException dailyAutomationLimitReachedException(List<String> mediaAccountIds) {
+        BusinessException exception = dailyAutomationLimitException(mediaAccountIds);
+        return exception == null ? dailyClaimLimitReachedException() : exception;
+    }
+
+    private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds) {
+        Instant dayStart = dailyLimitDayStart();
+        long todayCount = dailyClaimCount(mediaAccountIds, dayStart)
+                + taskRepository.countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
+                        mediaAccountIds,
+                        dayStart,
+                        DAILY_CLAIMED_TASK_STATUSES
+                );
+        return todayCount < DAILY_CLAIM_LIMIT;
+    }
+
+    private long dailyClaimCount(List<String> mediaAccountIds, Instant dayStart) {
+        if (taskClaimRepository != null) {
+            return taskClaimRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(mediaAccountIds, dayStart);
+        }
+        return taskRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(mediaAccountIds, dayStart);
+    }
+
+    private boolean isDailySuccessfulUploadLimitAvailable(List<String> mediaAccountIds) {
+        Instant dayStart = dailyLimitDayStart();
         long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
                 mediaAccountIds,
                 dayStart,
                 DistributionTaskStatus.SUCCEEDED
-        ) + taskRepository.countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
-                mediaAccountIds,
-                dayStart,
-                DAILY_SUBMITTED_FAILURE_STATUSES
-        ) + taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
-                mediaAccountIds,
-                dayStart,
-                DAILY_SUBMITTED_FAILURE_STATUSES
         );
-        return todayCount < DAILY_PUBLISH_LIMIT;
+        return todayCount < DAILY_SUCCESSFUL_UPLOAD_LIMIT;
     }
 
-    private BusinessException dailyPublishLimitReachedException() {
+    private BusinessException dailyClaimLimitReachedException() {
         return new BusinessException(
-                "DAILY_PUBLISH_LIMIT_REACHED",
-                "今日发布次数已达 " + DAILY_PUBLISH_LIMIT + " 次，请明天再发布。",
+                "DAILY_CLAIM_LIMIT_REACHED",
+                "今日领取任务次数已达 " + DAILY_CLAIM_LIMIT + " 次，请明天再执行。",
                 HttpStatus.TOO_MANY_REQUESTS
         );
     }
 
-    private Instant publishLimitDayStart() {
-        return ZonedDateTime.now(DAILY_PUBLISH_LIMIT_ZONE)
+    private BusinessException dailySuccessfulUploadLimitReachedException() {
+        return new BusinessException(
+                "DAILY_SUCCESSFUL_UPLOAD_LIMIT_REACHED",
+                "今日成功上传次数已达 " + DAILY_SUCCESSFUL_UPLOAD_LIMIT + " 次，请明天再发布。",
+                HttpStatus.TOO_MANY_REQUESTS
+        );
+    }
+
+    private Instant dailyLimitDayStart() {
+        return ZonedDateTime.now(DAILY_LIMIT_ZONE)
                 .toLocalDate()
-                .atStartOfDay(DAILY_PUBLISH_LIMIT_ZONE)
+                .atStartOfDay(DAILY_LIMIT_ZONE)
                 .toInstant();
     }
 
@@ -1005,32 +1036,28 @@ public class DistributionService {
                 .toList();
     }
 
-    private Map<MediaPlatform, List<MediaAccount>> mediaAccountsByPlatform(List<MediaAccount> mediaAccounts) {
-        Map<MediaPlatform, List<MediaAccount>> byPlatform = new LinkedHashMap<>();
-        for (MediaAccount media : mediaAccounts) {
-            byPlatform.computeIfAbsent(taskPlatform(media), ignored -> new ArrayList<>()).add(media);
-        }
-        return byPlatform;
-    }
-
-    private List<String> mediaAccountIdsForTaskPlatform(List<MediaAccount> mediaAccounts, DistributionTask task) {
-        MediaPlatform platform = mediaAccounts.stream()
-                .filter(media -> media.getId().equals(task.getMediaAccountId()))
-                .findFirst()
-                .map(this::taskPlatform)
-                .orElseGet(() -> resolveTaskPlatform(task));
-        return mediaAccounts.stream()
-                .filter(media -> taskPlatform(media) == platform)
-                .map(MediaAccount::getId)
-                .toList();
-    }
-
     private DistributionTask claim(DistributionTask task, String deviceId) {
         fillTaskPlatform(task);
+        Instant now = Instant.now();
+        task.setClaimedAt(now);
         task.setStatus(DistributionTaskStatus.CLAIMED);
         task.setLockedByDeviceId(deviceId);
         task.setFinishedAt(null);
-        return taskRepository.save(task);
+        DistributionTask saved = taskRepository.save(task);
+        recordTaskClaim(saved, deviceId, now);
+        return saved;
+    }
+
+    private void recordTaskClaim(DistributionTask task, String deviceId, Instant claimedAt) {
+        if (taskClaimRepository == null) {
+            return;
+        }
+        DistributionTaskClaim claim = new DistributionTaskClaim();
+        claim.setTaskId(task.getId());
+        claim.setMediaAccountId(task.getMediaAccountId());
+        claim.setDeviceId(deviceId);
+        claim.setClaimedAt(claimedAt);
+        taskClaimRepository.save(claim);
     }
 
     private void fillTaskPlatform(DistributionTask task) {

@@ -50,17 +50,15 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             Instant updatedAt,
             DistributionTaskStatus status
     );
-    long countByMediaAccountIdInAndPlatformSubmittedAtGreaterThanEqualAndStatusIn(
+    long countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
             List<String> mediaAccountIds,
-            Instant platformSubmittedAt,
-            List<DistributionTaskStatus> statuses
+            Instant claimedAt
     );
-    long countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatusInAndPlatformSubmittedAtIsNullAndPlatformPublishIdIsNotNull(
+    long countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
             List<String> mediaAccountIds,
             Instant updatedAt,
             List<DistributionTaskStatus> statuses
     );
-
     default boolean existsActiveByDramaId(String dramaId) {
         return existsByDramaIdAndStatusNotIn(dramaId, List.of(DistributionTaskStatus.FAILED, DistributionTaskStatus.CANCELLED));
     }

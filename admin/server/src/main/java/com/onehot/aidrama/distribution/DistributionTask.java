@@ -25,6 +25,7 @@ public class DistributionTask {
     private String failureReason;
     private String platformPublishId;
     private Instant platformSubmittedAt;
+    private Instant claimedAt;
     private Instant finishedAt;
     @CreatedDate
     private Instant createdAt;
@@ -55,6 +56,8 @@ public class DistributionTask {
     public void setPlatformPublishId(String platformPublishId) { this.platformPublishId = platformPublishId; }
     public Instant getPlatformSubmittedAt() { return platformSubmittedAt; }
     public void setPlatformSubmittedAt(Instant platformSubmittedAt) { this.platformSubmittedAt = platformSubmittedAt; }
+    public Instant getClaimedAt() { return claimedAt; }
+    public void setClaimedAt(Instant claimedAt) { this.claimedAt = claimedAt; }
     public Instant getFinishedAt() { return finishedAt; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
     public Instant getCreatedAt() { return createdAt; }
