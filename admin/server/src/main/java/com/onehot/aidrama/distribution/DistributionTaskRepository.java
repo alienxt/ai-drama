@@ -50,8 +50,17 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             Instant updatedAt,
             DistributionTaskStatus status
     );
+    long countByMediaAccountIdAndUpdatedAtGreaterThanEqualAndStatus(
+            String mediaAccountId,
+            Instant updatedAt,
+            DistributionTaskStatus status
+    );
     long countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
             List<String> mediaAccountIds,
+            Instant claimedAt
+    );
+    long countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+            String mediaAccountId,
             Instant claimedAt
     );
     long countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
@@ -59,6 +68,12 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             Instant updatedAt,
             List<DistributionTaskStatus> statuses
     );
+    long countByMediaAccountIdAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
+            String mediaAccountId,
+            Instant updatedAt,
+            List<DistributionTaskStatus> statuses
+    );
+    Optional<DistributionTask> findFirstByMediaAccountIdOrderByCreatedAtDesc(String mediaAccountId);
     default boolean existsActiveByDramaId(String dramaId) {
         return existsByDramaIdAndStatusNotIn(dramaId, List.of(DistributionTaskStatus.FAILED, DistributionTaskStatus.CANCELLED));
     }

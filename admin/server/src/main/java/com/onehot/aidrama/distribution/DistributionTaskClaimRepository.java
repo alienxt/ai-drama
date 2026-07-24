@@ -10,4 +10,9 @@ public interface DistributionTaskClaimRepository extends MongoRepository<Distrib
             List<String> mediaAccountIds,
             Instant claimedAt
     );
+
+    long countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+            String mediaAccountId,
+            Instant claimedAt
+    );
 }

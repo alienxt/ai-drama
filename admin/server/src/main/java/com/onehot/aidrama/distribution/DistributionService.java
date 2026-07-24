@@ -501,8 +501,10 @@ public class DistributionService {
         if (mediaAccounts.isEmpty()) {
             return Optional.empty();
         }
-        List<String> mediaAccountIds = mediaAccountIdsWithDailyAutomationLimitAvailable(mediaAccounts);
-        return nextPendingTask(mediaAccountIds)
+        List<MediaAccount> availableMediaAccounts = mediaAccountsWithDailyAutomationLimitAvailable(mediaAccounts);
+        List<String> mediaAccountIds = mediaAccountIds(availableMediaAccounts);
+        Map<String, MediaDistributionLoad> loadByMediaAccountId = mediaDistributionLoads(availableMediaAccounts);
+        return nextPendingTask(mediaAccountIds, loadByMediaAccountId)
                 .map(task -> prepareAndClaim(task, deviceId, asyncPreparation));
     }
 
@@ -524,8 +526,9 @@ public class DistributionService {
         var mediaAccounts = mediaAccountsWithDailyAutomationLimitAvailable(
                 claimableOwnerMediaAccounts(ownerAccountId)
         );
+        var loadByMediaAccountId = mediaDistributionLoads(mediaAccounts);
         for (var drama : dramas) {
-            for (var media : mediaAccounts) {
+            for (var media : orderedMediaAccountsForDistribution(mediaAccounts, loadByMediaAccountId)) {
                 if (hasSavedLoginState(media)
                         && planner.canDistribute(media, drama)
                         && !hasBlockingGeneratedTask(media, drama.getId())) {
@@ -558,9 +561,9 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
-        assertDailyAutomationLimitAvailable(List.of(task.getMediaAccountId()));
+        assertDailySuccessfulUploadLimitAvailable(List.of(task.getMediaAccountId()));
         clearTaskForRetry(task);
-        return prepareAndClaim(task, deviceId, asyncPreparation);
+        return prepareAndClaim(task, deviceId, asyncPreparation, false);
     }
 
     private List<MediaAccount> mediaAccountsWithDailyAutomationLimitAvailable(List<MediaAccount> mediaAccounts) {
@@ -576,14 +579,16 @@ public class DistributionService {
         throw dailyAutomationLimitReachedException(mediaAccountIds(mediaAccounts));
     }
 
-    private List<String> mediaAccountIdsWithDailyAutomationLimitAvailable(List<MediaAccount> mediaAccounts) {
-        return mediaAccountIds(mediaAccountsWithDailyAutomationLimitAvailable(mediaAccounts));
-    }
-
     private void assertDailyAutomationLimitAvailable(List<String> mediaAccountIds) {
         BusinessException exception = dailyAutomationLimitException(mediaAccountIds);
         if (exception != null) {
             throw exception;
+        }
+    }
+
+    private void assertDailySuccessfulUploadLimitAvailable(List<String> mediaAccountIds) {
+        if (!isDailySuccessfulUploadLimitAvailable(mediaAccountIds)) {
+            throw dailySuccessfulUploadLimitReachedException();
         }
     }
 
@@ -624,6 +629,13 @@ public class DistributionService {
         return taskRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(mediaAccountIds, dayStart);
     }
 
+    private long dailyClaimCount(String mediaAccountId, Instant dayStart) {
+        if (taskClaimRepository != null) {
+            return taskClaimRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(mediaAccountId, dayStart);
+        }
+        return taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(mediaAccountId, dayStart);
+    }
+
     private boolean isDailySuccessfulUploadLimitAvailable(List<String> mediaAccountIds) {
         Instant dayStart = dailyLimitDayStart();
         long todayCount = taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
@@ -632,6 +644,14 @@ public class DistributionService {
                 DistributionTaskStatus.SUCCEEDED
         );
         return todayCount < DAILY_SUCCESSFUL_UPLOAD_LIMIT;
+    }
+
+    private long dailySuccessfulUploadCount(String mediaAccountId, Instant dayStart) {
+        return taskRepository.countByMediaAccountIdAndUpdatedAtGreaterThanEqualAndStatus(
+                mediaAccountId,
+                dayStart,
+                DistributionTaskStatus.SUCCEEDED
+        );
     }
 
     private BusinessException dailyClaimLimitReachedException() {
@@ -655,6 +675,96 @@ public class DistributionService {
                 .toLocalDate()
                 .atStartOfDay(DAILY_LIMIT_ZONE)
                 .toInstant();
+    }
+
+    private Map<String, MediaDistributionLoad> mediaDistributionLoads(List<MediaAccount> mediaAccounts) {
+        if (mediaAccounts == null || mediaAccounts.isEmpty()) {
+            return Map.of();
+        }
+        Instant dayStart = dailyLimitDayStart();
+        Map<String, MediaDistributionLoad> loads = new LinkedHashMap<>();
+        for (MediaAccount media : mediaAccounts) {
+            String mediaAccountId = media.getId();
+            if (!hasText(mediaAccountId) || loads.containsKey(mediaAccountId)) {
+                continue;
+            }
+            long claimCount = dailyClaimCount(mediaAccountId, dayStart)
+                    + taskRepository.countByMediaAccountIdAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
+                            mediaAccountId,
+                            dayStart,
+                            DAILY_CLAIMED_TASK_STATUSES
+                    );
+            loads.put(
+                    mediaAccountId,
+                    new MediaDistributionLoad(
+                            claimCount,
+                            dailySuccessfulUploadCount(mediaAccountId, dayStart),
+                            latestAssignedAt(mediaAccountId)
+                    )
+            );
+        }
+        return loads;
+    }
+
+    private Instant latestAssignedAt(String mediaAccountId) {
+        Optional<DistributionTask> latestTask = taskRepository.findFirstByMediaAccountIdOrderByCreatedAtDesc(mediaAccountId);
+        return latestTask == null
+                ? null
+                : latestTask
+                        .map(task -> task.getCreatedAt() == null ? task.getUpdatedAt() : task.getCreatedAt())
+                        .orElse(null);
+    }
+
+    private List<MediaAccount> orderedMediaAccountsForDistribution(
+            List<MediaAccount> mediaAccounts,
+            Map<String, MediaDistributionLoad> loadByMediaAccountId
+    ) {
+        if (mediaAccounts == null || mediaAccounts.isEmpty()) {
+            return List.of();
+        }
+        Map<MediaPlatform, List<MediaAccount>> groupedByPlatform = new LinkedHashMap<>();
+        for (MediaAccount media : mediaAccounts) {
+            groupedByPlatform.computeIfAbsent(taskPlatform(media), ignored -> new ArrayList<>()).add(media);
+        }
+        Comparator<MediaAccount> comparator = mediaDistributionComparator(loadByMediaAccountId);
+        List<MediaAccount> ordered = new ArrayList<>();
+        groupedByPlatform.values().forEach(group -> ordered.addAll(group.stream().sorted(comparator).toList()));
+        return ordered;
+    }
+
+    private Comparator<MediaAccount> mediaDistributionComparator(
+            Map<String, MediaDistributionLoad> loadByMediaAccountId
+    ) {
+        return Comparator
+                .comparingLong((MediaAccount media) -> loadFor(media.getId(), loadByMediaAccountId).claimCount())
+                .thenComparingLong(media -> loadFor(media.getId(), loadByMediaAccountId).successfulUploadCount())
+                .thenComparing(
+                        media -> loadFor(media.getId(), loadByMediaAccountId).lastAssignedAt(),
+                        Comparator.nullsFirst(Comparator.naturalOrder())
+                )
+                .thenComparing(MediaAccount::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()));
+    }
+
+    private MediaDistributionLoad loadFor(
+            String mediaAccountId,
+            Map<String, MediaDistributionLoad> loadByMediaAccountId
+    ) {
+        MediaDistributionLoad load = loadByMediaAccountId == null ? null : loadByMediaAccountId.get(mediaAccountId);
+        return load == null ? MediaDistributionLoad.empty() : load;
+    }
+
+    private void recordGeneratedAssignment(
+            Map<String, MediaDistributionLoad> loadByMediaAccountId,
+            MediaAccount media
+    ) {
+        if (media == null || !hasText(media.getId())) {
+            return;
+        }
+        MediaDistributionLoad load = loadByMediaAccountId.computeIfAbsent(
+                media.getId(),
+                ignored -> MediaDistributionLoad.empty()
+        );
+        load.recordAssignment(Instant.now());
     }
 
     private boolean isRetryableFromDesktop(DistributionTaskStatus status) {
@@ -823,7 +933,8 @@ public class DistributionService {
         if (!isRecentCreatedDrama(drama)) {
             throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在近 7 天创建剧池内", HttpStatus.BAD_REQUEST);
         }
-        List<String> ownedMediaAccountIds = mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
+        List<MediaAccount> ownerMediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
+        List<String> ownedMediaAccountIds = ownerMediaAccounts.stream()
                 .map(MediaAccount::getId)
                 .toList();
         if (!ownedMediaAccountIds.isEmpty()) {
@@ -838,7 +949,9 @@ public class DistributionService {
                 return taskRepository.save(task);
             }
         }
-        return mediaAccountRepository.findByOwnerAccountId(ownerAccountId).stream()
+        List<MediaAccount> eligibleMediaAccounts = mediaAccountsWithDailyAutomationLimitAvailable(ownerMediaAccounts);
+        Map<String, MediaDistributionLoad> loadByMediaAccountId = mediaDistributionLoads(eligibleMediaAccounts);
+        return orderedMediaAccountsForDistribution(eligibleMediaAccounts, loadByMediaAccountId).stream()
                 .filter(this::hasSavedLoginState)
                 .filter(media -> planner.canDistribute(media, drama))
                 .filter(media -> !hasBlockingGeneratedTask(media, dramaId))
@@ -849,9 +962,10 @@ public class DistributionService {
 
     private List<DistributionTask> generateTasksForMediaAccounts(List<MediaAccount> mediaAccounts, List<com.onehot.aidrama.dramas.Drama> dramas) {
         List<DistributionTask> generated = new ArrayList<>();
+        Map<String, MediaDistributionLoad> loadByMediaAccountId = mediaDistributionLoads(mediaAccounts);
         for (var drama : dramas) {
             Map<MediaPlatform, MediaAccount> selectedByPlatform = new LinkedHashMap<>();
-            for (var media : mediaAccounts) {
+            for (var media : orderedMediaAccountsForDistribution(mediaAccounts, loadByMediaAccountId)) {
                 MediaPlatform platform = taskPlatform(media);
                 if (selectedByPlatform.containsKey(platform)
                         || !hasSavedLoginState(media)
@@ -861,7 +975,10 @@ public class DistributionService {
                 }
                 selectedByPlatform.put(platform, media);
             }
-            selectedByPlatform.values().forEach(media -> generated.add(createTask(media, drama.getId(), 0)));
+            selectedByPlatform.values().forEach(media -> {
+                generated.add(createTask(media, drama.getId(), 0));
+                recordGeneratedAssignment(loadByMediaAccountId, media);
+            });
         }
         return generated;
     }
@@ -913,7 +1030,10 @@ public class DistributionService {
                 .toList();
     }
 
-    private Optional<DistributionTask> nextPendingTask(List<String> mediaAccountIds) {
+    private Optional<DistributionTask> nextPendingTask(
+            List<String> mediaAccountIds,
+            Map<String, MediaDistributionLoad> loadByMediaAccountId
+    ) {
         List<DistributionTask> pendingTasks = taskRepository.findByStatusAndMediaAccountIdIn(
                 DistributionTaskStatus.PENDING,
                 mediaAccountIds
@@ -927,7 +1047,7 @@ public class DistributionService {
                 .distinct()
                 .toList());
         return pendingTasks.stream()
-                .sorted(pendingTaskClaimOrder(dramasById))
+                .sorted(pendingTaskClaimOrder(dramasById, loadByMediaAccountId))
                 .findFirst();
     }
 
@@ -943,8 +1063,17 @@ public class DistributionService {
                 .collect(Collectors.toMap(Drama::getId, Function.identity(), (left, right) -> left));
     }
 
-    private Comparator<DistributionTask> pendingTaskClaimOrder(Map<String, Drama> dramasById) {
+    private Comparator<DistributionTask> pendingTaskClaimOrder(
+            Map<String, Drama> dramasById,
+            Map<String, MediaDistributionLoad> loadByMediaAccountId
+    ) {
         return Comparator.comparingInt(DistributionTask::getPriority).reversed()
+                .thenComparingLong(task -> loadFor(task.getMediaAccountId(), loadByMediaAccountId).claimCount())
+                .thenComparingLong(task -> loadFor(task.getMediaAccountId(), loadByMediaAccountId).successfulUploadCount())
+                .thenComparing(
+                        task -> loadFor(task.getMediaAccountId(), loadByMediaAccountId).lastAssignedAt(),
+                        Comparator.nullsFirst(Comparator.naturalOrder())
+                )
                 .thenComparing(
                         task -> dramaClaimSortTime(dramasById.get(task.getDramaId())),
                         Comparator.nullsLast(Comparator.reverseOrder())
@@ -1037,6 +1166,10 @@ public class DistributionService {
     }
 
     private DistributionTask claim(DistributionTask task, String deviceId) {
+        return claim(task, deviceId, true);
+    }
+
+    private DistributionTask claim(DistributionTask task, String deviceId, boolean countDailyClaim) {
         fillTaskPlatform(task);
         Instant now = Instant.now();
         task.setClaimedAt(now);
@@ -1044,7 +1177,9 @@ public class DistributionService {
         task.setLockedByDeviceId(deviceId);
         task.setFinishedAt(null);
         DistributionTask saved = taskRepository.save(task);
-        recordTaskClaim(saved, deviceId, now);
+        if (countDailyClaim) {
+            recordTaskClaim(saved, deviceId, now);
+        }
         return saved;
     }
 
@@ -1070,10 +1205,19 @@ public class DistributionService {
     }
 
     private DistributionTask prepareAndClaim(DistributionTask task, String deviceId, boolean asyncPreparation) {
+        return prepareAndClaim(task, deviceId, asyncPreparation, true);
+    }
+
+    private DistributionTask prepareAndClaim(
+            DistributionTask task,
+            String deviceId,
+            boolean asyncPreparation,
+            boolean countDailyClaim
+    ) {
         if (!asyncPreparation) {
             ensureTaskDramaPrepared(task);
         }
-        return claim(task, deviceId);
+        return claim(task, deviceId, countDailyClaim);
     }
 
     private void executePreparation(Runnable runnable) {
@@ -1247,6 +1391,39 @@ public class DistributionService {
             message = exception.getClass().getSimpleName();
         }
         return PREPARATION_FAILURE_PREFIX + message;
+    }
+
+    private static final class MediaDistributionLoad {
+        private long claimCount;
+        private final long successfulUploadCount;
+        private Instant lastAssignedAt;
+
+        private MediaDistributionLoad(long claimCount, long successfulUploadCount, Instant lastAssignedAt) {
+            this.claimCount = claimCount;
+            this.successfulUploadCount = successfulUploadCount;
+            this.lastAssignedAt = lastAssignedAt;
+        }
+
+        private static MediaDistributionLoad empty() {
+            return new MediaDistributionLoad(0, 0, null);
+        }
+
+        private long claimCount() {
+            return claimCount;
+        }
+
+        private long successfulUploadCount() {
+            return successfulUploadCount;
+        }
+
+        private Instant lastAssignedAt() {
+            return lastAssignedAt;
+        }
+
+        private void recordAssignment(Instant assignedAt) {
+            claimCount++;
+            lastAssignedAt = assignedAt;
+        }
     }
 
     private DistributionTask createTask(MediaAccount media, String dramaId, int priority) {

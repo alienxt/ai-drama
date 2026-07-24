@@ -50,6 +50,26 @@ class DistributionServiceTest {
                 "countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus",
                 DistributionTask.class
         )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdAndClaimedAtGreaterThanEqual",
+                DistributionTaskClaim.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdAndClaimedAtGreaterThanEqual",
+                DistributionTask.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn",
+                DistributionTask.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "countByMediaAccountIdAndUpdatedAtGreaterThanEqualAndStatus",
+                DistributionTask.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "findFirstByMediaAccountIdOrderByCreatedAtDesc",
+                DistributionTask.class
+        )).isNotNull();
     }
 
     @Test
@@ -737,6 +757,76 @@ class DistributionServiceTest {
     }
 
     @Test
+    void prepareNextUsesLeastLoadedMediaAccountWithinSamePlatform() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama drama = readyDrama("drama-1", "urban");
+        MediaAccount busy = activeMedia("media-busy", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount idle = activeMedia("media-idle", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(busy, idle));
+        when(taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+                eq("media-busy"),
+                any(Instant.class)
+        )).thenReturn(3L);
+        when(taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+                eq("media-idle"),
+                any(Instant.class)
+        )).thenReturn(0L);
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(drama));
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<DistributionTask> claimed = service.prepareAndClaimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).isPresent();
+        assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-idle");
+        assertThat(claimed.get().getPlatform()).isEqualTo(MediaPlatform.WECHAT_VIDEO);
+        assertThat(claimed.get().getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+    }
+
+    @Test
+    void generateTasksAlternatesSamePlatformMediaAccountsWhenLoadsTieAfterAssignment() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        Drama firstDrama = readyDrama("drama-1", "urban");
+        Drama secondDrama = readyDrama("drama-2", "urban");
+        MediaAccount firstMedia = activeMedia("media-first", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount secondMedia = activeMedia("media-second", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(firstMedia, secondMedia));
+        when(taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+                eq("media-first"),
+                any(Instant.class)
+        )).thenReturn(1L);
+        when(taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+                eq("media-second"),
+                any(Instant.class)
+        )).thenReturn(0L);
+        when(dramaRepository.findByStatusInAndCreatedAtGreaterThanEqual(
+                any(),
+                any(Instant.class),
+                any(Sort.class)
+        )).thenReturn(List.of(firstDrama, secondDrama));
+        when(taskRepository.save(any(DistributionTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<DistributionTask> generated = service.generateTasksForOwner("owner-1");
+
+        assertThat(generated).hasSize(2);
+        assertThat(generated).extracting(DistributionTask::getMediaAccountId)
+                .containsExactly("media-second", "media-first");
+    }
+
+    @Test
     void generatesTaskForReadyDramaBeforeAiSummaryExists() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
@@ -1297,7 +1387,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void desktopRetryChecksDailyClaimLimitForTasksCreatedWithin24Hours() {
+    void desktopRetryDoesNotCountDailyClaimForTasksCreatedWithin24Hours() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1322,14 +1412,19 @@ class DistributionServiceTest {
         assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
         assertThat(task.getFailureReason()).isNull();
-        verify(taskRepository).countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+        verify(taskRepository, never()).countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
                 eq(List.of("media-1")),
                 any(Instant.class)
+        );
+        verify(taskRepository, never()).countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
+                eq(List.of("media-1")),
+                any(Instant.class),
+                any()
         );
     }
 
     @Test
-    void desktopRetryRejectsWhenDailyClaimLimitReached() {
+    void desktopRetryAllowsWhenDailyClaimLimitReached() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1352,11 +1447,55 @@ class DistributionServiceTest {
                 eq(List.of("media-1")),
                 any(Instant.class)
         )).thenReturn(20L);
+        when(taskRepository.save(failed)).thenReturn(failed);
 
-        assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
-                .hasMessageContaining("今日领取任务次数已达 20 次");
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
 
-        verify(taskRepository, never()).save(any(DistributionTask.class));
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        assertThat(task.getLockedByDeviceId()).isEqualTo("device-1");
+        verify(taskRepository, never()).countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+                eq(List.of("media-1")),
+                any(Instant.class)
+        );
+    }
+
+    @Test
+    void desktopRetryDoesNotRecordClaimEvent() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionTaskClaimRepository taskClaimRepository = mock(DistributionTaskClaimRepository.class);
+        DistributionService service = new DistributionService(
+                dramaRepository,
+                mediaAccountRepository,
+                taskRepository,
+                taskClaimRepository,
+                null,
+                null,
+                null,
+                null
+        );
+
+        DistributionTask failed = new DistributionTask();
+        failed.setId("task-1");
+        failed.setMediaAccountId("media-1");
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setFailureReason("submitted upload failed");
+        failed.setPlatformSubmittedAt(Instant.now());
+        failed.setFinishedAt(Instant.now());
+        failed.setCreatedAt(Instant.now().minusSeconds(2 * 60 * 60));
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
+        when(taskRepository.save(failed)).thenReturn(failed);
+
+        DistributionTask task = service.retryAndClaimForOwner("owner-1", "task-1", "device-1");
+
+        assertThat(task.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
+        verify(taskClaimRepository, never()).save(any(DistributionTaskClaim.class));
+        verify(taskClaimRepository, never()).countByMediaAccountIdInAndClaimedAtGreaterThanEqual(any(), any());
     }
 
     @Test
