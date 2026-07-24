@@ -188,6 +188,13 @@ class TaskRunner:
             upload_items = self._cached_upload_items(download_plan, platform)
             if not upload_items:
                 raise RuntimeError("没有找到本地可用于继续上传的视频缓存，请先完整执行一次任务。")
+            upload_items = self._prepare_media_files_for_upload(
+                upload_items,
+                task_id,
+                drama_title,
+                original_episode_count=len(download_plan.get("episodes") or []),
+                platform=platform,
+            )
             return self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
         except Exception as exception:  # noqa: BLE001
             if isinstance(exception, PlatformPublishPaused):
@@ -1209,6 +1216,7 @@ class TaskRunner:
             self._is_ready_upload_file(segment.target)
             and self._processed_media_signature_matches(segment.target, signature)
             and not self._needs_wechat_video_bitrate_transcode(segment.target)
+            and not self._needs_wechat_video_resolution_transcode(segment.target)
             for segment in segments
         )
 
@@ -1384,7 +1392,7 @@ class TaskRunner:
             )
             source_needs_resolution_transcode = (
                 self._needs_wechat_video_resolution_transcode(source_file)
-                if should_validate_wechat_specs and not final_upload_video
+                if should_validate_wechat_specs
                 else False
             )
             source_needs_transcode = source_needs_bitrate_transcode or source_needs_resolution_transcode

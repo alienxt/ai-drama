@@ -1244,6 +1244,38 @@ def test_reassembly_cache_rebuilds_low_bitrate_segments(tmp_path):
     assert processor.reassemble_calls
 
 
+def test_reassembly_cache_rebuilds_low_resolution_segments(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"video-1")
+    processor.durations = {"001.mp4": 62.0}
+    processor.dimensions = {"神医归来-第1集.mp4": (540, 960)}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=50.0,
+            segment_max_seconds=50.0,
+            trim_head_seconds=1.0,
+            trim_tail_seconds=1.0,
+            speed_min_percent=2.0,
+            speed_max_percent=2.0,
+        ),
+    )
+    items = [EpisodeMediaFile({"episodeNo": 1}, 1, source)]
+    runner._prepare_source_items_for_platform(items, "task-1", "神医归来", "WECHAT_VIDEO")
+    processor.reassemble_calls.clear()
+
+    runner._prepare_source_items_for_platform(items, "task-2", "神医归来", "WECHAT_VIDEO")
+
+    assert processor.reassemble_calls
+
+
 def test_final_upload_video_still_transcodes_low_bitrate_for_wechat(tmp_path):
     processor = LowBitrateProcessor()
     source_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
@@ -1263,6 +1295,30 @@ def test_final_upload_video_still_transcodes_low_bitrate_for_wechat(tmp_path):
 
     assert processor.calls
     assert upload_items[0].file != source
+
+
+def test_final_upload_video_still_transcodes_low_resolution_for_wechat(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"low-resolution")
+    processor.dimensions = {"001.mp4": (540, 960)}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    item = EpisodeMediaFile({"episodeNo": 1, "finalUploadVideo": True}, 1, source)
+
+    upload_items = runner._prepare_media_files_for_upload([item], "task-1", "神医归来", 1, "WECHAT_VIDEO")
+
+    assert processor.calls
+    assert processor.calls[0][0] == source
+    assert processor.calls[0][2] is None
+    assert upload_items[0].file == processor.calls[0][1]
 
 
 def test_upload_cache_ignores_hidden_reassembly_full_video(tmp_path):
@@ -1411,7 +1467,7 @@ def test_reassembly_outputs_final_upload_files_without_cover_frame(tmp_path):
     cover = source_dir / "fengmian.jpg"
     cover.write_bytes(b"cover")
     processor.durations = {"001.mp4": 62.0}
-    processor.dimensions = {"神医归来-第1集.mp4": (1282, 720)}
+    processor.dimensions = {"神医归来-第1集.mp4": (720, 1280)}
     runner = TaskRunner(
         api=FakeApi(),
         processor=processor,
@@ -1983,7 +2039,7 @@ def test_publish_once_marks_task_failed_as_submitted_when_platform_submit_fails(
 
 def test_execute_task_from_upload_cache_skips_download_and_processing(tmp_path, monkeypatch):
     api = FakeApi()
-    processor = LowBitrateProcessor()
+    processor = FakeProcessor()
     publisher = FakePublisher()
     cached_files = []
     for episode_no in (1, 2):
@@ -2018,6 +2074,53 @@ def test_execute_task_from_upload_cache_skips_download_and_processing(tmp_path, 
         "platformPublishId": "published-1",
         "failureReason": None,
     }
+
+
+def test_execute_task_from_upload_cache_repairs_low_resolution_reassembly(tmp_path, monkeypatch):
+    api = FakeApi()
+    processor = FakeProcessor()
+    publisher = FakePublisher()
+    final_dir = drama_processed_dir(tmp_path) / "reassembled"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    low_resolution = final_dir / "神医归来-第1集.mp4"
+    low_resolution.write_bytes(b"low-resolution")
+    processor.dimensions = {low_resolution.name: (540, 960)}
+    write_download_episode_manifest(
+        final_dir,
+        {
+            "episodeCount": 1,
+            "files": [
+                {
+                    "file": low_resolution.name,
+                    "episodeIndex": 1,
+                    "episode": {"episodeNo": 1, "title": "第1集", "finalUploadVideo": True},
+                    "sourceEpisodeIndexes": [1],
+                }
+            ],
+        },
+    )
+
+    def fail_download(*_args, **_kwargs):
+        raise AssertionError("download should not be called when retrying from upload cache")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fail_download)
+    runner = TaskRunner(
+        api=api,
+        processor=processor,
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(method="fixed"),
+    )
+
+    result = runner.execute_task_from_upload_cache(
+        {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1", "platform": "WECHAT_VIDEO"}
+    )
+
+    assert result == "succeeded"
+    assert processor.calls
+    assert processor.calls[0][0] == low_resolution
+    assert publisher.files == [processor.calls[0][1]]
 
 
 def test_publish_once_marks_task_cancelled_when_download_is_stopped(tmp_path, monkeypatch):
