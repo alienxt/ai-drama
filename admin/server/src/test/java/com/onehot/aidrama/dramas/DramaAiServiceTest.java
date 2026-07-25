@@ -317,6 +317,10 @@ class DramaAiServiceTest {
                         && prompt.contains("保持美感")
                         && prompt.contains("不要出现血腥、暴力")
                         && prompt.contains("看点")
+                        && prompt.contains("端正宋体")
+                        && prompt.contains("逐字准确呈现")
+                        && prompt.contains("不增字、不漏字、不换字")
+                        && prompt.contains("不要使用草书、行书")
                         && prompt.contains("不要出现原始剧名")
                         && !prompt.contains("原始剧名：")
                         && !prompt.contains("一念情深一念仇")
@@ -326,6 +330,8 @@ class DramaAiServiceTest {
                 prompt.contains("横版中文短剧视频封面")
                         && prompt.contains("1280x720")
                         && prompt.contains("视频首帧和缩略图")
+                        && prompt.contains("端正宋体")
+                        && prompt.contains("逐字准确呈现")
         ), eq(AiService.DEFAULT_VIDEO_COVER_IMAGE_SIZE));
     }
 

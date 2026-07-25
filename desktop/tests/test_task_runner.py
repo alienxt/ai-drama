@@ -1792,9 +1792,13 @@ def test_publish_once_generates_contract_materials_before_upload(tmp_path, monke
 
     assert runner.publish_once() == "succeeded"
 
+    expected_contract_dir = tmp_path / "contracts" / "generated" / "神医归来-task-1"
     assert publisher.metadata["purchaseContractDocx"].exists()
     assert publisher.metadata["costContractDocx"].exists()
     assert publisher.metadata["rightsStatementDocx"].exists()
+    assert expected_contract_dir in publisher.metadata["purchaseContractDocx"].parents
+    assert expected_contract_dir in publisher.metadata["costContractDocx"].parents
+    assert expected_contract_dir in publisher.metadata["rightsStatementDocx"].parents
     assert len(publisher.metadata["purchaseContractImages"]) == 1
     assert len(publisher.metadata["rightsStatementImages"]) == 1
     assert len(publisher.metadata["buyDramaContractImages"]) == 1
@@ -1873,10 +1877,16 @@ def test_publish_once_reuses_cached_contract_materials_without_templates(tmp_pat
 
     assert runner.publish_once() == "succeeded"
 
-    assert publisher.metadata["purchaseContractImages"] == [purchase_image]
-    assert publisher.metadata["buyDramaContractImages"] == [purchase_image]
-    assert publisher.metadata["costConfigReportImages"] == [cost_image]
-    assert publisher.metadata["rightsStatementImages"] == [rights_image]
+    migrated_contract_dir = tmp_path / "contracts" / "generated" / "神医归来-task-1"
+    migrated_purchase_image = migrated_contract_dir / "images" / "purchase.png"
+    migrated_cost_image = migrated_contract_dir / "images" / "cost.png"
+    migrated_rights_image = migrated_contract_dir / "images" / "rights.png"
+    assert not contract_dir.exists()
+    assert migrated_contract_dir.exists()
+    assert publisher.metadata["purchaseContractImages"] == [migrated_purchase_image]
+    assert publisher.metadata["buyDramaContractImages"] == [migrated_purchase_image]
+    assert publisher.metadata["costConfigReportImages"] == [migrated_cost_image]
+    assert publisher.metadata["rightsStatementImages"] == [migrated_rights_image]
     assert ("复用合同材料：神医归来", "task-1") in progress_events
 
 

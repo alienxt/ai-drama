@@ -24,6 +24,7 @@ from aidrama_desktop.contracts import (
     generate_contract_start_date,
     generate_agreement_number,
     render_contract_material_bundle,
+    safe_contract_filename,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused, PlatformPublishSubmittedError
 from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator, infer_storyboard_style
@@ -657,7 +658,8 @@ class TaskRunner:
         platform: str,
     ) -> dict[str, object]:
         material_label = "TK合作协议" if platform == "TIKTOK" else "合同材料"
-        output_dir = self._contract_output_dir(task_id)
+        output_dir = self._contract_output_dir(task_id, drama_title)
+        self._migrate_legacy_contract_output_dir(task_id, output_dir)
         cached_metadata = self._cached_material_metadata(
             output_dir / CONTRACT_MATERIALS_MANIFEST_FILENAME,
             required_keys=self._required_contract_material_keys(platform),
@@ -696,8 +698,43 @@ class TaskRunner:
         self._write_material_metadata_manifest(output_dir / CONTRACT_MATERIALS_MANIFEST_FILENAME, metadata)
         return metadata
 
-    def _contract_output_dir(self, task_id: str) -> Path:
+    def _contract_output_dir(self, task_id: str, drama_title: str) -> Path:
+        dirname = safe_contract_filename(f"{drama_title}-{task_id}")
+        return (self.contracts_dir or self.work_dir / "contracts") / "generated" / dirname
+
+    def _legacy_contract_output_dir(self, task_id: str) -> Path:
         return (self.contracts_dir or self.work_dir / "contracts") / "generated" / str(task_id)
+
+    def _migrate_legacy_contract_output_dir(self, task_id: str, output_dir: Path) -> None:
+        legacy_dir = self._legacy_contract_output_dir(task_id)
+        if legacy_dir == output_dir or not legacy_dir.exists() or output_dir.exists():
+            return
+        legacy_dir.rename(output_dir)
+        self._rewrite_material_manifest_directory(
+            output_dir / CONTRACT_MATERIALS_MANIFEST_FILENAME,
+            legacy_dir,
+            output_dir,
+        )
+
+    @staticmethod
+    def _rewrite_material_manifest_directory(manifest_path: Path, old_dir: Path, new_dir: Path) -> None:
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        old_prefix = str(old_dir)
+        new_prefix = str(new_dir)
+
+        def rewrite(value: object) -> object:
+            if isinstance(value, str) and value.startswith(old_prefix):
+                return new_prefix + value[len(old_prefix):]
+            if isinstance(value, list):
+                return [rewrite(item) for item in value]
+            if isinstance(value, dict):
+                return {key: rewrite(item) for key, item in value.items()}
+            return value
+
+        manifest_path.write_text(json.dumps(rewrite(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
     def _required_contract_material_keys(platform: str) -> tuple[str, ...]:
