@@ -27,6 +27,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/desktop/contract-templates").permitAll()
                         .requestMatchers(
                                 "/",
+                                "/download",
                                 "/login",
                                 "/accounts",
                                 "/desktop-users",

@@ -43,6 +43,48 @@ class DownloadInviteServiceTest {
     }
 
     @Test
+    void validateAllPlatformsReturnsLatestPackagesAndConsumesInviteOnce() {
+        DownloadInvite invite = invite("DRAMA2026");
+        DesktopVersion mac = version("MAC", "AI Drama.dmg", "/uploads/app.dmg");
+        DesktopVersion windows = version("WINDOWS", "AI Drama Setup.exe", "/uploads/app.exe");
+        when(repository.findByCode("DRAMA2026")).thenReturn(Optional.of(invite));
+        when(versionService.findLatestPublished("MAC")).thenReturn(Optional.of(mac));
+        when(versionService.findLatestPublished("WINDOWS")).thenReturn(Optional.of(windows));
+
+        DownloadInviteDtos.MultiPlatformDownloadAccessResponse response = service.validateAllPlatforms(" drama 2026 ");
+
+        assertThat(response.valid()).isTrue();
+        assertThat(response.downloads()).hasSize(2);
+        assertThat(response.downloads())
+                .extracting(DownloadInviteDtos.PlatformDownloadResponse::platform)
+                .containsExactly("MAC", "WINDOWS");
+        assertThat(response.downloads())
+                .extracting(DownloadInviteDtos.PlatformDownloadResponse::downloadUrl)
+                .containsExactly("/uploads/app.dmg", "/uploads/app.exe");
+        assertThat(invite.getUsedCount()).isEqualTo(1);
+        assertThat(invite.getLastUsedAt()).isEqualTo(NOW);
+        verify(repository).save(invite);
+    }
+
+    @Test
+    void validateAllPlatformsIncludesUnavailablePlatform() {
+        DownloadInvite invite = invite("DRAMA2026");
+        DesktopVersion mac = version("MAC", "AI Drama.dmg", "/uploads/app.dmg");
+        when(repository.findByCode("DRAMA2026")).thenReturn(Optional.of(invite));
+        when(versionService.findLatestPublished("MAC")).thenReturn(Optional.of(mac));
+        when(versionService.findLatestPublished("WINDOWS")).thenReturn(Optional.empty());
+
+        DownloadInviteDtos.MultiPlatformDownloadAccessResponse response = service.validateAllPlatforms("DRAMA2026");
+
+        assertThat(response.downloads()).hasSize(2);
+        assertThat(response.downloads().get(0).available()).isTrue();
+        assertThat(response.downloads().get(1).available()).isFalse();
+        assertThat(response.downloads().get(1).platform()).isEqualTo("WINDOWS");
+        assertThat(invite.getUsedCount()).isEqualTo(1);
+        verify(repository).save(invite);
+    }
+
+    @Test
     void validateRejectsExhaustedInvite() {
         DownloadInvite invite = invite("USEDUP");
         invite.setMaxUses(1);
@@ -90,12 +132,16 @@ class DownloadInviteServiceTest {
     }
 
     private static DesktopVersion version(String platform) {
+        return version(platform, "AI Drama.dmg", "/uploads/app.dmg");
+    }
+
+    private static DesktopVersion version(String platform, String fileName, String downloadUrl) {
         DesktopVersion version = new DesktopVersion();
         version.setPlatform(platform);
         version.setVersion("0.2.0");
-        version.setFileName("AI Drama.dmg");
+        version.setFileName(fileName);
         version.setFileSize(1024);
-        version.setDownloadUrl("/uploads/app.dmg");
+        version.setDownloadUrl(downloadUrl);
         version.setPublished(true);
         return version;
     }

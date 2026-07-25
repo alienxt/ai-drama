@@ -13,6 +13,7 @@ import { AiTasksPage } from '../features/ai-tasks/AiTasksPage';
 import { DesktopVersionsPage } from '../features/versions/DesktopVersionsPage';
 import { ContractTemplatesPage } from '../features/contracts/ContractTemplatesPage';
 import { DownloadInvitesPage } from '../features/download-invites/DownloadInvitesPage';
+import { PublicDownloadPage } from '../features/public-download/PublicDownloadPage';
 import { ExceptionLogsPage, HongguoApiDebugLogsPage, RequestLogsPage } from '../features/logs/LogsPage';
 import { SystemTasksPage } from '../features/system-tasks/SystemTasksPage';
 
@@ -22,6 +23,7 @@ function RequireAuth({ children }: { children: JSX.Element }) {
 
 const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
+  { path: '/download', element: <PublicDownloadPage /> },
   {
     path: '/',
     element: (

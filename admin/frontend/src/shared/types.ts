@@ -286,6 +286,22 @@ export type DesktopVersion = {
   updatedAt?: string;
 };
 
+export type PublicDesktopDownload = {
+  available: boolean;
+  platform: 'MAC' | 'WINDOWS';
+  version?: string;
+  releaseNotes?: string;
+  mandatory: boolean;
+  fileName?: string;
+  fileSize: number;
+  downloadUrl?: string;
+};
+
+export type PublicDownloadAccess = {
+  valid: boolean;
+  downloads: PublicDesktopDownload[];
+};
+
 export type ContractTemplate = {
   id: string;
   platform: 'WECHAT_VIDEO' | 'DOUYIN' | 'TIKTOK';

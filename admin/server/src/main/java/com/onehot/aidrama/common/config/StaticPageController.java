@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 public class StaticPageController {
     @GetMapping({
             "/",
+            "/download",
             "/login",
             "/accounts",
             "/desktop-users",

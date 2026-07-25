@@ -225,6 +225,95 @@ class DistributionServiceTest {
     }
 
     @Test
+    void claimRejectsWhenWechatClientDailyClaimLimitReachedAcrossMediaAccounts() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        MediaAccount first = activeMedia("media-wechat-1", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount second = activeMedia("media-wechat-2", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(first, second));
+        when(taskRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(
+                eq(List.of("media-wechat-1", "media-wechat-2")),
+                any(Instant.class)
+        )).thenReturn(20L);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1", true))
+                .hasMessageContaining("今日领取任务次数已达 20 次");
+
+        verify(taskRepository, never()).findByStatusAndMediaAccountIdIn(any(), any());
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void claimSkipsWechatWhenClientSuccessfulUploadLimitReachedButKeepsTiktokAvailable() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        MediaAccount firstWechat = activeMedia("media-wechat-1", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount secondWechat = activeMedia("media-wechat-2", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
+        DistributionTask pendingTiktok = pendingTask("task-tiktok", "media-tiktok", "drama-1");
+        pendingTiktok.setPlatform(MediaPlatform.TIKTOK);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(firstWechat, secondWechat, tiktok));
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+                eq(List.of("media-wechat-1", "media-wechat-2")),
+                any(Instant.class),
+                eq(DistributionTaskStatus.SUCCEEDED)
+        )).thenReturn(10L);
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-tiktok")
+        )).thenReturn(List.of(pendingTiktok));
+        when(taskRepository.save(pendingTiktok)).thenReturn(pendingTiktok);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(pendingTiktok);
+        assertThat(claimed.get().getMediaAccountId()).isEqualTo("media-tiktok");
+        assertThat(claimed.get().getPlatform()).isEqualTo(MediaPlatform.TIKTOK);
+    }
+
+    @Test
+    void claimAllowsTiktokEvenWhenItsOwnDailyCountsAreHigh() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        MediaAccount tiktok = activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK);
+        DistributionTask pendingTiktok = pendingTask("task-tiktok", "media-tiktok", "drama-1");
+        pendingTiktok.setPlatform(MediaPlatform.TIKTOK);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(tiktok));
+        when(taskRepository.countByMediaAccountIdAndClaimedAtGreaterThanEqual(
+                eq("media-tiktok"),
+                any(Instant.class)
+        )).thenReturn(99L);
+        when(taskRepository.countByMediaAccountIdAndUpdatedAtGreaterThanEqualAndStatus(
+                eq("media-tiktok"),
+                any(Instant.class),
+                eq(DistributionTaskStatus.SUCCEEDED)
+        )).thenReturn(99L);
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-tiktok")
+        )).thenReturn(List.of(pendingTiktok));
+        when(taskRepository.save(pendingTiktok)).thenReturn(pendingTiktok);
+
+        Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1", true);
+
+        assertThat(claimed).contains(pendingTiktok);
+        assertThat(claimed.get().getPlatform()).isEqualTo(MediaPlatform.TIKTOK);
+    }
+
+    @Test
     void claimAllowsWhenOnlyPreSubmitFailuresLeaveDailyLimitAvailable() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
@@ -280,7 +369,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void claimUsesSeparateDailyLimitsByMediaAccount() {
+    void claimSkipsLimitedWechatButKeepsTiktokAvailable() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -714,7 +803,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void prepareNextUsesSeparateDailyLimitsByMediaAccount() {
+    void prepareNextSkipsLimitedWechatButKeepsTiktokAvailable() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -1346,7 +1435,42 @@ class DistributionServiceTest {
     }
 
     @Test
-    void desktopRetryChecksOnlyTaskMediaAccountDailyLimits() {
+    void desktopRetryRejectsWhenWechatClientSuccessfulUploadLimitReachedAcrossMediaAccounts() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository);
+
+        DistributionTask failed = new DistributionTask();
+        failed.setId("task-1");
+        failed.setMediaAccountId("media-wechat-2");
+        failed.setPlatform(MediaPlatform.WECHAT_VIDEO);
+        failed.setDramaId("drama-1");
+        failed.setStatus(DistributionTaskStatus.FAILED);
+        failed.setFailureReason("upload failed");
+        failed.setFinishedAt(Instant.now());
+        failed.setCreatedAt(Instant.now().minusSeconds(25 * 60 * 60));
+
+        MediaAccount firstWechat = activeMedia("media-wechat-1", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+        MediaAccount secondWechat = activeMedia("media-wechat-2", "owner-1", "urban", MediaPlatform.WECHAT_VIDEO);
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1"))
+                .thenReturn(List.of(firstWechat, secondWechat));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(failed));
+        when(taskRepository.countByMediaAccountIdInAndUpdatedAtGreaterThanEqualAndStatus(
+                eq(List.of("media-wechat-1", "media-wechat-2")),
+                any(Instant.class),
+                eq(DistributionTaskStatus.SUCCEEDED)
+        )).thenReturn(10L);
+
+        assertThatThrownBy(() -> service.retryAndClaimForOwner("owner-1", "task-1", "device-1"))
+                .hasMessageContaining("今日成功上传次数已达 10 次");
+
+        verify(taskRepository, never()).save(any(DistributionTask.class));
+    }
+
+    @Test
+    void desktopRetrySkipsWechatClientLimitForTiktokTask() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);

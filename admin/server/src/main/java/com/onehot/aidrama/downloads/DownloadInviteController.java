@@ -77,4 +77,14 @@ public class DownloadInviteController {
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
+
+    @PostMapping("/api/public/download-invites/validate-all")
+    ApiResponse<DownloadInviteDtos.MultiPlatformDownloadAccessResponse> validateAll(
+            @RequestBody DownloadInviteDtos.ValidateRequest request
+    ) {
+        return ApiResponse.ok(
+                service.validateAllPlatforms(request.code()),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
 }

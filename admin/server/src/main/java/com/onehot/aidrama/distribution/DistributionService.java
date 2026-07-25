@@ -561,29 +561,40 @@ public class DistributionService {
         if (isActiveTaskRecentlyUpdated(task)) {
             throw activeTaskStillRunningException();
         }
-        assertDailySuccessfulUploadLimitAvailable(List.of(task.getMediaAccountId()));
+        assertDailySuccessfulUploadLimitAvailable(task, mediaAccounts);
         clearTaskForRetry(task);
         return prepareAndClaim(task, deviceId, asyncPreparation, false);
     }
 
     private List<MediaAccount> mediaAccountsWithDailyAutomationLimitAvailable(List<MediaAccount> mediaAccounts) {
+        if (mediaAccounts == null || mediaAccounts.isEmpty()) {
+            return List.of();
+        }
         List<MediaAccount> available = new ArrayList<>();
+        Map<String, BusinessException> limitExceptionByClient = new LinkedHashMap<>();
         for (var media : mediaAccounts) {
-            if (isDailyAutomationLimitAvailable(List.of(media.getId()))) {
+            if (!requiresDailyAutomationLimit(media)) {
+                available.add(media);
+                continue;
+            }
+            String limitClientKey = dailyLimitClientKey(media);
+            if (!limitExceptionByClient.containsKey(limitClientKey)) {
+                limitExceptionByClient.put(
+                        limitClientKey,
+                        dailyAutomationLimitException(dailyLimitMediaAccountIds(mediaAccounts, media))
+                );
+            }
+            if (limitExceptionByClient.get(limitClientKey) == null) {
                 available.add(media);
             }
         }
-        if (mediaAccounts.isEmpty() || !available.isEmpty()) {
+        if (!available.isEmpty()) {
             return available;
         }
-        throw dailyAutomationLimitReachedException(mediaAccountIds(mediaAccounts));
-    }
-
-    private void assertDailyAutomationLimitAvailable(List<String> mediaAccountIds) {
-        BusinessException exception = dailyAutomationLimitException(mediaAccountIds);
-        if (exception != null) {
-            throw exception;
-        }
+        throw limitExceptionByClient.values().stream()
+                .filter(exception -> exception != null)
+                .findFirst()
+                .orElseGet(this::dailyClaimLimitReachedException);
     }
 
     private void assertDailySuccessfulUploadLimitAvailable(List<String> mediaAccountIds) {
@@ -592,8 +603,19 @@ public class DistributionService {
         }
     }
 
-    private boolean isDailyAutomationLimitAvailable(List<String> mediaAccountIds) {
-        return dailyAutomationLimitException(mediaAccountIds) == null;
+    private void assertDailySuccessfulUploadLimitAvailable(
+            DistributionTask task,
+            List<MediaAccount> mediaAccounts
+    ) {
+        Optional<MediaAccount> media = mediaAccountById(mediaAccounts, task.getMediaAccountId());
+        MediaPlatform platform = media.map(this::taskPlatform).orElse(task.getPlatform());
+        if (!requiresDailyAutomationLimit(platform)) {
+            return;
+        }
+        assertDailySuccessfulUploadLimitAvailable(
+                media.map(value -> dailyLimitMediaAccountIds(mediaAccounts, value))
+                        .orElseGet(() -> hasText(task.getMediaAccountId()) ? List.of(task.getMediaAccountId()) : List.of())
+        );
     }
 
     private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds) {
@@ -604,11 +626,6 @@ public class DistributionService {
             return dailySuccessfulUploadLimitReachedException();
         }
         return null;
-    }
-
-    private BusinessException dailyAutomationLimitReachedException(List<String> mediaAccountIds) {
-        BusinessException exception = dailyAutomationLimitException(mediaAccountIds);
-        return exception == null ? dailyClaimLimitReachedException() : exception;
     }
 
     private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds) {
@@ -657,7 +674,7 @@ public class DistributionService {
     private BusinessException dailyClaimLimitReachedException() {
         return new BusinessException(
                 "DAILY_CLAIM_LIMIT_REACHED",
-                "今日领取任务次数已达 " + DAILY_CLAIM_LIMIT + " 次，请明天再执行。",
+                "当前客户端今日领取任务次数已达 " + DAILY_CLAIM_LIMIT + " 次（视频号任务），请明天再执行。",
                 HttpStatus.TOO_MANY_REQUESTS
         );
     }
@@ -665,7 +682,7 @@ public class DistributionService {
     private BusinessException dailySuccessfulUploadLimitReachedException() {
         return new BusinessException(
                 "DAILY_SUCCESSFUL_UPLOAD_LIMIT_REACHED",
-                "今日成功上传次数已达 " + DAILY_SUCCESSFUL_UPLOAD_LIMIT + " 次，请明天再发布。",
+                "当前客户端今日成功上传次数已达 " + DAILY_SUCCESSFUL_UPLOAD_LIMIT + " 次（视频号任务），请明天再发布。",
                 HttpStatus.TOO_MANY_REQUESTS
         );
     }
@@ -675,6 +692,45 @@ public class DistributionService {
                 .toLocalDate()
                 .atStartOfDay(DAILY_LIMIT_ZONE)
                 .toInstant();
+    }
+
+    private boolean requiresDailyAutomationLimit(MediaAccount media) {
+        return media != null && requiresDailyAutomationLimit(taskPlatform(media));
+    }
+
+    private boolean requiresDailyAutomationLimit(MediaPlatform platform) {
+        return platform == null || platform == MediaPlatform.WECHAT_VIDEO;
+    }
+
+    private List<String> dailyLimitMediaAccountIds(List<MediaAccount> mediaAccounts, MediaAccount media) {
+        if (mediaAccounts == null || media == null || !requiresDailyAutomationLimit(media)) {
+            return List.of();
+        }
+        String clientKey = dailyLimitClientKey(media);
+        List<String> ids = mediaAccounts.stream()
+                .filter(this::requiresDailyAutomationLimit)
+                .filter(candidate -> dailyLimitClientKey(candidate).equals(clientKey))
+                .map(MediaAccount::getId)
+                .filter(this::hasText)
+                .distinct()
+                .toList();
+        if (ids.isEmpty() && hasText(media.getId())) {
+            return List.of(media.getId());
+        }
+        return ids;
+    }
+
+    private String dailyLimitClientKey(MediaAccount media) {
+        if (media == null) {
+            return "";
+        }
+        if (hasText(media.getOwnerAccountId())) {
+            return "owner:" + media.getOwnerAccountId();
+        }
+        if (hasText(media.getDeviceId())) {
+            return "device:" + media.getDeviceId();
+        }
+        return "media:" + media.getId();
     }
 
     private Map<String, MediaDistributionLoad> mediaDistributionLoads(List<MediaAccount> mediaAccounts) {
@@ -1163,6 +1219,15 @@ public class DistributionService {
         return mediaAccounts.stream()
                 .map(MediaAccount::getId)
                 .toList();
+    }
+
+    private Optional<MediaAccount> mediaAccountById(List<MediaAccount> mediaAccounts, String mediaAccountId) {
+        if (mediaAccounts == null || !hasText(mediaAccountId)) {
+            return Optional.empty();
+        }
+        return mediaAccounts.stream()
+                .filter(media -> mediaAccountId.equals(media.getId()))
+                .findFirst();
     }
 
     private DistributionTask claim(DistributionTask task, String deviceId) {

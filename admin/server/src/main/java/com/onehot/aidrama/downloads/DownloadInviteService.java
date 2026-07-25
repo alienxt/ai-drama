@@ -1,6 +1,7 @@
 package com.onehot.aidrama.downloads;
 
 import com.onehot.aidrama.common.error.BusinessException;
+import com.onehot.aidrama.versions.DesktopPlatform;
 import com.onehot.aidrama.versions.DesktopVersion;
 import com.onehot.aidrama.versions.DesktopVersionService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,6 +11,8 @@ import org.springframework.stereotype.Service;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 @Service
@@ -67,6 +70,25 @@ public class DownloadInviteService {
         invite.setLastUsedAt(Instant.now(clock));
         repository.save(invite);
         return DownloadInviteDtos.DownloadAccessResponse.from(version);
+    }
+
+    public DownloadInviteDtos.MultiPlatformDownloadAccessResponse validateAllPlatforms(String code) {
+        DownloadInvite invite = repository.findByCode(normalizeCode(code))
+                .orElseThrow(() -> invalidInvite("邀请码无效"));
+        assertUsable(invite);
+        List<DownloadInviteDtos.PlatformDownloadResponse> downloads = Arrays.stream(DesktopPlatform.values())
+                .map(platform -> versionService.findLatestPublished(platform.name())
+                        .map(DownloadInviteDtos.PlatformDownloadResponse::from)
+                        .orElseGet(() -> DownloadInviteDtos.PlatformDownloadResponse.unavailable(platform.name())))
+                .toList();
+        boolean hasAvailableVersion = downloads.stream().anyMatch(DownloadInviteDtos.PlatformDownloadResponse::available);
+        if (!hasAvailableVersion) {
+            throw new BusinessException("DESKTOP_VERSION_NOT_AVAILABLE", "当前暂无可下载版本", HttpStatus.NOT_FOUND);
+        }
+        invite.setUsedCount(invite.getUsedCount() + 1);
+        invite.setLastUsedAt(Instant.now(clock));
+        repository.save(invite);
+        return new DownloadInviteDtos.MultiPlatformDownloadAccessResponse(true, downloads);
     }
 
     private void apply(DownloadInvite invite, DownloadInviteDtos.InviteRequest request) {

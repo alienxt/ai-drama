@@ -3,6 +3,7 @@ package com.onehot.aidrama.downloads;
 import com.onehot.aidrama.versions.DesktopVersion;
 
 import java.time.Instant;
+import java.util.List;
 
 public class DownloadInviteDtos {
     public record InviteRequest(
@@ -93,5 +94,39 @@ public class DownloadInviteDtos {
                     version.getDownloadUrl()
             );
         }
+    }
+
+    public record PlatformDownloadResponse(
+            boolean available,
+            String platform,
+            String version,
+            String releaseNotes,
+            boolean mandatory,
+            String fileName,
+            long fileSize,
+            String downloadUrl
+    ) {
+        public static PlatformDownloadResponse unavailable(String platform) {
+            return new PlatformDownloadResponse(false, platform, null, null, false, null, 0, null);
+        }
+
+        public static PlatformDownloadResponse from(DesktopVersion version) {
+            return new PlatformDownloadResponse(
+                    true,
+                    version.getPlatform(),
+                    version.getVersion(),
+                    version.getReleaseNotes(),
+                    version.isMandatory(),
+                    version.getFileName(),
+                    version.getFileSize(),
+                    version.getDownloadUrl()
+            );
+        }
+    }
+
+    public record MultiPlatformDownloadAccessResponse(
+            boolean valid,
+            List<PlatformDownloadResponse> downloads
+    ) {
     }
 }
