@@ -3,6 +3,7 @@
 #   pyinstaller packaging/pyinstaller/ai-drama-desktop.spec
 
 from pathlib import Path
+import re
 import sys
 
 
@@ -10,6 +11,9 @@ project_root = Path.cwd()
 src_root = project_root / "src"
 assets_dir = src_root / "aidrama_desktop" / "assets"
 icon_path = assets_dir / ("app-icon.ico" if sys.platform.startswith("win") else "app-icon.icns")
+init_text = (src_root / "aidrama_desktop" / "__init__.py").read_text(encoding="utf-8")
+version_match = re.search(r'__version__ = "([^"]+)"', init_text)
+app_version = version_match.group(1) if version_match else "0.0.0"
 
 
 a = Analysis(
@@ -64,6 +68,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleDisplayName": "AI Drama Desktop",
             "CFBundleName": "AI Drama Desktop",
+            "CFBundleShortVersionString": app_version,
+            "CFBundleVersion": app_version,
             "NSHighResolutionCapable": "True",
         },
     )
