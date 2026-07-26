@@ -147,6 +147,21 @@ def test_ffmpeg_processor_reads_stream_duration_when_format_duration_missing(mon
     assert processor.video_duration_seconds(source) == 31.25
 
 
+def test_ffmpeg_processor_reports_missing_ffprobe(monkeypatch):
+    def fake_run(command, check=False, capture_output=False, text=False):
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("/opt/ffmpeg/bin/ffmpeg")
+
+    with pytest.raises(FfmpegError) as error:
+        processor.ensure_ffprobe_available()
+
+    assert "找不到 FFprobe 可执行文件：/opt/ffmpeg/bin/ffprobe" in str(error.value)
+    assert "AIDRAMA_FFMPEG_PATH" in str(error.value)
+
+
 def test_ffmpeg_processor_transcodes_low_resolution_to_wechat_video_minimum(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"

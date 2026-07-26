@@ -57,7 +57,7 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v6"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v7"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
@@ -926,6 +926,7 @@ class TaskRunner:
         }
         download_parameters = inspect.signature(download_episodes).parameters
         if "episode_file_validator" in download_parameters:
+            self._ensure_episode_file_validator_ready()
             kwargs["episode_file_validator"] = self._is_valid_downloaded_episode_file
         if "max_skipped_episodes" in download_parameters:
             kwargs["max_skipped_episodes"] = self.max_skipped_episode_failures
@@ -1246,8 +1247,9 @@ class TaskRunner:
         return segments
 
     @staticmethod
-    def _reassembled_episode_filename(_drama_title: str, output_index: int) -> str:
-        return f"ep-{output_index:03d}.mp4"
+    def _reassembled_episode_filename(drama_title: str, output_index: int) -> str:
+        drama_name = safe_episode_drama_name(drama_title) or "短剧"
+        return f"{drama_name}-第{output_index}集.mp4"
 
     def _reassembled_segments_ready(
         self,
@@ -1847,6 +1849,11 @@ class TaskRunner:
     def _is_valid_downloaded_episode_file(self, source_file: Path) -> bool:
         return self._video_duration_seconds(source_file) is not None
 
+    def _ensure_episode_file_validator_ready(self) -> None:
+        ensure_ffprobe_available = getattr(self.processor, "ensure_ffprobe_available", None)
+        if callable(ensure_ffprobe_available):
+            ensure_ffprobe_available()
+
     @staticmethod
     def _existing_file(path: Path) -> Path | None:
         return path if path.exists() and path.is_file() else None
@@ -1909,7 +1916,8 @@ class TaskRunner:
         episodes = download_plan.get("episodes") or []
         by_filename: dict[str, tuple[dict[str, Any], int]] = {}
         for index, episode in enumerate(episodes, start=1):
-            by_filename[episode_video_filename(download_plan, episode, index)] = (episode, index)
+            for filename in episode_video_filename_candidates(download_plan, episode, index):
+                by_filename[filename] = (episode, index)
             by_filename[legacy_episode_video_filename(episode, index)] = (episode, index)
 
         items: list[EpisodeMediaFile] = []
@@ -2433,6 +2441,7 @@ def download_episodes(
                 episode_retry_count,
                 retry_delay_seconds,
                 episode_file_validator,
+                filename_candidates=episode_video_filename_candidates(download_plan, episode, index),
             ): index
             for index, episode in enumerate(episodes, start=1)
         }
@@ -2558,7 +2567,7 @@ def cleanup_obsolete_episode_files(
     final_paths = {path.resolve() for path in final_files if path.exists()}
     candidate_names: set[str] = set()
     for index, episode in enumerate(episodes, start=1):
-        candidate_names.add(episode_video_filename(download_plan, episode, index))
+        candidate_names.update(episode_video_filename_candidates(download_plan, episode, index))
         candidate_names.add(legacy_episode_video_filename(episode, index))
     for name in candidate_names:
         path = target_dir / name
@@ -2601,16 +2610,20 @@ def download_episode(
     retry_count: int = EPISODE_DOWNLOAD_RETRIES,
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
     episode_file_validator: Callable[[Path], bool] | None = None,
+    filename_candidates: list[str] | None = None,
 ) -> Path:
     raise_if_task_interrupted(should_stop, should_pause, should_skip)
     target = target_dir / filename
-    legacy_target = target_dir / legacy_episode_video_filename(episode, index)
-    if (
-        target != legacy_target
-        and is_complete_episode_file(legacy_target, episode, episode_file_validator)
-        and not target.exists()
-    ):
-        legacy_target.replace(target)
+    existing_target = find_existing_complete_episode_file(
+        target_dir,
+        [target.name, *(filename_candidates or []), legacy_episode_video_filename(episode, index)],
+        episode=episode,
+        episode_file_validator=episode_file_validator,
+    )
+    if existing_target and existing_target != target:
+        if target.exists():
+            target.unlink()
+        existing_target.replace(target)
     if is_complete_episode_file(target, episode, episode_file_validator):
         if progress_callback:
             downloaded = target.stat().st_size
@@ -2720,6 +2733,24 @@ def is_complete_episode_file(
     return episode_file_validator(target) if episode_file_validator else True
 
 
+def find_existing_complete_episode_file(
+    target_dir: Path,
+    candidate_filenames: list[str],
+    *,
+    episode: dict,
+    episode_file_validator: Callable[[Path], bool] | None = None,
+) -> Path | None:
+    seen: set[str] = set()
+    for filename in candidate_filenames:
+        if not filename or filename in seen:
+            continue
+        seen.add(filename)
+        candidate = target_dir / filename
+        if is_complete_episode_file(candidate, episode, episode_file_validator):
+            return candidate
+    return None
+
+
 def is_downloaded_file_complete(target: Path, episode: dict) -> bool:
     if not target.exists() or not target.is_file():
         return False
@@ -2731,14 +2762,23 @@ def is_downloaded_file_complete(target: Path, episode: dict) -> bool:
 
 
 def episode_video_filename(download_plan: dict, episode: dict, index: int) -> str:
-    drama_name = safe_episode_drama_name(
-        download_plan.get("aiTitle")
-        or download_plan.get("publishTitle")
-        or download_plan.get("title")
-        or download_plan.get("name")
-    )
+    return episode_video_filename_candidates(download_plan, episode, index)[0]
+
+
+def episode_video_filename_candidates(download_plan: dict, episode: dict, index: int) -> list[str]:
     episode_no = episode_number(episode, index)
-    return f"{drama_name}-第{episode_no}集.mp4"
+    filenames: list[str] = []
+    for key in ("aiTitle", "publishTitle", "title", "name"):
+        value = str(download_plan.get(key) or "").strip()
+        if not value:
+            continue
+        drama_name = safe_episode_drama_name(value)
+        filename = f"{drama_name}-第{episode_no}集.mp4"
+        if filename not in filenames:
+            filenames.append(filename)
+    if not filenames:
+        filenames.append(f"短剧-第{episode_no}集.mp4")
+    return filenames
 
 
 def legacy_episode_video_filename(episode: dict, index: int) -> str:

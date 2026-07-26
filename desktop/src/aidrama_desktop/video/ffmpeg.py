@@ -819,6 +819,25 @@ class FfmpegProcessor:
             return False
         return bool(payload.get("streams"))
 
+    def ensure_ffprobe_available(self) -> None:
+        try:
+            subprocess.run(
+                [self.ffprobe_path(), "-version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as exception:
+            raise FfmpegError(
+                f"找不到 FFprobe 可执行文件：{self.ffprobe_path()}。"
+                "请安装 FFmpeg/FFprobe，或把 AIDRAMA_FFMPEG_PATH 配置为 ffmpeg 的绝对路径。"
+            ) from exception
+        except subprocess.CalledProcessError as exception:
+            detail = self._process_output_tail(exception.stdout, exception.stderr)
+            raise FfmpegError(f"FFprobe 无法运行：{detail}") from exception
+        except OSError as exception:
+            raise FfmpegError(f"FFprobe 无法启动：{exception}") from exception
+
     def ffprobe_path(self) -> str:
         ffmpeg = Path(self.ffmpeg_path)
         if ffmpeg.name == "ffmpeg":

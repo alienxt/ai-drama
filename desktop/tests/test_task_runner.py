@@ -1196,13 +1196,13 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert speed_factor == pytest.approx(1.02)
     assert swap_orientation is False
     assert cover_path is None
-    assert reassembled[0].file == final_dir / "ep-001.mp4"
+    assert reassembled[0].file == final_dir / "神医归来-第1集.mp4"
     assert reassembled[0].source_episode_indexes == (1,)
     assert reassembled[-1].source_episode_indexes == (2,)
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v6"
+    assert manifest["reassemblyVersion"] == "video-reassembly-v7"
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
@@ -1212,7 +1212,7 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
 def test_reassembly_cache_rebuilds_low_bitrate_segments(tmp_path):
     class ReassemblyBitrateProcessor(FakeProcessor):
         def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
-            return source.name.startswith("ep-")
+            return source.name.startswith("神医归来-第")
 
     processor = ReassemblyBitrateProcessor()
     source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
@@ -1251,7 +1251,7 @@ def test_reassembly_cache_rebuilds_low_resolution_segments(tmp_path):
     source = source_dir / "001.mp4"
     source.write_bytes(b"video-1")
     processor.durations = {"001.mp4": 62.0}
-    processor.dimensions = {"ep-001.mp4": (540, 960)}
+    processor.dimensions = {"神医归来-第1集.mp4": (540, 960)}
     runner = TaskRunner(
         api=FakeApi(),
         processor=processor,
@@ -1334,8 +1334,8 @@ def test_upload_cache_ignores_hidden_reassembly_full_video(tmp_path):
     final_dir.mkdir(parents=True)
     hidden_full = final_dir / ".full.mp4"
     hidden_full.write_bytes(b"0" * (600 * 1024 * 1024))
-    first = final_dir / "ep-001.mp4"
-    second = final_dir / "ep-002.mp4"
+    first = final_dir / "神医归来-第1集.mp4"
+    second = final_dir / "神医归来-第2集.mp4"
     first.write_bytes(b"video-1")
     second.write_bytes(b"video-2")
     write_download_episode_manifest(
@@ -1376,7 +1376,7 @@ def test_upload_cache_rejects_stale_reassembly_manifest(tmp_path):
     )
     final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
     final_dir.mkdir(parents=True)
-    first = final_dir / "ep-001.mp4"
+    first = final_dir / "神医归来-第1集.mp4"
     first.write_bytes(b"video-1")
     write_download_episode_manifest(
         final_dir,
@@ -1410,8 +1410,8 @@ def test_upload_cache_rejects_partial_reassembly_manifest(tmp_path):
     )
     final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
     final_dir.mkdir(parents=True)
-    first = final_dir / "ep-001.mp4"
-    second = final_dir / "ep-002.mp4"
+    first = final_dir / "神医归来-第1集.mp4"
+    second = final_dir / "神医归来-第2集.mp4"
     first.write_bytes(b"video-1")
     write_download_episode_manifest(
         final_dir,
@@ -1450,8 +1450,8 @@ def test_upload_cache_requires_manifest_for_reassembly_cache(tmp_path):
     )
     final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
     final_dir.mkdir(parents=True)
-    (final_dir / "ep-001.mp4").write_bytes(b"video-1")
-    (final_dir / "ep-002.mp4").write_bytes(b"video-2")
+    (final_dir / "神医归来-第1集.mp4").write_bytes(b"video-1")
+    (final_dir / "神医归来-第2集.mp4").write_bytes(b"video-2")
 
     items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
 
@@ -1467,7 +1467,7 @@ def test_reassembly_outputs_final_upload_files_without_cover_frame(tmp_path):
     cover = source_dir / "fengmian.jpg"
     cover.write_bytes(b"cover")
     processor.durations = {"001.mp4": 62.0}
-    processor.dimensions = {"ep-001.mp4": (720, 1280)}
+    processor.dimensions = {"神医归来-第1集.mp4": (720, 1280)}
     runner = TaskRunner(
         api=FakeApi(),
         processor=processor,
@@ -2092,7 +2092,7 @@ def test_execute_task_from_upload_cache_repairs_low_resolution_reassembly(tmp_pa
     publisher = FakePublisher()
     final_dir = drama_processed_dir(tmp_path) / "reassembled"
     final_dir.mkdir(parents=True, exist_ok=True)
-    low_resolution = final_dir / "ep-001.mp4"
+    low_resolution = final_dir / "神医归来-第1集.mp4"
     low_resolution.write_bytes(b"low-resolution")
     processor.dimensions = {low_resolution.name: (540, 960)}
     write_download_episode_manifest(
@@ -2452,6 +2452,41 @@ def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch
     assert files == [expected_file]
     assert expected_file.read_bytes() == b"already-downloaded"
     assert not legacy_file.exists()
+    assert opened_urls == []
+
+
+def test_download_episodes_reuses_original_title_cache_when_ai_title_changes(tmp_path, monkeypatch):
+    target_dir = tmp_path / "drama-1"
+    target_dir.mkdir()
+    original_file = target_dir / "失忆来客-第1集.mp4"
+    original_file.write_bytes(b"already-downloaded")
+    expected_file = target_dir / "AI失忆来客-第1集.mp4"
+    opened_urls = []
+
+    def fake_urlopen(request):
+        opened_urls.append(request.full_url)
+        raise AssertionError("existing episode should be reused when ai title changes")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "失忆来客",
+        "aiTitle": "AI失忆来客",
+        "episodes": [
+            {
+                "episodeNo": 1,
+                "sourcePath": "/pan/001.mp4",
+                "size": len(b"already-downloaded"),
+                "downloadUrl": "/files/1.mp4",
+            },
+        ],
+    }
+
+    files = download_episodes(download_plan, target_dir, "http://server/api")
+
+    assert files == [expected_file]
+    assert expected_file.read_bytes() == b"already-downloaded"
+    assert not original_file.exists()
     assert opened_urls == []
 
 
