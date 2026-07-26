@@ -57,7 +57,7 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v5"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v6"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
@@ -1035,7 +1035,7 @@ class TaskRunner:
 
         target_dir = self._video_reassembly_target_dir(media_items)
         target_dir.mkdir(parents=True, exist_ok=True)
-        timeline = target_dir / f".{safe_episode_drama_name(drama_title) or 'drama'}-full.mp4"
+        timeline = target_dir / ".full.mp4"
         segments = self._video_reassembly_segments(drama_title, target_dir, segment_lengths)
         signature = {
             **base_signature,
@@ -1240,9 +1240,8 @@ class TaskRunner:
         return segments
 
     @staticmethod
-    def _reassembled_episode_filename(drama_title: str, output_index: int) -> str:
-        drama_name = safe_episode_drama_name(drama_title) or "短剧"
-        return f"{drama_name}-第{output_index}集.mp4"
+    def _reassembled_episode_filename(_drama_title: str, output_index: int) -> str:
+        return f"ep-{output_index:03d}.mp4"
 
     def _reassembled_segments_ready(
         self,

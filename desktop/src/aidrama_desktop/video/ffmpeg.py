@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
+import shlex
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,29 +175,38 @@ class FfmpegProcessor:
         timeline.parent.mkdir(parents=True, exist_ok=True)
         for segment in segments:
             segment.target.parent.mkdir(parents=True, exist_ok=True)
-        concat_file = timeline.with_name(f"{timeline.name}.concat.txt")
-        concat_file.write_text(self._concat_clip_file_content(clips), encoding="utf-8")
-        try:
+        with tempfile.TemporaryDirectory(prefix="aidrama-ffmpeg-") as work_dir_value:
+            work_dir = Path(work_dir_value)
+            staged_clips = self._stage_reassembly_clips(clips, work_dir)
+            staged_cover = self._stage_reassembly_cover(cover_path, work_dir)
+            work_timeline = work_dir / "timeline.mp4"
+            work_segments = [
+                VideoReassemblySegment(
+                    segment.index,
+                    segment.start_seconds,
+                    segment.duration_seconds,
+                    work_dir / f"segment-{segment.index:03d}.mp4",
+                )
+                for segment in segments
+            ]
+            concat_file = work_dir / "concat.txt"
+            concat_file.write_text(self._concat_clip_file_content(staged_clips), encoding="utf-8")
             self._run_ffmpeg(
                 self._reassembly_timeline_command(
                     concat_file,
-                    timeline,
-                    clips[0].path,
+                    work_timeline,
+                    staged_clips[0].path,
                     speed_factor=speed_factor,
                     swap_orientation=swap_orientation,
                 ),
-                timeline,
+                work_timeline,
             )
-            for segment in segments:
+            for segment, work_segment in zip(segments, work_segments, strict=True):
                 self._run_ffmpeg(
-                    self._reassembly_segment_command(timeline, segment, cover_path=cover_path),
-                    segment.target,
+                    self._reassembly_segment_command(work_timeline, work_segment, cover_path=staged_cover),
+                    work_segment.target,
                 )
-        finally:
-            try:
-                concat_file.unlink()
-            except OSError:
-                pass
+                self._move_generated_output(work_segment.target, segment.target)
         return [segment.target for segment in segments]
 
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
@@ -205,11 +218,60 @@ class FfmpegProcessor:
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
             detail = self._process_output_tail(exception.stdout, exception.stderr)
-            raise FfmpegError(f"FFmpeg 转码退出码 {exception.returncode}：{detail}") from exception
+            if detail == "没有返回错误详情":
+                detail = f"{detail}；目标文件：{target}；命令摘要：{self._command_summary(command)}"
+            raise FfmpegError(f"FFmpeg 转码退出码 {self._format_process_returncode(exception.returncode)}：{detail}") from exception
         except OSError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(f"FFmpeg 无法启动：{exception}") from exception
         return target
+
+    def _stage_reassembly_clips(
+        self,
+        clips: list[VideoReassemblySourceClip],
+        work_dir: Path,
+    ) -> list[VideoReassemblySourceClip]:
+        staged: list[VideoReassemblySourceClip] = []
+        for index, clip in enumerate(clips, start=1):
+            suffix = clip.path.suffix if clip.path.suffix else ".mp4"
+            staged_path = work_dir / f"source-{index:03d}{suffix}"
+            self._stage_reassembly_file(clip.path, staged_path)
+            staged.append(
+                VideoReassemblySourceClip(
+                    staged_path,
+                    clip.start_seconds,
+                    clip.duration_seconds,
+                )
+            )
+        return staged
+
+    def _stage_reassembly_cover(self, cover_path: Path | None, work_dir: Path) -> Path | None:
+        if not cover_path or not cover_path.exists():
+            return None
+        suffix = cover_path.suffix if cover_path.suffix else ".jpg"
+        staged_cover = work_dir / f"cover{suffix}"
+        self._stage_reassembly_file(cover_path, staged_cover)
+        return staged_cover
+
+    @staticmethod
+    def _stage_reassembly_file(source: Path, target: Path) -> None:
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+
+    @classmethod
+    def _move_generated_output(cls, source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source.replace(target)
+        except OSError:
+            try:
+                shutil.copy2(source, target)
+                source.unlink()
+            except OSError as exception:
+                cls._cleanup_failed_target(target)
+                raise FfmpegError(f"FFmpeg 输出文件移动失败：{exception}") from exception
 
     def _strategy1_timeline_command(
         self,
@@ -823,6 +885,20 @@ class FfmpegProcessor:
             return "没有返回错误详情"
         tail = "\n".join(lines[-max_lines:])
         return tail[-max_chars:]
+
+    @staticmethod
+    def _format_process_returncode(returncode: int) -> str:
+        if returncode > 0x7FFFFFFF:
+            signed = returncode - 0x100000000
+            return f"{signed}（Windows 原始码 {returncode}）"
+        return str(returncode)
+
+    @staticmethod
+    def _command_summary(command: list[str], max_chars: int = 1000) -> str:
+        text = " ".join(shlex.quote(part) for part in command)
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 3]}..."
 
     @staticmethod
     def _cleanup_failed_target(target: Path) -> None:

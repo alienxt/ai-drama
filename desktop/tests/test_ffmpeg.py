@@ -380,10 +380,10 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
             concat_path = Path(command[command.index("-i") + 1])
             concat_files.append(concat_path)
             content = concat_path.read_text(encoding="utf-8")
-            assert f"file '{source_1}'" in content
+            assert "source-001.mp4" in content
             assert "inpoint 1" in content
             assert "outpoint 61" in content
-            timeline.write_text("timeline")
+            Path(command[-1]).write_text("timeline")
         else:
             Path(command[-1]).write_text("segment")
         return subprocess.CompletedProcess(command, 0)
@@ -408,11 +408,15 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
     assert result == [first_segment, second_segment]
     timeline_command = commands[0]
     assert timeline_command[:7] == ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i"]
+    assert Path(timeline_command[-1]).name == "timeline.mp4"
     assert timeline_command[timeline_command.index("-vf") + 1] == "setpts=PTS/1.02"
     assert timeline_command[timeline_command.index("-af") + 1] == "atempo=1.02"
     assert commands[1][commands[1].index("-ss") + 1] == "0"
+    assert Path(commands[1][-1]).name == "segment-001.mp4"
     assert commands[2][commands[2].index("-ss") + 1] == "50"
     assert commands[2][commands[2].index("-t") + 1] == "67.647"
+    assert first_segment.read_text() == "segment"
+    assert second_segment.read_text() == "segment"
     assert not concat_files[0].exists()
 
 
@@ -490,8 +494,8 @@ def test_ffmpeg_processor_reassembly_segments_include_cover_frame(monkeypatch, t
     )
 
     segment_command = commands[1]
-    assert segment_command[segment_command.index("-i") + 1] == str(timeline)
-    assert str(cover) in segment_command
+    assert Path(segment_command[segment_command.index("-i") + 1]).name == "timeline.mp4"
+    assert any(Path(part).name == "cover.jpg" for part in segment_command)
     assert "-filter_complex" in segment_command
     assert "[mainv][coverv]overlay=0:0:enable='lt(t,1)'" in segment_command[segment_command.index("-filter_complex") + 1]
     assert "[picv]" in segment_command
@@ -523,4 +527,28 @@ def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
 
     assert "FFmpeg 转码退出码 1" in str(error.value)
     assert "Conversion failed!" in str(error.value)
+    assert not target.exists()
+
+
+def test_ffmpeg_processor_reports_windows_signed_returncode_without_stderr(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        target.write_text("partial")
+        raise subprocess.CalledProcessError(4294967274, command, output="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    with pytest.raises(FfmpegError) as error:
+        processor.transcode_for_wechat_video(source, target)
+
+    message = str(error.value)
+    assert "FFmpeg 转码退出码 -22（Windows 原始码 4294967274）" in message
+    assert "没有返回错误详情" in message
+    assert "目标文件：" in message
+    assert "命令摘要：" in message
     assert not target.exists()
