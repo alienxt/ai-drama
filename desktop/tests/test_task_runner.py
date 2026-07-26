@@ -2455,6 +2455,54 @@ def test_download_episodes_skips_complete_existing_episode(tmp_path, monkeypatch
     assert opened_urls == []
 
 
+def test_download_episodes_redownloads_invalid_existing_episode(tmp_path, monkeypatch):
+    target_dir = tmp_path / "drama-1"
+    target_dir.mkdir()
+    expected_file = target_dir / "坏缓存短剧-第1集.mp4"
+    expected_file.write_bytes(b"bad")
+    opened_urls = []
+
+    class FakeResponse:
+        headers = {"Content-Length": "5"}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"video"
+
+    def fake_urlopen(request):
+        opened_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "坏缓存短剧",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "size": 5, "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    files = download_episodes(
+        download_plan,
+        target_dir,
+        "http://server/api",
+        episode_file_validator=lambda path: path.read_bytes() == b"video",
+    )
+
+    assert files == [expected_file]
+    assert expected_file.read_bytes() == b"video"
+    assert opened_urls == ["http://server/files/1.mp4"]
+
+
 def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatch):
     opened_urls = []
     attempts = 0
@@ -2505,6 +2553,54 @@ def test_download_episodes_retries_retryable_download_error(tmp_path, monkeypatc
     assert episode_file.read_bytes() == b"video"
     assert not (tmp_path / "drama-1" / "重试短剧-第1集.mp4.part").exists()
     assert opened_urls == ["http://server/files/1.mp4", "http://server/files/1.mp4"]
+
+
+def test_download_episodes_retries_invalid_downloaded_video(tmp_path, monkeypatch):
+    attempts = 0
+
+    class FakeResponse:
+        headers = {}
+
+        def __enter__(self):
+            self.offset = 0
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self.offset:
+                return b""
+            self.offset += 1
+            return b"bad" if attempts == 1 else b"video"
+
+    def fake_urlopen(request):
+        nonlocal attempts
+        attempts += 1
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "坏视频重试",
+        "episodes": [
+            {"episodeNo": 1, "sourcePath": "/pan/001.mp4", "downloadUrl": "/files/1.mp4"},
+        ],
+    }
+
+    files = download_episodes(
+        download_plan,
+        tmp_path / "drama-1",
+        "http://server/api",
+        episode_retry_count=2,
+        retry_delay_seconds=0,
+        episode_file_validator=lambda path: path.read_bytes() == b"video",
+    )
+
+    episode_file = tmp_path / "drama-1" / "坏视频重试-第1集.mp4"
+    assert attempts == 2
+    assert files == [episode_file]
+    assert episode_file.read_bytes() == b"video"
 
 
 def test_download_episodes_retries_plain_bad_gateway(tmp_path, monkeypatch):

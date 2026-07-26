@@ -191,16 +191,29 @@ class FfmpegProcessor:
             ]
             concat_file = work_dir / "concat.txt"
             concat_file.write_text(self._concat_clip_file_content(staged_clips), encoding="utf-8")
-            self._run_ffmpeg(
-                self._reassembly_timeline_command(
-                    concat_file,
-                    work_timeline,
-                    staged_clips[0].path,
-                    speed_factor=speed_factor,
-                    swap_orientation=swap_orientation,
-                ),
+            timeline_command = self._reassembly_timeline_command(
+                concat_file,
                 work_timeline,
+                staged_clips[0].path,
+                speed_factor=speed_factor,
+                swap_orientation=swap_orientation,
             )
+            try:
+                self._run_ffmpeg(timeline_command, work_timeline)
+            except FfmpegError as exception:
+                if not self._is_reassembly_audio_decode_error(exception):
+                    raise
+                self._run_ffmpeg(
+                    self._reassembly_timeline_command(
+                        concat_file,
+                        work_timeline,
+                        staged_clips[0].path,
+                        speed_factor=speed_factor,
+                        swap_orientation=swap_orientation,
+                        drop_audio=True,
+                    ),
+                    work_timeline,
+                )
             for segment, work_segment in zip(segments, work_segments, strict=True):
                 self._run_ffmpeg(
                     self._reassembly_segment_command(work_timeline, work_segment, cover_path=staged_cover),
@@ -494,6 +507,7 @@ class FfmpegProcessor:
         *,
         speed_factor: float,
         swap_orientation: bool,
+        drop_audio: bool = False,
     ) -> list[str]:
         command = [
             self.ffmpeg_path,
@@ -508,8 +522,10 @@ class FfmpegProcessor:
         video_filters = self._reassembly_video_filters(first_source, speed_factor, swap_orientation)
         if video_filters:
             command.extend(["-vf", ",".join(video_filters)])
-        if self.has_audio_stream(first_source) and self._has_effective_speed_change(speed_factor):
+        if not drop_audio and self.has_audio_stream(first_source) and self._has_effective_speed_change(speed_factor):
             command.extend(["-af", self._atempo_filter(speed_factor)])
+        if drop_audio:
+            command.append("-an")
         command.extend([*self._wechat_video_output_args(), str(timeline)])
         return command
 
@@ -765,8 +781,10 @@ class FfmpegProcessor:
             self.ffprobe_path(),
             "-v",
             "error",
+            "-select_streams",
+            "v:0",
             "-show_entries",
-            "format=duration",
+            "format=duration:stream=duration",
             "-of",
             "json",
             str(source),
@@ -776,7 +794,7 @@ class FfmpegProcessor:
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return None
-        return self._positive_float((payload.get("format") or {}).get("duration"))
+        return self._duration_from_probe_payload(payload)
 
     def video_has_audio(self, source: Path) -> bool:
         return self.has_audio_stream(source)
@@ -816,6 +834,17 @@ class FfmpegProcessor:
             if bitrate:
                 return bitrate
         return FfmpegProcessor._positive_int((payload.get("format") or {}).get("bit_rate"))
+
+    @staticmethod
+    def _duration_from_probe_payload(payload: dict) -> float | None:
+        duration = FfmpegProcessor._positive_float((payload.get("format") or {}).get("duration"))
+        if duration:
+            return duration
+        for stream in payload.get("streams") or []:
+            duration = FfmpegProcessor._positive_float(stream.get("duration"))
+            if duration:
+                return duration
+        return None
 
     @staticmethod
     def _positive_int(value: object) -> int | None:
@@ -899,6 +928,21 @@ class FfmpegProcessor:
         if len(text) <= max_chars:
             return text
         return f"{text[: max_chars - 3]}..."
+
+    @staticmethod
+    def _is_reassembly_audio_decode_error(exception: Exception) -> bool:
+        message = str(exception).lower()
+        if "[aac" not in message:
+            return False
+        markers = (
+            "number of bands",
+            "channel element",
+            "invalid band type",
+            "predictor reset group",
+            "pulse tool not allowed",
+            "reserved bit set",
+        )
+        return any(marker in message for marker in markers)
 
     @staticmethod
     def _cleanup_failed_target(target: Path) -> None:

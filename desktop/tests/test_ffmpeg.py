@@ -119,7 +119,7 @@ def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
 
     def fake_run(command, check=False, capture_output=False, text=False):
         assert command[0] == "ffprobe"
-        assert "format=duration" in command
+        assert "format=duration:stream=duration" in command
         assert str(source) in command
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "29.42"}}))
 
@@ -128,6 +128,23 @@ def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
     processor = FfmpegProcessor("ffmpeg")
 
     assert processor.video_duration_seconds(source) == 29.42
+
+
+def test_ffmpeg_processor_reads_stream_duration_when_format_duration_missing(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        assert command[0] == "ffprobe"
+        assert "format=duration:stream=duration" in command
+        assert str(source) in command
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"duration": "31.25"}]}))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.video_duration_seconds(source) == 31.25
 
 
 def test_ffmpeg_processor_transcodes_low_resolution_to_wechat_video_minimum(monkeypatch, tmp_path):
@@ -297,7 +314,7 @@ def test_ffmpeg_processor_strategy1_adds_silent_audio_for_sources_without_audio(
 
     def fake_run(command, check=False, capture_output=False, text=False):
         commands.append(command)
-        if command[0] == "ffprobe" and "format=duration" in command:
+        if command[0] == "ffprobe" and "format=duration:stream=duration" in command:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
         if command[0] == "ffprobe" and ("stream=codec_type" in command or "stream=index" in command):
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": []}))
@@ -331,7 +348,7 @@ def test_ffmpeg_processor_strategy1_forces_keyframes_at_segment_boundaries(monke
 
     def fake_run(command, check=False, capture_output=False, text=False):
         commands.append(command)
-        if command[0] == "ffprobe" and "format=duration" in command:
+        if command[0] == "ffprobe" and "format=duration:stream=duration" in command:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"format": {"duration": "62.0"}}))
         if command[0] == "ffprobe" and ("stream=codec_type" in command or "stream=index" in command):
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
@@ -418,6 +435,57 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
     assert first_segment.read_text() == "segment"
     assert second_segment.read_text() == "segment"
     assert not concat_files[0].exists()
+
+
+def test_ffmpeg_processor_reassembly_retries_without_audio_on_bad_aac(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+    commands = []
+    timeline_attempts = 0
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        nonlocal timeline_attempts
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        commands.append(command)
+        if "-f" in command and command[command.index("-f") + 1] == "concat":
+            timeline_attempts += 1
+            if timeline_attempts == 1:
+                Path(command[-1]).write_text("partial")
+                raise subprocess.CalledProcessError(
+                    3221225477,
+                    command,
+                    output="",
+                    stderr="[aac @ 000002d2b2d1b4c0] Number of bands (43) exceeds limit (38).",
+                )
+            Path(command[-1]).write_text("timeline")
+        else:
+            Path(command[-1]).write_text("segment")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+    result = processor.reassemble_videos(
+        [VideoReassemblySourceClip(source, 1.0, 60.0)],
+        [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+        timeline,
+        speed_factor=1.02,
+    )
+
+    timeline_commands = [
+        command
+        for command in commands
+        if "-f" in command and command[command.index("-f") + 1] == "concat"
+    ]
+    assert result == [segment]
+    assert len(timeline_commands) == 2
+    assert "-af" in timeline_commands[0]
+    assert "-an" in timeline_commands[1]
+    assert "-af" not in timeline_commands[1]
+    assert segment.read_text() == "segment"
 
 
 def test_ffmpeg_processor_reassembly_swaps_orientation_with_black_padding(monkeypatch, tmp_path):

@@ -121,6 +121,10 @@ class DownloadHttpError(RuntimeError):
         super().__init__(f"第 {episode_no} 集下载失败：{message}")
 
 
+class InvalidEpisodeVideoError(RuntimeError):
+    pass
+
+
 @dataclass
 class EpisodeMediaFile:
     episode: dict[str, Any]
@@ -921,6 +925,8 @@ class TaskRunner:
             "max_concurrent_downloads": self.download_concurrency,
         }
         download_parameters = inspect.signature(download_episodes).parameters
+        if "episode_file_validator" in download_parameters:
+            kwargs["episode_file_validator"] = self._is_valid_downloaded_episode_file
         if "max_skipped_episodes" in download_parameters:
             kwargs["max_skipped_episodes"] = self.max_skipped_episode_failures
             kwargs["skip_callback"] = report_skipped
@@ -1838,6 +1844,9 @@ class TaskRunner:
             return None
         return parsed if parsed > 0 else None
 
+    def _is_valid_downloaded_episode_file(self, source_file: Path) -> bool:
+        return self._video_duration_seconds(source_file) is not None
+
     @staticmethod
     def _existing_file(path: Path) -> Path | None:
         return path if path.exists() and path.is_file() else None
@@ -2349,6 +2358,7 @@ def download_episodes(
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
     max_skipped_episodes: int = 0,
     skip_callback: Callable[[int, int, dict, BaseException], None] | None = None,
+    episode_file_validator: Callable[[Path], bool] | None = None,
 ) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
     cover_file = download_cover(
@@ -2422,6 +2432,7 @@ def download_episodes(
                 should_skip,
                 episode_retry_count,
                 retry_delay_seconds,
+                episode_file_validator,
             ): index
             for index, episode in enumerate(episodes, start=1)
         }
@@ -2589,13 +2600,18 @@ def download_episode(
     should_skip: Callable[[], bool] | None,
     retry_count: int = EPISODE_DOWNLOAD_RETRIES,
     retry_delay_seconds: float = EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS,
+    episode_file_validator: Callable[[Path], bool] | None = None,
 ) -> Path:
     raise_if_task_interrupted(should_stop, should_pause, should_skip)
     target = target_dir / filename
     legacy_target = target_dir / legacy_episode_video_filename(episode, index)
-    if target != legacy_target and is_complete_episode_file(legacy_target, episode) and not target.exists():
+    if (
+        target != legacy_target
+        and is_complete_episode_file(legacy_target, episode, episode_file_validator)
+        and not target.exists()
+    ):
         legacy_target.replace(target)
-    if is_complete_episode_file(target, episode):
+    if is_complete_episode_file(target, episode, episode_file_validator):
         if progress_callback:
             downloaded = target.stat().st_size
             progress_callback(index, total, episode, downloaded, episode_size(episode) or downloaded)
@@ -2628,6 +2644,10 @@ def download_episode(
                 expected_size = episode_size(episode)
                 actual_size = part_file.stat().st_size if part_file.exists() else 0
                 raise RuntimeError(f"第 {episode['episodeNo']} 集下载不完整：{actual_size}/{expected_size} bytes")
+            if episode_file_validator and not episode_file_validator(part_file):
+                raise InvalidEpisodeVideoError(
+                    f"第 {episode_number(episode, index)} 集下载后无法读取视频时长，文件可能损坏或不是有效 MP4。"
+                )
             part_file.replace(target)
             return target
         except TaskInterrupted:
@@ -2690,8 +2710,14 @@ def episode_size(episode: dict) -> int | None:
     return size if size > 0 else None
 
 
-def is_complete_episode_file(target: Path, episode: dict) -> bool:
-    return target.exists() and target.is_file() and is_downloaded_file_complete(target, episode)
+def is_complete_episode_file(
+    target: Path,
+    episode: dict,
+    episode_file_validator: Callable[[Path], bool] | None = None,
+) -> bool:
+    if not target.exists() or not target.is_file() or not is_downloaded_file_complete(target, episode):
+        return False
+    return episode_file_validator(target) if episode_file_validator else True
 
 
 def is_downloaded_file_complete(target: Path, episode: dict) -> bool:
@@ -2754,6 +2780,8 @@ def cleanup_part_file(part_file: Path) -> None:
 
 
 def is_retryable_download_error(exception: BaseException) -> bool:
+    if isinstance(exception, InvalidEpisodeVideoError):
+        return True
     if isinstance(exception, DownloadHttpError):
         if exception.error_code in NON_RETRYABLE_DOWNLOAD_ERROR_CODES:
             return False
