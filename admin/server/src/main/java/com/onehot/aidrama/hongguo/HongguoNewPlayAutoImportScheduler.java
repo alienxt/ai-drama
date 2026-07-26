@@ -61,7 +61,7 @@ public class HongguoNewPlayAutoImportScheduler {
     }
 
     private void runScheduledAutoImport(String triggerSource) {
-        boolean enabled = configService.get(ENABLED_KEY).map(Boolean::parseBoolean).orElse(true);
+        boolean enabled = configService.get(ENABLED_KEY).map(Boolean::parseBoolean).orElse(false);
         if (!enabled) {
             return;
         }

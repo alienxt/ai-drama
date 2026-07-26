@@ -125,6 +125,7 @@ public class BootstrapConfig {
         configService.putIfAbsent("hongguo.secretKey", "", true);
         configService.putIfAbsent("hongguo.connectTimeoutSeconds", "30", false);
         configService.putIfAbsent("hongguo.readTimeoutSeconds", "120", false);
+        configService.putIfAbsent("hongguo.newPlayAutoImportEnabled", "false", false);
         configService.putIfAbsent("hongguo.aiMangaAutoImportEnabled", "true", false);
         configService.putIfAbsent("hongguo.aiMangaAutoImportDailyLimit", "30", false);
         configService.putIfAbsent("hongguo.aiMangaAutoImportMaxPages", "8", false);
