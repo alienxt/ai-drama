@@ -53,6 +53,36 @@ def test_load_settings_creates_planned_directories(monkeypatch, tmp_path):
         assert directory.exists()
 
 
+def test_load_settings_auto_resolves_ffmpeg_with_ffprobe(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "homebrew" / "bin"
+    fake_bin.mkdir(parents=True)
+    ffmpeg = fake_bin / "ffmpeg"
+    ffprobe = fake_bin / "ffprobe"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffprobe.write_text("#!/bin/sh\n")
+    monkeypatch.delenv("AIDRAMA_FFMPEG_PATH", raising=False)
+    monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
+    monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(tmp_path / "config" / "token"))
+    monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", (str(ffmpeg),))
+
+    settings = load_settings()
+
+    assert settings.ffmpeg_path == str(ffmpeg)
+
+
+def test_load_settings_keeps_explicit_ffmpeg_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIDRAMA_FFMPEG_PATH", "/custom/bin/ffmpeg")
+    monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
+    monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(tmp_path / "config" / "token"))
+    monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
+
+    settings = load_settings()
+
+    assert settings.ffmpeg_path == "/custom/bin/ffmpeg"
+
+
 def test_load_settings_persists_generated_device_id(monkeypatch, tmp_path):
     monkeypatch.delenv("AIDRAMA_DEVICE_ID", raising=False)
     monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
