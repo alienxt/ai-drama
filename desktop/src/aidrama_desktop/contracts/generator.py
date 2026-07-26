@@ -888,7 +888,7 @@ def convert_pdf_to_pngs(
         prefix = image_dir / safe_contract_filename(image_stem)
         for stale_image in image_dir.glob(f"{prefix.name}*.png"):
             stale_image.unlink()
-        run_command([pdftoppm, "-r", "200", "-png", str(pdf_path), str(prefix)], "PDF 合同转图片失败")
+        run_command([pdftoppm, "-r", "400", "-png", str(pdf_path), str(prefix)], "PDF 合同转图片失败")
         images = sorted(image_dir.glob(f"{prefix.name}-*.png"))
         if images:
             if len(images) == 1:

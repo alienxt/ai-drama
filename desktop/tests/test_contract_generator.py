@@ -221,6 +221,7 @@ def test_convert_pdf_to_pngs_uses_pdftoppm_env_path(tmp_path, monkeypatch):
     images = convert_pdf_to_pngs(pdf, image_dir, "contract")
 
     assert commands[0][0] == str(pdftoppm)
+    assert commands[0][1:3] == ["-r", "400"]
     assert images == [image_dir / "contract.png"]
 
 
