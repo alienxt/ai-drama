@@ -113,6 +113,21 @@ def test_ffmpeg_processor_keeps_compliant_wechat_video_resolution(monkeypatch, t
     assert processor.needs_wechat_video_resolution_transcode(source) is False
 
 
+def test_ffmpeg_processor_treats_unknown_resolution_as_needing_transcode(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("not-a-video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": []}))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.video_dimensions(source) is None
+    assert processor.needs_wechat_video_resolution_transcode(source) is True
+
+
 def test_ffmpeg_processor_reads_video_duration(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     source.write_text("video")

@@ -93,16 +93,18 @@ class FakeProcessor:
         self.calls.append((source, target, cover_path))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.name)
+        self.dimensions[target.name] = (720, 1280)
+        self.durations[target.name] = max(self.durations.get(source.name, 60.0), 60.0)
         return target
 
     def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
         return False
 
     def video_dimensions(self, source: Path):
-        return self.dimensions.get(source.name)
+        return self.dimensions.get(source.name, (720, 1280) if source.exists() else None)
 
     def video_duration_seconds(self, source: Path):
-        return self.durations.get(source.name)
+        return self.durations.get(source.name, 60.0 if source.exists() else None)
 
     def merge_videos_for_tiktok(self, sources: list[Path], target: Path) -> Path:
         self.merge_calls.append((sources, target))
@@ -155,6 +157,14 @@ class FailingTranscodeProcessor(LowBitrateProcessor):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("partial")
         raise RuntimeError("Conversion failed!")
+
+
+class UnreadableVideoProbeProcessor:
+    def video_dimensions(self, source: Path):
+        return None
+
+    def video_duration_seconds(self, source: Path):
+        return None
 
 
 class FakePublisher:
@@ -1209,6 +1219,54 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert manifest["files"][-1]["episode"]["sourceEpisodeRange"] == "2"
 
 
+def test_reassembly_drops_unreadable_tail_segments(tmp_path):
+    class TailInvalidProcessor(FakeProcessor):
+        def video_duration_seconds(self, source: Path):
+            if source.name.startswith("神医归来-第"):
+                index = int(source.name.split("-第", 1)[1].split("集", 1)[0])
+                if index >= 51:
+                    return None
+            return super().video_duration_seconds(source)
+
+    processor = TailInvalidProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"video-1")
+    processor.durations = {"001.mp4": 2600.0}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=50.0,
+            segment_max_seconds=50.0,
+            trim_head_seconds=0.0,
+            trim_tail_seconds=0.0,
+            speed_min_percent=0.0,
+            speed_max_percent=0.0,
+        ),
+    )
+
+    reassembled = runner._prepare_source_items_for_platform(
+        [EpisodeMediaFile({"episodeNo": 1}, 1, source)],
+        "task-1",
+        "神医归来",
+        "WECHAT_VIDEO",
+    )
+
+    final_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
+    manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
+    assert len(processor.reassemble_calls[0][1]) == 52
+    assert len(reassembled) == 50
+    assert manifest["episodeCount"] == 50
+    assert [entry["file"] for entry in manifest["files"]][-1] == "神医归来-第50集.mp4"
+    assert not (final_dir / "神医归来-第51集.mp4").exists()
+    assert not (final_dir / "神医归来-第52集.mp4").exists()
+
+
 def test_reassembly_cache_rebuilds_low_bitrate_segments(tmp_path):
     class ReassemblyBitrateProcessor(FakeProcessor):
         def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
@@ -1456,6 +1514,45 @@ def test_upload_cache_requires_manifest_for_reassembly_cache(tmp_path):
     items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
 
     assert items == []
+
+
+def test_upload_cache_trims_unreadable_reassembly_tail(tmp_path):
+    class TailInvalidCacheProcessor(FakeProcessor):
+        def video_duration_seconds(self, source: Path):
+            if source.name.startswith("神医归来-第"):
+                index = int(source.name.split("-第", 1)[1].split("集", 1)[0])
+                if index >= 51:
+                    return None
+            return super().video_duration_seconds(source)
+
+    final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
+    final_dir.mkdir(parents=True)
+    entries = []
+    for index in range(1, 53):
+        path = final_dir / f"神医归来-第{index}集.mp4"
+        path.write_bytes(f"segment-{index}".encode())
+        entries.append(
+            {
+                "file": path.name,
+                "episodeIndex": index,
+                "episode": {"episodeNo": index, "title": f"第{index}集", "finalUploadVideo": True},
+                "sourceEpisodeIndexes": [1],
+            }
+        )
+    write_download_episode_manifest(final_dir, {"episodeCount": 52, "files": entries})
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=TailInvalidCacheProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(method="fixed"),
+    )
+
+    items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
+
+    assert len(items) == 50
+    assert items[-1].file.name == "神医归来-第50集.mp4"
 
 
 def test_reassembly_outputs_final_upload_files_without_cover_frame(tmp_path):
@@ -2084,6 +2181,37 @@ def test_execute_task_from_upload_cache_skips_download_and_processing(tmp_path, 
         "platformPublishId": "published-1",
         "failureReason": None,
     }
+
+
+def test_execute_task_from_upload_cache_rejects_unreadable_wechat_video_before_upload(tmp_path, monkeypatch):
+    api = FakeApi()
+    publisher = FakePublisher()
+    cached_file = drama_processed_dir(tmp_path) / "001.mp4"
+    cached_file.parent.mkdir(parents=True, exist_ok=True)
+    cached_file.write_bytes(b"x" * 262)
+
+    def fail_download(*_args, **_kwargs):
+        raise AssertionError("download should not be called when retrying from upload cache")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fail_download)
+    runner = TaskRunner(
+        api=api,
+        processor=UnreadableVideoProbeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    result = runner.execute_task_from_upload_cache(
+        {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1", "platform": "WECHAT_VIDEO"}
+    )
+
+    assert result == "failed"
+    assert publisher.files == []
+    failure_reason = last_task_result_payload(api)["failureReason"]
+    assert "第 1 集上传前校验失败" in failure_reason
+    assert "无法读取视频时长" in failure_reason
+    assert "262B" in failure_reason
 
 
 def test_execute_task_from_upload_cache_repairs_low_resolution_reassembly(tmp_path, monkeypatch):

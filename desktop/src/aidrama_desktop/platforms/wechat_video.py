@@ -1232,10 +1232,13 @@ class WeChatVideoPublisher(PlatformPublisher):
 
     @staticmethod
     def _validate_playlet_episode_files(files: list[Path]) -> None:
+        min_size = 1024
         max_size = 500 * 1024 * 1024
         for path in files:
             if not path.exists():
                 raise RuntimeError(f"视频号剧集视频文件不存在：{path}")
+            if path.stat().st_size < min_size:
+                raise RuntimeError(f"视频号剧集视频文件异常过小，可能不是有效视频：{path.name}")
             if path.stat().st_size > max_size:
                 raise RuntimeError(f"视频号单个剧集视频超过 500MB，无法上传：{path.name}")
 

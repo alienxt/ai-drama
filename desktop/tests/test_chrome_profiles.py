@@ -610,7 +610,7 @@ def test_wechat_video_publisher_uploads_playlet_episode_files_with_video_input(t
     videos = []
     for index in range(1, 4):
         path = tmp_path / f"短剧-第{index}集.mp4"
-        path.write_bytes(b"video")
+        path.write_bytes(b"video" * 256)
         videos.append(path)
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
 
@@ -643,6 +643,17 @@ def test_wechat_video_publisher_uploads_playlet_episode_files_with_video_input(t
 
     assert ("set_input_files", [str(path) for path in videos]) in calls
     assert any(call[0] == "evaluate" and call[1]["expectedCount"] == 3 for call in calls)
+
+
+def test_wechat_video_publisher_rejects_tiny_episode_file(tmp_path: Path):
+    video = tmp_path / "短剧-第1集.mp4"
+    video.write_bytes(b"x" * 262)
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    with pytest.raises(RuntimeError) as error:
+        publisher._upload_playlet_episode_files(object(), [video], 1, TimeoutError)
+
+    assert "视频号剧集视频文件异常过小" in str(error.value)
 
 
 def test_wechat_video_publisher_waits_for_episode_upload_progress(tmp_path: Path):

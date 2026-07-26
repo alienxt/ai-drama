@@ -350,6 +350,7 @@ class TaskRunner:
         platform: str,
     ) -> str:
         drama_title = self._drama_title(download_plan, task)
+        self._validate_upload_items_for_platform(upload_items, task_id, drama_title, platform)
         effective_download_plan = self._effective_download_plan(download_plan, upload_items)
         contract_metadata = (
             self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
@@ -1044,20 +1045,7 @@ class TaskRunner:
         target_dir.mkdir(parents=True, exist_ok=True)
         timeline = target_dir / ".full.mp4"
         segments = self._video_reassembly_segments(drama_title, target_dir, segment_lengths)
-        signature = {
-            **base_signature,
-            "speedPercent": round(speed_percent, 6),
-            "speedFactor": round(speed_factor, 8),
-            "segments": [
-                {
-                    "index": segment.index,
-                    "startSeconds": round(segment.start_seconds, 6),
-                    "durationSeconds": round(segment.duration_seconds, 6),
-                    "file": segment.target.name,
-                }
-                for segment in segments
-            ],
-        }
+        signature = self._video_reassembly_signature(base_signature, speed_percent, speed_factor, segments)
         if self._reassembled_segments_ready(segments, signature):
             self._notify(f"重组分集缓存可用：{drama_title}（{len(segments)} 集）", task_id)
         else:
@@ -1077,6 +1065,8 @@ class TaskRunner:
                     swap_orientation=config.swap_orientation,
                     cover_path=None,
                 )
+                segments = self._valid_reassembled_segments_or_raise(segments, task_id, drama_title)
+                signature = self._video_reassembly_signature(base_signature, speed_percent, speed_factor, segments)
                 expected_files = {
                     path
                     for segment in segments
@@ -1247,9 +1237,95 @@ class TaskRunner:
         return segments
 
     @staticmethod
+    def _video_reassembly_signature(
+        base_signature: dict[str, Any],
+        speed_percent: float,
+        speed_factor: float,
+        segments: list[VideoReassemblySegment],
+    ) -> dict[str, Any]:
+        return {
+            **base_signature,
+            "speedPercent": round(speed_percent, 6),
+            "speedFactor": round(speed_factor, 8),
+            "segments": [
+                {
+                    "index": segment.index,
+                    "startSeconds": round(segment.start_seconds, 6),
+                    "durationSeconds": round(segment.duration_seconds, 6),
+                    "file": segment.target.name,
+                }
+                for segment in segments
+            ],
+        }
+
+    @staticmethod
     def _reassembled_episode_filename(drama_title: str, output_index: int) -> str:
         drama_name = safe_episode_drama_name(drama_title) or "短剧"
         return f"{drama_name}-第{output_index}集.mp4"
+
+    def _valid_reassembled_segments_or_raise(
+        self,
+        segments: list[VideoReassemblySegment],
+        task_id: str,
+        drama_title: str,
+    ) -> list[VideoReassemblySegment]:
+        valid_segments: list[VideoReassemblySegment] = []
+        invalid_tail: list[tuple[VideoReassemblySegment, str]] = []
+        for segment in segments:
+            probe_item = EpisodeMediaFile({"episodeNo": segment.index}, segment.index, segment.target)
+            reason = self._unusable_reassembled_item_reason(probe_item)
+            if reason:
+                invalid_tail.append((segment, reason))
+                continue
+            if invalid_tail:
+                first_invalid, first_reason = invalid_tail[0]
+                raise RuntimeError(
+                    f"第 {first_invalid.index} 集切片无效，但后续仍有可读切片，可能导致剧情中断；"
+                    f"首个无效切片：{first_reason}"
+                )
+            valid_segments.append(segment)
+        if not invalid_tail:
+            return segments
+
+        if len(valid_segments) < VIDEO_REASSEMBLY_MIN_EPISODE_COUNT:
+            first_invalid, first_reason = invalid_tail[0]
+            raise RuntimeError(
+                f"重组分集有效切片不足 {VIDEO_REASSEMBLY_MIN_EPISODE_COUNT} 集："
+                f"生成 {len(segments)} 集，尾部无效 {len(invalid_tail)} 集，剩余 {len(valid_segments)} 集；"
+                f"首个无效切片为第 {first_invalid.index} 集：{first_reason}"
+            )
+
+        for segment, _reason in invalid_tail:
+            self._cleanup_failed_media_file(segment.target)
+            self._cleanup_failed_media_file(self._processed_media_signature_path(segment.target))
+        first_invalid = invalid_tail[0][0].index
+        last_invalid = invalid_tail[-1][0].index
+        index_label = str(first_invalid) if first_invalid == last_invalid else f"{first_invalid}-{last_invalid}"
+        self._notify(
+            f"重组分集丢弃无效尾段：{drama_title}（第 {index_label} 集无有效视频；剩余 {len(valid_segments)} 集）",
+            task_id,
+        )
+        return valid_segments
+
+    def _unusable_reassembled_item_reason(self, item: EpisodeMediaFile) -> str | None:
+        path = item.file
+        if not path.exists() or not path.is_file():
+            return f"文件不存在：{path}"
+        size = path.stat().st_size
+        if size <= 0:
+            return f"文件为空：{path.name}"
+        duration_seconds = self._video_duration_seconds(path)
+        if duration_seconds is None:
+            return f"无法读取视频时长，文件可能损坏或不是有效视频：{path.name}（{self._format_file_size(size)}）"
+        if duration_seconds < WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:
+            return (
+                f"视频时长 {duration_seconds:.1f} 秒，小于视频号要求的 "
+                f"{WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:.0f} 秒：{path.name}"
+            )
+        dimensions = self._video_dimensions(path)
+        if not dimensions:
+            return f"无法读取视频分辨率，文件可能损坏或不是有效视频：{path.name}（{self._format_file_size(size)}）"
+        return None
 
     def _reassembled_segments_ready(
         self,
@@ -1477,7 +1553,16 @@ class TaskRunner:
             try:
                 processed_file = single_transcode(source_file, target, cover_path=None)
                 self._write_processed_media_signature(processed_file, signature)
-                upload_items.append(EpisodeMediaFile(item.episode, item.episode_index, processed_file, item.source_episode_indexes))
+                processed_item = EpisodeMediaFile(
+                    item.episode,
+                    item.episode_index,
+                    processed_file,
+                    item.source_episode_indexes,
+                )
+                processed_rejection_reason = self._platform_upload_item_rejection_reason(processed_item, platform)
+                if processed_rejection_reason:
+                    raise RuntimeError(processed_rejection_reason)
+                upload_items.append(processed_item)
             except Exception as exception:  # noqa: BLE001
                 self._cleanup_failed_media_file(target)
                 self._cleanup_failed_media_file(self._processed_media_signature_path(target))
@@ -1560,10 +1645,10 @@ class TaskRunner:
             try:
                 return bool(needs_resolution(source_file))
             except Exception:  # noqa: BLE001
-                return False
+                return True
         dimensions = self._video_dimensions(source_file)
         if not dimensions:
-            return False
+            return True
         width, height = dimensions
         return width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT
 
@@ -1600,9 +1685,52 @@ class TaskRunner:
         return target_item
 
     def _platform_upload_item_rejection_reason(self, item: EpisodeMediaFile, platform: str) -> str | None:
+        if platform == "WECHAT_VIDEO":
+            return self._wechat_video_upload_rejection_reason(item)
         if platform != "TIKTOK":
             return None
         return self._tiktok_upload_rejection_reason(item)
+
+    def _validate_upload_items_for_platform(
+        self,
+        upload_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+        platform: str,
+    ) -> None:
+        if platform != "WECHAT_VIDEO":
+            return
+        for item in upload_items:
+            reason = self._wechat_video_upload_rejection_reason(item)
+            if not reason:
+                continue
+            episode_no = episode_number(item.episode, item.episode_index)
+            message = f"第 {episode_no} 集上传前校验失败：{reason}"
+            self._notify(f"上传前校验失败：{drama_title} {message}", task_id)
+            raise RuntimeError(message)
+
+    def _wechat_video_upload_rejection_reason(self, item: EpisodeMediaFile) -> str | None:
+        path = item.file
+        if not path.exists() or not path.is_file():
+            return f"文件不存在：{path}"
+        size = path.stat().st_size
+        if size <= 0:
+            return f"文件为空：{path.name}"
+        duration_seconds = self._video_duration_seconds(path)
+        if duration_seconds is None:
+            return f"无法读取视频时长，文件可能损坏或不是有效视频：{path.name}（{self._format_file_size(size)}）"
+        if duration_seconds < WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:
+            return (
+                f"视频时长 {duration_seconds:.1f} 秒，小于视频号要求的 "
+                f"{WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS:.0f} 秒：{path.name}"
+            )
+        dimensions = self._video_dimensions(path)
+        if not dimensions:
+            return f"无法读取视频分辨率，文件可能损坏或不是有效视频：{path.name}（{self._format_file_size(size)}）"
+        width, height = dimensions
+        if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
+            return f"分辨率 {width}x{height}，低于视频号要求的 {WECHAT_VIDEO_MIN_WIDTH}x{WECHAT_VIDEO_MIN_HEIGHT}：{path.name}"
+        return None
 
     def _tiktok_upload_rejection_reason(self, item: EpisodeMediaFile) -> str | None:
         path = item.file
@@ -1885,6 +2013,14 @@ class TaskRunner:
     def _processed_media_signature_path(target: Path) -> Path:
         return target.with_name(f"{target.name}.aidrama.json")
 
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        if size < 1024:
+            return f"{size}B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f}KB"
+        return f"{size / 1024 / 1024:.1f}MB"
+
     def _processed_media_signature_matches(self, target: Path, expected: dict[str, Any]) -> bool:
         signature_file = self._processed_media_signature_path(target)
         if not signature_file.exists():
@@ -2039,10 +2175,31 @@ class TaskRunner:
                 platform,
                 require_manifest=directory.name == VIDEO_REASSEMBLY_DIRNAME,
             )
+            if platform == "WECHAT_VIDEO" and directory.name == VIDEO_REASSEMBLY_DIRNAME:
+                media_items = self._valid_cached_reassembled_items(media_items)
+                if not media_items:
+                    continue
             if platform == "TIKTOK" and not self._all_items_satisfy_tiktok_upload_rules(media_items):
                 continue
             return media_items
         return []
+
+    def _valid_cached_reassembled_items(self, media_items: list[EpisodeMediaFile]) -> list[EpisodeMediaFile]:
+        valid_items: list[EpisodeMediaFile] = []
+        invalid_tail: list[EpisodeMediaFile] = []
+        for item in media_items:
+            reason = self._unusable_reassembled_item_reason(item)
+            if reason:
+                invalid_tail.append(item)
+                continue
+            if invalid_tail:
+                return []
+            valid_items.append(item)
+        if not invalid_tail:
+            return media_items
+        if len(valid_items) < VIDEO_REASSEMBLY_MIN_EPISODE_COUNT:
+            return []
+        return valid_items
 
     @staticmethod
     def _cached_video_files(directory: Path) -> list[Path]:

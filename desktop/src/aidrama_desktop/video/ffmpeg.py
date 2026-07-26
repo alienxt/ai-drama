@@ -718,7 +718,7 @@ class FfmpegProcessor:
     ) -> bool:
         dimensions = self.video_dimensions(source)
         if not dimensions:
-            return False
+            return True
         width, height = dimensions
         return width < min_width or height < min_height
 
