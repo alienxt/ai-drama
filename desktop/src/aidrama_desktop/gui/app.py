@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import traceback
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -77,7 +79,12 @@ from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items,
 from aidrama_desktop.local_agent import create_local_agent_server
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.storyboard import StoryboardGenerator
-from aidrama_desktop.tasks.runner import TaskRunner
+from aidrama_desktop.tasks.runner import (
+    VIDEO_REASSEMBLY_DIRNAME,
+    TaskRunner,
+    drama_directory_name,
+    read_download_episode_manifest,
+)
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
 from aidrama_desktop.video.reassembly import (
@@ -854,15 +861,22 @@ class DesktopWindow(QMainWindow):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
         self.contract_drama_input = QComboBox()
+        self.contract_drama_input.setEditable(True)
+        self.contract_drama_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.contract_drama_input.setMaxVisibleItems(20)
         self.contract_drama_input.setMinimumHeight(36)
         self.contract_drama_input.addItem("正在加载短剧库...", None)
+        completer = self.contract_drama_input.completer()
+        if completer:
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        line_editor = self.contract_drama_input.lineEdit()
+        if line_editor:
+            line_editor.editingFinished.connect(self.on_contract_drama_selected)
         self.contract_drama_input.currentIndexChanged.connect(self.on_contract_drama_selected)
         self.contract_episode_input = QLineEdit("0")
-        self.contract_episode_input.setReadOnly(True)
         self.contract_episode_minutes_input = QLineEdit("0")
-        self.contract_episode_minutes_input.setReadOnly(True)
         self.contract_price_input = QLineEdit("0")
-        self.contract_price_input.setReadOnly(True)
         self.contract_date_input = QDateEdit()
         self.contract_date_input.setCalendarPopup(True)
         self.contract_date_input.setDisplayFormat("yyyy-MM-dd")
@@ -2185,6 +2199,217 @@ class DesktopWindow(QMainWindow):
             return max(round(total_seconds / 60), 1)
         return cls.drama_episode_count(drama)
 
+    @staticmethod
+    def contract_drama_title(drama: dict[str, Any]) -> str:
+        return str(drama.get("aiTitle") or drama.get("title") or drama.get("publishTitle") or "未命名短剧")
+
+    @staticmethod
+    def non_negative_int(value: object, default: int = 0) -> int:
+        if value is None:
+            return default
+        try:
+            return max(int(float(str(value))), 0)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def non_negative_float(value: object, default: float = 0.0) -> float:
+        if value is None:
+            return default
+        try:
+            return max(float(str(value)), 0.0)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def estimate_contract_cost_amount_wan(total_minutes: int) -> int:
+        if total_minutes <= 0:
+            return 0
+        cost = (total_minutes + 9) // 10
+        return max(2, min(20, cost))
+
+    @classmethod
+    def contract_minutes_from_seconds(cls, total_seconds: float) -> int:
+        if total_seconds <= 0:
+            return 0
+        return max(round(total_seconds / 60), 1)
+
+    def contract_drama_parameter_values(self, drama: dict[str, Any]) -> dict[str, int]:
+        local_parameters = self.local_contract_drama_parameters(drama) or {}
+        local_episode_count = self.non_negative_int(local_parameters.get("episodeCount"))
+        local_total_minutes = self.non_negative_int(local_parameters.get("totalMinutes"))
+        episode_count = local_episode_count or self.drama_episode_count(drama)
+        total_minutes = local_total_minutes or self.drama_total_minutes(drama)
+        if local_total_minutes > 0:
+            cost_amount_wan = self.estimate_contract_cost_amount_wan(local_total_minutes)
+        else:
+            cost_amount_wan = self.drama_cost_amount_wan(drama)
+            if cost_amount_wan <= 0 and total_minutes > 0:
+                cost_amount_wan = self.estimate_contract_cost_amount_wan(total_minutes)
+        return {
+            "episodeCount": episode_count,
+            "totalMinutes": total_minutes,
+            "priceWan": cost_amount_wan,
+        }
+
+    def local_contract_drama_parameters(self, drama: dict[str, Any]) -> dict[str, int] | None:
+        settings = getattr(self, "settings", None)
+        base_dirs = [
+            getattr(settings, "processed_dir", None),
+            getattr(settings, "downloads_dir", None),
+        ]
+        for base_dir in base_dirs:
+            if not base_dir:
+                continue
+            for drama_dir in self.contract_drama_dir_candidates(Path(base_dir), drama):
+                parameters = self.contract_parameters_from_reassembled_dir(
+                    drama_dir / VIDEO_REASSEMBLY_DIRNAME
+                )
+                if parameters:
+                    return parameters
+        return None
+
+    @classmethod
+    def contract_drama_dir_candidates(cls, base_dir: Path, drama: dict[str, Any]) -> list[Path]:
+        drama_id = str(drama.get("dramaId") or drama.get("id") or "").strip()
+        download_plan = {**drama, "dramaId": drama_id}
+        candidates: list[Path] = []
+
+        def add_candidate(path: Path) -> None:
+            if path not in candidates:
+                candidates.append(path)
+
+        add_candidate(base_dir / drama_directory_name(download_plan))
+        if drama_id:
+            add_candidate(base_dir / drama_id)
+        if drama_id and not any(path.exists() for path in candidates) and base_dir.is_dir():
+            suffix = f"-{drama_id}"
+            try:
+                for child in base_dir.iterdir():
+                    if child.is_dir() and (child.name == drama_id or child.name.endswith(suffix)):
+                        add_candidate(child)
+            except OSError:
+                pass
+        return candidates
+
+    @classmethod
+    def contract_parameters_from_reassembled_dir(cls, directory: Path) -> dict[str, int] | None:
+        manifest = read_download_episode_manifest(directory)
+        if manifest:
+            parameters = cls.contract_parameters_from_episode_manifest(manifest)
+            if parameters:
+                return parameters
+        return cls.contract_parameters_from_reassembled_files(directory)
+
+    @classmethod
+    def contract_parameters_from_episode_manifest(cls, manifest: dict[str, Any]) -> dict[str, int] | None:
+        raw_files = manifest.get("files")
+        files = [entry for entry in raw_files if isinstance(entry, dict)] if isinstance(raw_files, list) else []
+        episode_count = cls.non_negative_int(manifest.get("episodeCount"))
+        if episode_count <= 0:
+            episode_count = len(files)
+        total_minutes = cls.non_negative_int(
+            manifest.get("totalMinutes") or manifest.get("durationMinutes") or manifest.get("episodeMinutes")
+        )
+        total_seconds = cls.total_seconds_from_manifest_entries(files)
+        if total_seconds > 0:
+            total_minutes = cls.contract_minutes_from_seconds(total_seconds)
+        if episode_count > 0 or total_minutes > 0:
+            return {"episodeCount": episode_count, "totalMinutes": total_minutes}
+        return None
+
+    @classmethod
+    def total_seconds_from_manifest_entries(cls, entries: list[dict[str, Any]]) -> float:
+        total_seconds = 0.0
+        for entry in entries:
+            episode = entry.get("episode") if isinstance(entry.get("episode"), dict) else {}
+            duration_candidates = (
+                entry.get("durationSeconds"),
+                entry.get("seconds"),
+                episode.get("durationSeconds"),
+                episode.get("seconds"),
+                episode.get("duration"),
+            )
+            for value in duration_candidates:
+                duration = cls.non_negative_float(value)
+                if duration > 0:
+                    total_seconds += duration
+                    break
+        return total_seconds
+
+    @classmethod
+    def contract_parameters_from_reassembled_files(cls, directory: Path) -> dict[str, int] | None:
+        if not directory.is_dir():
+            return None
+        files = sorted(
+            path
+            for path in directory.glob("*.mp4")
+            if path.is_file() and not path.name.startswith(".")
+        )
+        if not files:
+            return None
+        total_seconds = cls.total_seconds_from_reassembled_signature(files)
+        return {
+            "episodeCount": len(files),
+            "totalMinutes": cls.contract_minutes_from_seconds(total_seconds),
+        }
+
+    @classmethod
+    def total_seconds_from_reassembled_signature(cls, files: list[Path]) -> float:
+        file_names = {path.name for path in files}
+        for file in files:
+            signature = cls.read_contract_json_file(file.with_name(f"{file.name}.aidrama.json"))
+            segments = signature.get("segments") if isinstance(signature, dict) else None
+            if not isinstance(segments, list):
+                continue
+            total_seconds = 0.0
+            matched_count = 0
+            for segment in segments:
+                if not isinstance(segment, dict) or segment.get("file") not in file_names:
+                    continue
+                duration = cls.non_negative_float(segment.get("durationSeconds"))
+                if duration <= 0:
+                    continue
+                total_seconds += duration
+                matched_count += 1
+            if matched_count > 0:
+                return total_seconds
+        return 0.0
+
+    @staticmethod
+    def read_contract_json_file(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def contract_drama_display_label(self, drama: dict[str, Any]) -> str:
+        title = self.contract_drama_title(drama)
+        count = self.contract_drama_parameter_values(drama).get("episodeCount", 0)
+        return f"{title}（{count}集）" if count > 0 else title
+
+    @staticmethod
+    def normalize_contract_drama_combo_text(text: str) -> str:
+        value = text.strip()
+        if value.endswith("集）") and "（" in value:
+            return value.rsplit("（", 1)[0].strip()
+        return value
+
+    def current_contract_drama(self) -> dict[str, Any] | None:
+        drama = self.contract_drama_input.currentData()
+        if isinstance(drama, dict):
+            return drama
+        current_text = self.normalize_contract_drama_combo_text(self.contract_drama_input.currentText())
+        if not current_text:
+            return None
+        for option in getattr(self, "contract_drama_options", []):
+            if not isinstance(option, dict):
+                continue
+            if current_text == self.contract_drama_title(option):
+                return option
+        return None
+
     def drama_download_status(self, drama: dict[str, Any]) -> str:
         return self.drama_download_info(drama)[0]
 
@@ -2913,9 +3138,7 @@ class DesktopWindow(QMainWindow):
                 self.contract_drama_input.setEnabled(False)
             else:
                 for drama in self.contract_drama_options:
-                    title = str(drama.get("aiTitle") or drama.get("title") or "未命名短剧")
-                    count = self.drama_episode_count(drama)
-                    self.contract_drama_input.addItem(f"{title}（{count}集）", drama)
+                    self.contract_drama_input.addItem(self.contract_drama_display_label(drama), drama)
                 self.contract_drama_input.setEnabled(True)
             self.contract_drama_input.blockSignals(False)
             self.on_contract_drama_selected()
@@ -2928,18 +3151,16 @@ class DesktopWindow(QMainWindow):
         )
 
     def on_contract_drama_selected(self) -> None:
-        drama = self.contract_drama_input.currentData()
+        drama = self.current_contract_drama()
         if not isinstance(drama, dict):
             self.contract_episode_input.setText("0")
             self.contract_episode_minutes_input.setText("0")
             self.contract_price_input.setText("0")
             return
-        episode_count = self.drama_episode_count(drama)
-        total_minutes = self.drama_total_minutes(drama)
-        cost_amount_wan = self.drama_cost_amount_wan(drama)
-        self.contract_episode_input.setText(str(episode_count))
-        self.contract_episode_minutes_input.setText(str(total_minutes))
-        self.contract_price_input.setText(str(cost_amount_wan))
+        values = self.contract_drama_parameter_values(drama)
+        self.contract_episode_input.setText(str(values["episodeCount"]))
+        self.contract_episode_minutes_input.setText(str(values["totalMinutes"]))
+        self.contract_price_input.setText(str(values["priceWan"]))
 
     def show_contract_placeholder_help(self) -> None:
         QMessageBox.information(
@@ -3056,12 +3277,12 @@ class DesktopWindow(QMainWindow):
         self.append_log("合同模板已清空。")
 
     def contract_render_input(self, contract_type: str, agreement_number: str | None = None) -> ContractRenderInput:
-        drama = self.contract_drama_input.currentData()
+        drama = self.current_contract_drama()
         drama_title = ""
         if isinstance(drama, dict):
-            drama_title = str(drama.get("aiTitle") or drama.get("title") or "")
+            drama_title = self.contract_drama_title(drama)
         if not drama_title:
-            drama_title = self.contract_drama_input.currentText().strip()
+            drama_title = self.normalize_contract_drama_combo_text(self.contract_drama_input.currentText())
         sign_date = self.contract_date_input.date().toString("yyyy-MM-dd")
         agreement = agreement_number or generate_agreement_number(sign_date)
         return ContractRenderInput(

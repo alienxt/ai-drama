@@ -1,3 +1,4 @@
+import json
 import os
 import pytest
 import threading
@@ -7,13 +8,23 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+)
 
 from aidrama_desktop.contracts import ContractRenderInput, contract_party_key, contract_template_key
 from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui import app as gui_app
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 from aidrama_desktop.platforms.wechat_video import remote_debugging_port_for_profile
+from aidrama_desktop.tasks.runner import DOWNLOAD_EPISODE_MANIFEST_FILENAME
 
 
 def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
@@ -134,6 +145,81 @@ def test_generate_contract_surfaces_slot_exceptions(monkeypatch):
     assert "合同生成失败" in preview.text
     assert "合同文件正在被 Word 占用" in preview.text
     assert any("合同生成失败" in message for message in logs)
+
+
+def test_contract_drama_parameters_prefer_local_reassembled_manifest(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(
+        processed_dir=tmp_path / "processed",
+        downloads_dir=tmp_path / "downloads",
+    )
+    drama = {
+        "id": "drama-1",
+        "title": "风起巷尾",
+        "episodeCount": 120,
+        "totalMinutes": 200,
+        "costAmountWan": 20,
+    }
+    reassembled_dir = window.settings.processed_dir / "风起巷尾-drama-1" / "reassembled"
+    reassembled_dir.mkdir(parents=True)
+    files = []
+    for index in range(1, 85):
+        filename = f"风起巷尾-第{index}集.mp4"
+        (reassembled_dir / filename).write_bytes(b"x")
+        duration_seconds = 114 if index < 84 else 138
+        files.append(
+            {
+                "file": filename,
+                "episodeIndex": index,
+                "episode": {"episodeNo": index, "durationSeconds": duration_seconds},
+            }
+        )
+    (reassembled_dir / DOWNLOAD_EPISODE_MANIFEST_FILENAME).write_text(
+        json.dumps({"episodeCount": 84, "files": files}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    values = DesktopWindow.contract_drama_parameter_values(window, drama)
+
+    assert values == {"episodeCount": 84, "totalMinutes": 160, "priceWan": 16}
+
+
+def test_contract_drama_selection_fills_local_values(tmp_path):
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.settings = SimpleNamespace(
+        processed_dir=tmp_path / "processed",
+        downloads_dir=tmp_path / "downloads",
+    )
+    drama = {"id": "drama-2", "title": "山风有回声", "episodeCount": 51, "totalMinutes": 90}
+    reassembled_dir = window.settings.downloads_dir / "山风有回声-drama-2" / "reassembled"
+    reassembled_dir.mkdir(parents=True)
+    (reassembled_dir / "山风有回声-第1集.mp4").write_bytes(b"x")
+    (reassembled_dir / "山风有回声-第2集.mp4").write_bytes(b"x")
+    (reassembled_dir / "山风有回声-第1集.mp4.aidrama.json").write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {"file": "山风有回声-第1集.mp4", "durationSeconds": 60},
+                    {"file": "山风有回声-第2集.mp4", "durationSeconds": 180},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    window.contract_drama_options = [drama]
+    window.contract_drama_input = QComboBox()
+    window.contract_drama_input.addItem("山风有回声（2集）", drama)
+    window.contract_episode_input = QLineEdit("0")
+    window.contract_episode_minutes_input = QLineEdit("0")
+    window.contract_price_input = QLineEdit("0")
+
+    DesktopWindow.on_contract_drama_selected(window)
+
+    assert window.contract_episode_input.text() == "2"
+    assert window.contract_episode_minutes_input.text() == "4"
+    assert window.contract_price_input.text() == "2"
 
 
 def test_desktop_drama_list_path_supports_title_keyword_search():

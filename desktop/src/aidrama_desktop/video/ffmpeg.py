@@ -11,6 +11,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
+
 WECHAT_VIDEO_MIN_BITRATE_BPS = 4_000_000
 WECHAT_VIDEO_MIN_WIDTH = 720
 WECHAT_VIDEO_MIN_HEIGHT = 1280
@@ -224,7 +226,7 @@ class FfmpegProcessor:
 
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
         except FileNotFoundError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(f"找不到 FFmpeg 可执行文件：{self.ffmpeg_path}") from exception
@@ -745,7 +747,7 @@ class FfmpegProcessor:
             str(source),
         ]
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return None
@@ -765,7 +767,7 @@ class FfmpegProcessor:
             str(source),
         ]
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return None
@@ -790,7 +792,7 @@ class FfmpegProcessor:
             str(source),
         ]
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return None
@@ -813,7 +815,7 @@ class FfmpegProcessor:
             str(source),
         ]
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
             return False
@@ -826,6 +828,7 @@ class FfmpegProcessor:
                 check=True,
                 capture_output=True,
                 text=True,
+                **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exception:
             raise FfmpegError(

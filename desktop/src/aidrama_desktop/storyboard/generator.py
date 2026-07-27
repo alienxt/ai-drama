@@ -16,6 +16,8 @@ from typing import Any, Iterator
 
 import httpx
 
+from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
+
 
 DEFAULT_VIEWPORT_WIDTH = 1470
 DEFAULT_VIEWPORT_HEIGHT = 835
@@ -236,7 +238,7 @@ class StoryboardGenerator:
             str(source_video),
         ]
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exception:
             raise StoryboardGenerationError(f"读取视频信息失败：{exception}") from exception
@@ -713,7 +715,14 @@ def run_command(
 ) -> None:
     try:
         if capture_output:
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout_seconds)
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                **hidden_subprocess_kwargs(),
+            )
         else:
             subprocess.run(
                 command,
@@ -721,6 +730,7 @@ def run_command(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout_seconds,
+                **hidden_subprocess_kwargs(),
             )
     except subprocess.TimeoutExpired as exception:
         if success_path and success_path.exists() and success_path.stat().st_size > 0:

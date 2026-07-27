@@ -10,6 +10,32 @@ from aidrama_desktop.video.ffmpeg import (
     VideoReassemblySegment,
     VideoReassemblySourceClip,
 )
+from aidrama_desktop import subprocess_utils
+
+
+def test_hidden_subprocess_kwargs_are_empty_off_windows(monkeypatch):
+    monkeypatch.setattr(subprocess_utils.os, "name", "posix", raising=False)
+
+    assert subprocess_utils.hidden_subprocess_kwargs() == {}
+
+
+def test_hidden_subprocess_kwargs_hide_windows_console(monkeypatch):
+    class StartupInfo:
+        def __init__(self):
+            self.dwFlags = 0
+            self.wShowWindow = None
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "STARTUPINFO", StartupInfo, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "SW_HIDE", 0, raising=False)
+
+    kwargs = subprocess_utils.hidden_subprocess_kwargs()
+
+    assert kwargs["creationflags"] == 0x08000000
+    assert kwargs["startupinfo"].dwFlags == 1
+    assert kwargs["startupinfo"].wShowWindow == 0
 
 
 def test_ffmpeg_processor_reads_video_bitrate(monkeypatch, tmp_path):
