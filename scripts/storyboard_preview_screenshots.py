@@ -32,6 +32,13 @@ COSTUME_STYLE = "真人风格-古代"
 DEFAULT_RANDOM_TARGET_SHOTS_MIN = 15
 DEFAULT_RANDOM_TARGET_SHOTS_MAX = 20
 DEFAULT_SCREENSHOT_COUNT = 3
+AI_PRODUCTION_PROOF_DIRNAME = "AI制作证明"
+AI_PRODUCTION_PROOF_SOURCE_DIRNAME = "源截图"
+AI_PRODUCTION_PROOF_FILENAME = "AI制作证明.jpg"
+AI_PRODUCTION_PROOF_SHOT_COUNT = 3
+AI_PRODUCTION_PROOF_MAX_BYTES = 10 * 1024 * 1024
+AI_PRODUCTION_PROOF_WIDTHS = (DEFAULT_VIEWPORT_WIDTH, 1280, 1080, 900)
+AI_PRODUCTION_PROOF_JPEG_QUALITIES = (3, 5, 8, 12)
 SUMMARY_MIN_CHARS = 150
 SUMMARY_MAX_CHARS = 300
 COSTUME_STYLE_KEYWORDS = (
@@ -71,6 +78,8 @@ class RenderPaths:
     keyframes_dir: Path
     pages_dir: Path
     screenshots_dir: Path
+    ai_proof_dir: Path
+    ai_proof_source_dir: Path
 
 
 def main() -> None:
@@ -150,10 +159,20 @@ def main() -> None:
         paths=paths,
         viewport=viewport,
     )
+    ai_proof_image = render_ai_production_proof_screenshots(
+        ffmpeg_path=ffmpeg_path,
+        chrome_path=chrome_path,
+        storyboard=storyboard,
+        paths=paths,
+        viewport=viewport,
+    )
 
     print("已生成分镜截图：")
     for screenshot in screenshots:
         print(screenshot)
+    if ai_proof_image:
+        print("已生成AI制作证明：")
+        print(ai_proof_image)
 
 
 def parse_args() -> argparse.Namespace:
@@ -702,9 +721,11 @@ def prepare_output_paths(output_dir: Path) -> RenderPaths:
     keyframes_dir = output_dir / "keyframes"
     pages_dir = output_dir / "pages"
     screenshots_dir = output_dir / "分镜截图"
-    for path in (keyframes_dir, pages_dir, screenshots_dir):
+    ai_proof_dir = output_dir / AI_PRODUCTION_PROOF_DIRNAME
+    ai_proof_source_dir = ai_proof_dir / AI_PRODUCTION_PROOF_SOURCE_DIRNAME
+    for path in (keyframes_dir, pages_dir, screenshots_dir, ai_proof_dir, ai_proof_source_dir):
         path.mkdir(parents=True, exist_ok=True)
-    return RenderPaths(output_dir, keyframes_dir, pages_dir, screenshots_dir)
+    return RenderPaths(output_dir, keyframes_dir, pages_dir, screenshots_dir, ai_proof_dir, ai_proof_source_dir)
 
 
 def resolve_executable(value: str, executable_name: str) -> str:
@@ -765,36 +786,132 @@ def render_screenshots(
             shot = shots_by_index.get(shot_index)
             if not shot:
                 raise SystemExit(f"storyboard 中找不到分镜：{shot_index}")
-            page_path = paths.pages_dir / f"shot-{shot_index:03d}.html"
-            page_path.write_text(render_html(storyboard, shot_index, paths.keyframes_dir), encoding="utf-8")
             screenshot_path = paths.screenshots_dir / f"分镜-{shot_index:03d}-完整工作台.png"
-            command = [
-                chrome_path,
-                "--headless=new",
-                "--disable-gpu",
-                "--disable-background-networking",
-                "--disable-component-update",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--run-all-compositor-stages-before-draw",
-                f"--user-data-dir={profile_dir}",
-                f"--window-size={int(viewport['width'])},{int(viewport['height'])}",
-                f"--force-device-scale-factor={viewport['deviceScaleFactor']}",
-                "--virtual-time-budget=1000",
-                f"--screenshot={screenshot_path}",
-                page_path.as_uri(),
-            ]
-            run_command(
-                command,
-                f"生成截图失败：shot-{shot_index:03d}",
-                capture_output=False,
-                success_path=screenshot_path,
-                timeout_seconds=12,
+            render_chrome_screenshot(
+                chrome_path=chrome_path,
+                storyboard=storyboard,
+                shot_index=shot_index,
+                target=screenshot_path,
+                paths=paths,
+                viewport=viewport,
+                profile_dir=profile_dir,
             )
             rendered.append(screenshot_path)
     return rendered
+
+
+def render_ai_production_proof_screenshots(
+    *,
+    ffmpeg_path: str,
+    chrome_path: str,
+    storyboard: dict[str, Any],
+    paths: RenderPaths,
+    viewport: dict[str, float],
+) -> Path | None:
+    shots = storyboard.get("shots") or []
+    shot_indexes = sample_consecutive_shot_indexes(len(shots), AI_PRODUCTION_PROOF_SHOT_COUNT)
+    if not shot_indexes:
+        return None
+    source_images: list[Path] = []
+    with temporary_chrome_profile_dir() as profile_dir:
+        for shot_index in shot_indexes:
+            source_image = paths.ai_proof_source_dir / f"AI制作证明-分镜-{shot_index:03d}.png"
+            render_chrome_screenshot(
+                chrome_path=chrome_path,
+                storyboard=storyboard,
+                shot_index=shot_index,
+                target=source_image,
+                paths=paths,
+                viewport=viewport,
+                profile_dir=profile_dir,
+            )
+            source_images.append(source_image)
+    target = paths.ai_proof_dir / AI_PRODUCTION_PROOF_FILENAME
+    compose_ai_production_proof_image(ffmpeg_path, source_images, target)
+    return target
+
+
+def sample_consecutive_shot_indexes(total_shots: int, count: int) -> list[int]:
+    if total_shots <= 0 or count <= 0:
+        return []
+    sample_size = min(total_shots, count)
+    if total_shots <= sample_size:
+        return list(range(1, total_shots + 1))
+    start = random.randint(1, total_shots - sample_size + 1)
+    return list(range(start, start + sample_size))
+
+
+def render_chrome_screenshot(
+    *,
+    chrome_path: str,
+    storyboard: dict[str, Any],
+    shot_index: int,
+    target: Path,
+    paths: RenderPaths,
+    viewport: dict[str, float],
+    profile_dir: str,
+) -> None:
+    page_path = paths.pages_dir / f"shot-{shot_index:03d}.html"
+    page_path.write_text(render_html(storyboard, shot_index, paths.keyframes_dir), encoding="utf-8")
+    command = [
+        chrome_path,
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--run-all-compositor-stages-before-draw",
+        f"--user-data-dir={profile_dir}",
+        f"--window-size={int(viewport['width'])},{int(viewport['height'])}",
+        f"--force-device-scale-factor={viewport['deviceScaleFactor']}",
+        "--virtual-time-budget=1000",
+        f"--screenshot={target}",
+        page_path.as_uri(),
+    ]
+    run_command(
+        command,
+        f"生成截图失败：shot-{shot_index:03d}",
+        capture_output=False,
+        success_path=target,
+        timeout_seconds=12,
+    )
+
+
+def compose_ai_production_proof_image(ffmpeg_path: str, source_images: list[Path], target: Path) -> None:
+    if not source_images:
+        raise SystemExit("AI制作证明缺少源截图。")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    input_args = [arg for image in source_images for arg in ("-i", str(image))]
+    labels = "".join(f"[v{index}]" for index in range(len(source_images)))
+    for width in AI_PRODUCTION_PROOF_WIDTHS:
+        filters = [
+            f"[{index}:v]scale={width}:-1[v{index}]"
+            for index in range(len(source_images))
+        ]
+        filters.append(f"{labels}vstack=inputs={len(source_images)}[out]")
+        for quality in AI_PRODUCTION_PROOF_JPEG_QUALITIES:
+            command = [
+                ffmpeg_path,
+                "-y",
+                *input_args,
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "[out]",
+                "-frames:v",
+                "1",
+                "-q:v",
+                str(quality),
+                str(target),
+            ]
+            run_command(command, "生成AI制作证明失败")
+            if target.exists() and target.stat().st_size <= AI_PRODUCTION_PROOF_MAX_BYTES:
+                return
+    size = target.stat().st_size if target.exists() else 0
+    raise SystemExit(f"AI制作证明图片超过 10MB，无法上传：{target} ({size} bytes)")
 
 
 @contextmanager

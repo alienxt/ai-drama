@@ -937,6 +937,20 @@ class WeChatVideoPublisher(PlatformPublisher):
                 "剧目制作证明材料",
             )
 
+        ai_proof_images = self._metadata_paths(metadata, "aiProductionProofImage", "aiProductionProofImages")
+        if ai_proof_images:
+            self._set_file_input_near_text(
+                page,
+                ai_proof_images[:1],
+                [
+                    re.compile("AI制作证明"),
+                    re.compile(r"AI\s*制作证明"),
+                    re.compile("AI.*证明"),
+                ],
+                timeout_error,
+                "AI制作证明",
+            )
+
         rights_images = self._metadata_paths(metadata, "rightsStatementImages")
         if rights_images:
             self._set_file_input_near_text(
@@ -989,6 +1003,8 @@ class WeChatVideoPublisher(PlatformPublisher):
                 "buyDramaContractImages",
                 "purchaseContractImages",
                 "storyboardImages",
+                "aiProductionProofImage",
+                "aiProductionProofImages",
                 "rightsStatementImages",
             )
         )
@@ -2213,6 +2229,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             "剧目海报": 1,
             "推广海报": 1,
             "成本配置比例情况报告": 1,
+            "AI制作证明": 1,
             "剧目制作证明材料": 4,
             "版权采购&播出授权证明材料": 4,
         }

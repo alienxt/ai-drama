@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import httpx
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
 
@@ -31,9 +34,23 @@ DEFAULT_TARGET_SHOTS = 15
 DEFAULT_RANDOM_TARGET_SHOTS_MIN = 15
 DEFAULT_RANDOM_TARGET_SHOTS_MAX = 20
 DEFAULT_SCREENSHOT_COUNT = 3
+AI_PRODUCTION_PROOF_DIRNAME = "AI制作证明"
+AI_PRODUCTION_PROOF_SOURCE_DIRNAME = "源截图"
+AI_PRODUCTION_PROOF_FILENAME = "AI制作证明.jpg"
+AI_PRODUCTION_PROOF_SHOT_COUNT = 3
+AI_PRODUCTION_PROOF_MAX_WIDTH = DEFAULT_VIEWPORT_WIDTH
+AI_PRODUCTION_PROOF_MAX_BYTES = 10 * 1024 * 1024
+AI_PRODUCTION_PROOF_JPEG_QUALITIES = (88, 80, 72, 64)
+AI_PRODUCTION_PROOF_WIDTHS = (DEFAULT_VIEWPORT_WIDTH, 1280, 1080, 900)
 SUMMARY_MIN_CHARS = 150
 SUMMARY_MAX_CHARS = 300
-DEEPSEEK_TIMEOUT_SECONDS = 120
+DEEPSEEK_CONNECT_TIMEOUT_SECONDS = 20
+DEEPSEEK_READ_TIMEOUT_SECONDS = 300
+DEEPSEEK_WRITE_TIMEOUT_SECONDS = 60
+DEEPSEEK_POOL_TIMEOUT_SECONDS = 20
+DEEPSEEK_MAX_ATTEMPTS = 2
+DEEPSEEK_RETRY_BACKOFF_SECONDS = 5
+DEEPSEEK_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 CHROME_SCREENSHOT_TIMEOUT_SECONDS = 12
 COSTUME_CATEGORY_IDS = {"costume"}
 COSTUME_STYLE_KEYWORDS = (
@@ -137,7 +154,7 @@ class StoryboardGenerator:
             json.dumps(storyboard, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return self._render_screenshots(storyboard, keyframes_dir, pages_dir, screenshots_dir)
+        return self._render_screenshots(storyboard, keyframes_dir, pages_dir, screenshots_dir, output_dir)
 
     def _build_storyboard(
         self,
@@ -284,16 +301,53 @@ class StoryboardGenerator:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        try:
-            with httpx.Client(timeout=DEEPSEEK_TIMEOUT_SECONDS) as client:
-                response = client.post(url, json=request_payload, headers=headers)
-                response.raise_for_status()
-                payload = response.json()
-        except httpx.HTTPStatusError as exception:
-            detail = exception.response.text[-800:] if exception.response is not None else ""
-            raise StoryboardGenerationError(f"DeepSeek 分镜分析失败：HTTP {exception.response.status_code} {detail}") from exception
-        except (httpx.RequestError, ValueError) as exception:
-            raise StoryboardGenerationError(f"DeepSeek 分镜分析失败：{exception}") from exception
+        timeout = httpx.Timeout(
+            connect=DEEPSEEK_CONNECT_TIMEOUT_SECONDS,
+            read=DEEPSEEK_READ_TIMEOUT_SECONDS,
+            write=DEEPSEEK_WRITE_TIMEOUT_SECONDS,
+            pool=DEEPSEEK_POOL_TIMEOUT_SECONDS,
+        )
+        payload: dict[str, Any] = {}
+        for attempt in range(1, DEEPSEEK_MAX_ATTEMPTS + 1):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(url, json=request_payload, headers=headers)
+                    response.raise_for_status()
+                    payload = response.json()
+                    break
+            except httpx.HTTPStatusError as exception:
+                status_code = exception.response.status_code if exception.response is not None else 0
+                detail = exception.response.text[-800:] if exception.response is not None else ""
+                if status_code not in DEEPSEEK_RETRYABLE_STATUS_CODES or attempt >= DEEPSEEK_MAX_ATTEMPTS:
+                    if status_code in DEEPSEEK_RETRYABLE_STATUS_CODES:
+                        return fallback_deepseek_storyboard(
+                            storyboard,
+                            f"HTTP {status_code} {detail}",
+                            config.deepseek_model,
+                        )
+                    raise StoryboardGenerationError(
+                        f"DeepSeek 分镜分析失败：HTTP {status_code} {detail}"
+                    ) from exception
+                time.sleep(DEEPSEEK_RETRY_BACKOFF_SECONDS)
+            except httpx.ReadTimeout:
+                if attempt >= DEEPSEEK_MAX_ATTEMPTS:
+                    return fallback_deepseek_storyboard(
+                        storyboard,
+                        "读取响应超时，"
+                        f"已重试 {DEEPSEEK_MAX_ATTEMPTS} 次，每次最多等待 {DEEPSEEK_READ_TIMEOUT_SECONDS} 秒。",
+                        config.deepseek_model,
+                    )
+                time.sleep(DEEPSEEK_RETRY_BACKOFF_SECONDS)
+            except httpx.RequestError as exception:
+                if attempt >= DEEPSEEK_MAX_ATTEMPTS:
+                    return fallback_deepseek_storyboard(
+                        storyboard,
+                        str(exception),
+                        config.deepseek_model,
+                    )
+                time.sleep(DEEPSEEK_RETRY_BACKOFF_SECONDS)
+            except ValueError as exception:
+                raise StoryboardGenerationError(f"DeepSeek 分镜分析失败：响应 JSON 解析失败：{exception}") from exception
         content = deepseek_content(payload)
         parsed = parse_json_object(content)
         return merge_deepseek_storyboard(storyboard, parsed, config.deepseek_model)
@@ -304,46 +358,64 @@ class StoryboardGenerator:
         keyframes_dir: Path,
         pages_dir: Path,
         screenshots_dir: Path,
+        output_dir: Path,
     ) -> list[Path]:
         chrome = resolve_chrome_path(self.chrome_path)
         shots = storyboard.get("shots") or []
         selected_indexes = sample_shot_indexes(len(shots), DEFAULT_SCREENSHOT_COUNT)
+        proof_indexes = sample_consecutive_shot_indexes(len(shots), AI_PRODUCTION_PROOF_SHOT_COUNT)
         selected = {index for index in selected_indexes}
+        proof_selected = {index for index in proof_indexes}
         rendered: list[Path] = []
+        proof_source_images: list[Path] = []
+        proof_source_dir = output_dir / AI_PRODUCTION_PROOF_DIRNAME / AI_PRODUCTION_PROOF_SOURCE_DIRNAME
+        proof_source_dir.mkdir(parents=True, exist_ok=True)
+
+        def render_one(index: int, target: Path, profile_dir: str) -> None:
+            page = pages_dir / f"shot-{index:03d}.html"
+            page.write_text(render_html(storyboard, index, keyframes_dir), encoding="utf-8")
+            command = [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--run-all-compositor-stages-before-draw",
+                f"--user-data-dir={profile_dir}",
+                f"--window-size={DEFAULT_VIEWPORT_WIDTH},{DEFAULT_VIEWPORT_HEIGHT}",
+                f"--force-device-scale-factor={DEFAULT_DEVICE_SCALE_FACTOR}",
+                "--virtual-time-budget=1000",
+                f"--screenshot={target}",
+                page.as_uri(),
+            ]
+            run_command(
+                command,
+                f"生成分镜工程图失败：shot-{index:03d}",
+                capture_output=False,
+                success_path=target,
+                timeout_seconds=CHROME_SCREENSHOT_TIMEOUT_SECONDS,
+            )
+
         with temporary_chrome_profile_dir() as profile_dir:
-            for shot in shots:
+            for shot in sorted(shots, key=lambda item: int(item["index"])):
                 index = int(shot["index"])
-                if index not in selected:
-                    continue
-                page = pages_dir / f"shot-{index:03d}.html"
-                page.write_text(render_html(storyboard, index, keyframes_dir), encoding="utf-8")
-                screenshot = screenshots_dir / f"分镜-{index:03d}-完整工作台.png"
-                command = [
-                    chrome,
-                    "--headless=new",
-                    "--disable-gpu",
-                    "--disable-background-networking",
-                    "--disable-component-update",
-                    "--disable-default-apps",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--run-all-compositor-stages-before-draw",
-                    f"--user-data-dir={profile_dir}",
-                    f"--window-size={DEFAULT_VIEWPORT_WIDTH},{DEFAULT_VIEWPORT_HEIGHT}",
-                    f"--force-device-scale-factor={DEFAULT_DEVICE_SCALE_FACTOR}",
-                    "--virtual-time-budget=1000",
-                    f"--screenshot={screenshot}",
-                    page.as_uri(),
-                ]
-                run_command(
-                    command,
-                    f"生成分镜工程图失败：shot-{index:03d}",
-                    capture_output=False,
-                    success_path=screenshot,
-                    timeout_seconds=CHROME_SCREENSHOT_TIMEOUT_SECONDS,
-                )
-                rendered.append(screenshot)
+                if index in selected:
+                    screenshot = screenshots_dir / f"分镜-{index:03d}-完整工作台.png"
+                    render_one(index, screenshot, profile_dir)
+                    rendered.append(screenshot)
+                if index in proof_selected:
+                    proof_source = proof_source_dir / f"AI制作证明-分镜-{index:03d}.png"
+                    render_one(index, proof_source, profile_dir)
+                    proof_source_images.append(proof_source)
+        if proof_source_images:
+            render_ai_production_proof_image(
+                proof_source_images,
+                ai_production_proof_path(output_dir),
+            )
         return rendered
 
 
@@ -367,6 +439,71 @@ def sample_shot_indexes(total_shots: int, count: int) -> list[int]:
         return []
     sample_size = min(total_shots, count)
     return sorted(random.sample(range(1, total_shots + 1), sample_size))
+
+
+def sample_consecutive_shot_indexes(total_shots: int, count: int) -> list[int]:
+    if total_shots <= 0 or count <= 0:
+        return []
+    sample_size = min(total_shots, count)
+    if total_shots <= sample_size:
+        return list(range(1, total_shots + 1))
+    start = random.randint(1, total_shots - sample_size + 1)
+    return list(range(start, start + sample_size))
+
+
+def ai_production_proof_path(output_dir: Path) -> Path:
+    return output_dir / AI_PRODUCTION_PROOF_DIRNAME / AI_PRODUCTION_PROOF_FILENAME
+
+
+def render_ai_production_proof_image(
+    source_images: list[Path],
+    target: Path,
+    *,
+    max_width: int = AI_PRODUCTION_PROOF_MAX_WIDTH,
+    max_bytes: int = AI_PRODUCTION_PROOF_MAX_BYTES,
+) -> Path:
+    images: list[QImage] = []
+    for path in source_images:
+        image = QImage(str(path))
+        if image.isNull():
+            raise StoryboardGenerationError(f"AI制作证明源截图无法读取：{path}")
+        images.append(image)
+    if not images:
+        raise StoryboardGenerationError("AI制作证明缺少源截图。")
+
+    source_width = max(image.width() for image in images)
+    widths = [width for width in AI_PRODUCTION_PROOF_WIDTHS if width <= max_width and width <= source_width]
+    if not widths:
+        widths = [min(max_width, source_width)]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    last_size = 0
+    for width in sorted(set(widths), reverse=True):
+        scaled_images = [
+            image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+            for image in images
+        ]
+        height = sum(image.height() for image in scaled_images)
+        canvas = QImage(width, height, QImage.Format.Format_RGB32)
+        canvas.fill(QColor("white"))
+        painter = QPainter(canvas)
+        try:
+            y = 0
+            for image in scaled_images:
+                painter.drawImage(0, y, image)
+                y += image.height()
+        finally:
+            painter.end()
+        for quality in AI_PRODUCTION_PROOF_JPEG_QUALITIES:
+            if not canvas.save(str(target), "JPG", quality):
+                continue
+            last_size = target.stat().st_size
+            if last_size <= max_bytes:
+                return target
+    if target.exists():
+        last_size = target.stat().st_size
+    raise StoryboardGenerationError(
+        f"AI制作证明图片超过 10MB，无法上传：{target.name} ({last_size} bytes)"
+    )
 
 
 def infer_storyboard_style(
@@ -544,6 +681,36 @@ def merge_deepseek_storyboard(
         "model": model,
         "promptVersion": "text-storyboard-v1-zh-prompt",
         "inferredShots": len(by_index),
+    }
+    return merged
+
+
+def fallback_deepseek_storyboard(storyboard: dict[str, Any], reason: str, model: str) -> dict[str, Any]:
+    merged = json.loads(json.dumps(storyboard, ensure_ascii=False))
+    drama = merged.get("drama") or {}
+    episode = merged.get("episode") or {}
+    drama_title = str(drama.get("title") or "短剧")
+    episode_title = str(episode.get("title") or "当前剧集")
+    for shot in merged.get("shots") or []:
+        index = int(shot.get("index") or 0)
+        summary = str(shot.get("summary") or "").strip()
+        if len(summary) < SUMMARY_MIN_CHARS:
+            shot["summary"] = (
+                f"本镜头来自《{drama_title}》{episode_title}的第 {index} 段原片时间轴，"
+                "系统按当前片段自动抽取关键帧作为参考，保留原剧人物、场景、服化道和画面情绪。"
+                "生成视频时应延续前后镜头的叙事关系，重点呈现人物站位、动作推进、环境氛围、"
+                "画面景别和剧情承接，避免新增无关角色、突兀场景或与原片不一致的视觉元素。"
+                "如需人工复核，以原片画面和字幕信息为准。"
+            )
+        title = str(shot.get("title") or "").strip()
+        if index and title and not title.startswith(f"1-{index}"):
+            shot["title"] = f"1-{index} {title}"
+    merged["deepseekInference"] = {
+        "status": "fallback",
+        "model": model,
+        "reason": str(reason or "")[:300],
+        "promptVersion": "text-storyboard-v1-zh-prompt",
+        "inferredShots": 0,
     }
     return merged
 

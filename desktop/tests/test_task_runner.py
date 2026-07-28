@@ -206,6 +206,9 @@ class FakeStoryboardGenerator:
         ]
         for image in images:
             image.write_bytes(b"png")
+        proof_image = output_dir / "AI制作证明" / "AI制作证明.jpg"
+        proof_image.parent.mkdir(parents=True, exist_ok=True)
+        proof_image.write_bytes(b"jpg")
         return images
 
 
@@ -455,10 +458,20 @@ def test_publish_once_generates_storyboard_images_for_contract_upload(tmp_path, 
         tmp_path / "storyboards" / "generated" / "task-1" / "episode-2" / "分镜截图" / "分镜-001-完整工作台.png",
         tmp_path / "storyboards" / "generated" / "task-1" / "episode-2" / "分镜截图" / "分镜-002-完整工作台.png",
     ]
+    proof_image = (
+        tmp_path
+        / "storyboards"
+        / "generated"
+        / "task-1"
+        / "episode-2"
+        / "AI制作证明"
+        / "AI制作证明.jpg"
+    )
     assert publisher.metadata["storyboardImages"] == images
     assert publisher.metadata["buyDramaContractImages"] == images
+    assert publisher.metadata["aiProductionProofImage"] == proof_image
     assert ("生成分镜图：神医归来 #2集", "task-1") in progress_events
-    assert ("分镜图已生成：神医归来 #2集（2 张）", "task-1") in progress_events
+    assert ("分镜图已生成：神医归来 #2集（2 张，AI制作证明 1 张）", "task-1") in progress_events
 
 
 def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
@@ -491,12 +504,16 @@ def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_pa
     ]
     for image in images:
         image.write_bytes(b"png")
+    proof_image = storyboard_task_dir / "episode-2" / "AI制作证明" / "AI制作证明.jpg"
+    proof_image.parent.mkdir(parents=True, exist_ok=True)
+    proof_image.write_bytes(b"jpg")
     (storyboard_task_dir / ".storyboard-materials.json").write_text(
         json.dumps(
             {
                 "version": 1,
                 "metadata": {
                     "storyboardImages": [str(path) for path in images],
+                    "aiProductionProofImage": str(proof_image),
                 },
             },
             ensure_ascii=False,
@@ -525,7 +542,8 @@ def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_pa
     assert generator.calls == []
     assert publisher.metadata["storyboardImages"] == images
     assert publisher.metadata["buyDramaContractImages"] == images
-    assert ("复用分镜图：神医归来（2 张）", "task-1") in progress_events
+    assert publisher.metadata["aiProductionProofImage"] == proof_image
+    assert ("复用分镜图：神医归来（2 张，AI制作证明 1 张）", "task-1") in progress_events
 
 
 def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypatch):

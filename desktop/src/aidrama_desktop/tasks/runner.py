@@ -27,7 +27,12 @@ from aidrama_desktop.contracts import (
     safe_contract_filename,
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused, PlatformPublishSubmittedError
-from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator, infer_storyboard_style
+from aidrama_desktop.storyboard import (
+    StoryboardGenerationConfig,
+    StoryboardGenerator,
+    ai_production_proof_path,
+    infer_storyboard_style,
+)
 from aidrama_desktop.tasks.cache_cleanup import mark_upload_success
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
@@ -71,6 +76,7 @@ MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
     "costContractDocx",
     "rightsStatementDocx",
+    "aiProductionProofImage",
 )
 MATERIAL_METADATA_LIST_PATH_KEYS = (
     "purchaseContractImages",
@@ -480,20 +486,24 @@ class TaskRunner:
         task_output_dir = self._storyboard_task_output_dir(task_id)
         cached_metadata = self._cached_material_metadata(
             task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
-            required_keys=("storyboardImages",),
+            required_keys=("storyboardImages", "aiProductionProofImage"),
         )
         if cached_metadata:
             images = cached_metadata.get("storyboardImages") or []
-            self._notify(f"复用分镜图：{drama_title}（{len(images)} 张）", task_id)
+            self._notify(f"复用分镜图：{drama_title}（{len(images)} 张，AI制作证明 1 张）", task_id)
             return cached_metadata
         legacy_images = self._legacy_storyboard_images(task_output_dir)
-        if legacy_images:
-            metadata = {"storyboardImages": legacy_images}
+        legacy_proof = self._legacy_ai_production_proof_image(task_output_dir)
+        if legacy_images and legacy_proof:
+            metadata = {
+                "storyboardImages": legacy_images,
+                "aiProductionProofImage": legacy_proof,
+            }
             self._write_material_metadata_manifest(
                 task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
                 metadata,
             )
-            self._notify(f"复用分镜图：{drama_title}（{len(legacy_images)} 张）", task_id)
+            self._notify(f"复用分镜图：{drama_title}（{len(legacy_images)} 张，AI制作证明 1 张）", task_id)
             return metadata
         item = self._select_storyboard_episode_item(upload_items)
         if item is None:
@@ -511,12 +521,20 @@ class TaskRunner:
             output_dir=output_dir,
             config=config,
         )
-        self._notify(f"分镜图已生成：{drama_title} {episode_label}（{len(images)} 张）", task_id)
+        proof_image = ai_production_proof_path(output_dir)
+        metadata: dict[str, object] = {"storyboardImages": images}
+        if not self._is_ready_material_file(proof_image):
+            raise RuntimeError(f"AI制作证明未生成：{proof_image}")
+        metadata["aiProductionProofImage"] = proof_image
+        self._notify(
+            f"分镜图已生成：{drama_title} {episode_label}（{len(images)} 张，AI制作证明 1 张）",
+            task_id,
+        )
         self._write_material_metadata_manifest(
             task_output_dir / STORYBOARD_MATERIALS_MANIFEST_FILENAME,
-            {"storyboardImages": images},
+            metadata,
         )
-        return {"storyboardImages": images}
+        return metadata
 
     @staticmethod
     def _storyboard_style_summary(download_plan: dict) -> str:
@@ -586,6 +604,18 @@ class TaskRunner:
             return []
         return max(candidates, key=lambda item: item[0])[1]
 
+    def _legacy_ai_production_proof_image(self, task_output_dir: Path) -> Path | None:
+        if not task_output_dir.exists() or not task_output_dir.is_dir():
+            return None
+        candidates = [
+            path
+            for path in task_output_dir.glob("episode-*/AI制作证明/AI制作证明.*")
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png"} and self._is_ready_material_file(path)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+
     def _task_media_account_name(self, task: dict) -> str:
         return self._task_media_account_label_parts(task)[0]
 
@@ -654,6 +684,9 @@ class TaskRunner:
             return merged
         merged["storyboardImages"] = append_unique_paths(merged.get("storyboardImages"), storyboard_images)
         merged["buyDramaContractImages"] = append_unique_paths(merged.get("buyDramaContractImages"), storyboard_images)
+        proof_image = storyboard_metadata.get("aiProductionProofImage")
+        if isinstance(proof_image, Path):
+            merged["aiProductionProofImage"] = proof_image
         return merged
 
     def _prepare_contract_materials(

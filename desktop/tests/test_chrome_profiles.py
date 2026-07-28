@@ -770,9 +770,11 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
     option_clicks = []
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
     purchase_image = tmp_path / "purchase.png"
+    ai_proof_image = tmp_path / "ai-proof.jpg"
     rights_image = tmp_path / "rights.png"
     cost_image = tmp_path / "cost.png"
     purchase_image.write_bytes(b"purchase")
+    ai_proof_image.write_bytes(b"ai-proof")
     rights_image.write_bytes(b"rights")
     cost_image.write_bytes(b"cost")
 
@@ -894,6 +896,7 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
             "producerName": "乙方公司",
             "productionCostWan": 3,
             "buyDramaContractImages": [purchase_image],
+            "aiProductionProofImage": ai_proof_image,
             "rightsStatementImages": [rights_image],
             "costConfigReportImages": [cost_image],
         },
@@ -929,6 +932,7 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
             [purchase_image],
             ["剧目制作证明材料", "制作证明材料", "剧目制作合同"],
         ),
+        ("AI制作证明", [ai_proof_image], ["AI制作证明", "AI\\s*制作证明", "AI.*证明"]),
         (
             "版权采购&播出授权证明材料",
             [rights_image],
@@ -1882,6 +1886,27 @@ def test_wechat_video_publisher_rejects_too_many_cost_report_files(tmp_path: Pat
         assert "最多支持上传 1 个文件" in str(exception)
     else:
         raise AssertionError("expected cost report upload count rejection")
+
+
+def test_wechat_video_publisher_rejects_too_many_ai_proof_files(tmp_path: Path):
+    proof_first = tmp_path / "ai-proof-1.jpg"
+    proof_second = tmp_path / "ai-proof-2.jpg"
+    proof_first.write_bytes(b"proof")
+    proof_second.write_bytes(b"proof")
+    publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
+
+    try:
+        publisher._set_file_input_near_text(
+            object(),
+            [proof_first, proof_second],
+            [re.compile("AI制作证明")],
+            TimeoutError,
+            "AI制作证明",
+        )
+    except RuntimeError as exception:
+        assert "最多支持上传 1 个文件" in str(exception)
+    else:
+        raise AssertionError("expected AI proof upload count rejection")
 
 
 def test_wechat_video_material_upload_script_matches_wechat_hidden_upload_dom(tmp_path: Path):
