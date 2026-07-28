@@ -28,6 +28,7 @@ from aidrama_desktop.contracts import (
 )
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused, PlatformPublishSubmittedError
 from aidrama_desktop.storyboard import StoryboardGenerationConfig, StoryboardGenerator, infer_storyboard_style
+from aidrama_desktop.tasks.cache_cleanup import mark_upload_success
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
     VideoReassemblySegment,
@@ -386,6 +387,7 @@ class TaskRunner:
         if self._is_cancelled_result(result_task):
             self._notify("任务已停止，可重新分发", task_id, task)
             return "cancelled"
+        self._mark_uploaded_cache_dirs(download_plan, task_id, platform, publish_id)
         self._notify("任务完成", task_id)
         return "succeeded"
 
@@ -2492,6 +2494,27 @@ class TaskRunner:
         if legacy != preferred:
             directories.append(legacy)
         return directories
+
+    def _mark_uploaded_cache_dirs(
+        self,
+        download_plan: dict[str, Any],
+        task_id: str,
+        platform: str,
+        platform_publish_id: str | None,
+    ) -> None:
+        drama_id = str(download_plan.get("dramaId") or "")
+        for base_dir in (self.input_dir(), self.output_dir()):
+            for directory in self._drama_dir_candidates(base_dir, download_plan):
+                try:
+                    mark_upload_success(
+                        directory,
+                        drama_id=drama_id,
+                        task_id=str(task_id),
+                        platform=platform,
+                        platform_publish_id=platform_publish_id,
+                    )
+                except OSError:
+                    pass
 
     @staticmethod
     def _download_stage(

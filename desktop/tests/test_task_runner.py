@@ -18,6 +18,7 @@ from aidrama_desktop.tasks.runner import (
     episode_video_filename,
     write_download_episode_manifest,
 )
+from aidrama_desktop.tasks.cache_cleanup import UPLOAD_SUCCESS_MARKER
 from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
 
@@ -291,6 +292,7 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("当前短剧：神医归来", "task-1") in progress_events
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
+    assert (drama_download_dir(tmp_path) / UPLOAD_SUCCESS_MARKER).exists()
 
 def test_publish_once_does_not_run_strategy1_before_upload(tmp_path, monkeypatch):
     api = FakeApi()

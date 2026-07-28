@@ -5,7 +5,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
@@ -84,6 +84,10 @@ from aidrama_desktop.tasks.runner import (
     TaskRunner,
     drama_directory_name,
     read_download_episode_manifest,
+)
+from aidrama_desktop.tasks.cache_cleanup import (
+    UploadCacheCleanupResult,
+    cleanup_uploaded_drama_cache as cleanup_uploaded_drama_cache_dirs,
 )
 from aidrama_desktop.update import UpdateInfo, detect_platform, download_installer, open_installer
 from aidrama_desktop.video.ffmpeg import FfmpegProcessor
@@ -386,12 +390,17 @@ class DesktopWindow(QMainWindow):
         self.video_reassembly_config = self.video_reassembly_store.load()
         self.last_contract_path: Path | None = None
         self.last_contract_paths: list[Path] = []
+        self.last_upload_cache_cleanup_date: date | None = None
+        self.upload_cache_cleanup_busy = False
         self.auto_task_timer = QTimer(self)
         self.auto_task_timer.setInterval(30_000)
         self.auto_task_timer.timeout.connect(self.run_auto_task_cycle)
         self.list_refresh_timer = QTimer(self)
         self.list_refresh_timer.setInterval(30_000)
         self.list_refresh_timer.timeout.connect(self.refresh_visible_list)
+        self.upload_cache_cleanup_timer = QTimer(self)
+        self.upload_cache_cleanup_timer.setInterval(60_000)
+        self.upload_cache_cleanup_timer.timeout.connect(self.run_scheduled_upload_cache_cleanup)
 
         self.setWindowTitle(f"AI Drama Desktop {__version__}")
         self.resize(1120, 720)
@@ -1079,6 +1088,14 @@ class DesktopWindow(QMainWindow):
         update_row.addWidget(update_hint)
         update_row.addStretch(1)
         update_row.addWidget(self.update_check_button)
+        cleanup_row = QHBoxLayout()
+        cleanup_hint = QLabel("只清理下载原片目录和转码成品目录中已上传成功超过 48 小时的短剧缓存")
+        cleanup_hint.setObjectName("mutedText")
+        self.cleanup_data_button = QPushButton("清理数据")
+        self.cleanup_data_button.clicked.connect(self.clean_upload_cache_now)
+        cleanup_row.addWidget(cleanup_hint)
+        cleanup_row.addStretch(1)
+        cleanup_row.addWidget(self.cleanup_data_button)
         rows = settings_rows(self.settings)
         table = QTableWidget(len(rows), 3)
         table.setObjectName("settingsTable")
@@ -1111,6 +1128,7 @@ class DesktopWindow(QMainWindow):
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
         panel_layout.addLayout(update_row)
+        panel_layout.addLayout(cleanup_row)
         panel_layout.addWidget(note)
         panel_layout.addWidget(table, 1)
         layout.addWidget(panel, 1)
@@ -1296,11 +1314,13 @@ class DesktopWindow(QMainWindow):
         self.stack.setCurrentWidget(self.main_page)
         self.show_page(self.nav.currentRow())
         self.list_refresh_timer.start()
+        self.upload_cache_cleanup_timer.start()
         self.refresh_status()
         QTimer.singleShot(600, self.check_for_updates)
 
     def logout(self) -> None:
         self.list_refresh_timer.stop()
+        self.upload_cache_cleanup_timer.stop()
         self.token_store.clear()
         self.current_username = ""
         self.update_current_username_label()
@@ -1314,6 +1334,7 @@ class DesktopWindow(QMainWindow):
 
     def quit_app(self) -> None:
         self.list_refresh_timer.stop()
+        self.upload_cache_cleanup_timer.stop()
         if self.agent.running:
             self.agent.stop()
         QApplication.instance().quit()
@@ -3713,6 +3734,76 @@ class DesktopWindow(QMainWindow):
             return
         self.update_task_progress(f"任务失败：{message}", self.current_task_id)
         self.show_auto_error_once("自动执行", message)
+
+    def run_scheduled_upload_cache_cleanup(self) -> None:
+        now = datetime.now(CHINA_TIMEZONE)
+        if now.hour != 23:
+            return
+        if self.last_upload_cache_cleanup_date == now.date():
+            return
+        if self.manual_publish_busy or self.auto_task_busy or self.upload_cache_cleanup_busy:
+            return
+        self.last_upload_cache_cleanup_date = now.date()
+        self.upload_cache_cleanup_busy = True
+        self.run_async(
+            "清理上传成功缓存",
+            self.cleanup_uploaded_drama_cache,
+            self.handle_upload_cache_cleanup_done,
+            log_result=False,
+            log_activity=False,
+            on_failed=self.handle_upload_cache_cleanup_failed,
+        )
+
+    def clean_upload_cache_now(self) -> None:
+        if self.upload_cache_cleanup_busy:
+            return
+        self.upload_cache_cleanup_busy = True
+        self.set_cleanup_data_busy(True)
+        self.run_async(
+            "手动清理数据",
+            self.cleanup_uploaded_drama_cache,
+            self.handle_manual_upload_cache_cleanup_done,
+            log_result=False,
+            on_failed=self.handle_manual_upload_cache_cleanup_failed,
+        )
+
+    def cleanup_uploaded_drama_cache(self) -> UploadCacheCleanupResult:
+        return cleanup_uploaded_drama_cache_dirs(self.settings.downloads_dir, self.settings.processed_dir)
+
+    def handle_upload_cache_cleanup_done(self, result: UploadCacheCleanupResult) -> None:
+        self.upload_cache_cleanup_busy = False
+        if result.deleted_dirs <= 0 and not result.errors:
+            return
+        freed = TaskRunner._format_file_size(result.bytes_deleted)
+        message = f"缓存清理完成：删除 {result.deleted_dirs} 个已上传剧目录，释放 {freed}"
+        if result.errors:
+            message += f"，跳过 {len(result.errors)} 项异常"
+        self.append_log(message)
+
+    def handle_upload_cache_cleanup_failed(self, error: str) -> None:
+        self.upload_cache_cleanup_busy = False
+        self.append_log(f"缓存清理失败：{self.clean_error_message(error)}")
+
+    def handle_manual_upload_cache_cleanup_done(self, result: UploadCacheCleanupResult) -> None:
+        self.handle_upload_cache_cleanup_done(result)
+        self.set_cleanup_data_busy(False)
+        freed = TaskRunner._format_file_size(result.bytes_deleted)
+        QMessageBox.information(
+            self,
+            "清理数据",
+            f"清理完成：删除 {result.deleted_dirs} 个已上传剧目录，释放 {freed}。",
+        )
+
+    def handle_manual_upload_cache_cleanup_failed(self, error: str) -> None:
+        self.handle_upload_cache_cleanup_failed(error)
+        self.set_cleanup_data_busy(False)
+        QMessageBox.critical(self, "清理数据", self.clean_error_message(error))
+
+    def set_cleanup_data_busy(self, busy: bool) -> None:
+        if not hasattr(self, "cleanup_data_button"):
+            return
+        self.cleanup_data_button.setEnabled(not busy)
+        self.cleanup_data_button.setText("清理中..." if busy else "清理数据")
 
     @staticmethod
     def is_daily_publish_limit_error(message: str) -> bool:

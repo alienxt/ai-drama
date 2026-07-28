@@ -566,6 +566,7 @@ def test_settings_page_has_manual_update_button(tmp_path):
 
     button_texts = [button.text() for button in page.findChildren(QPushButton)]
     assert "检查更新" in button_texts
+    assert "清理数据" in button_texts
 
 
 def test_manual_update_check_tells_user_when_current_version_is_latest(monkeypatch):
