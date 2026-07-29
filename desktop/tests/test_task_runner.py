@@ -101,6 +101,9 @@ class FakeProcessor:
     def needs_wechat_video_bitrate_transcode(self, source: Path) -> bool:
         return False
 
+    def video_bitrate_bps(self, source: Path):
+        return 5_000_000 if source.exists() else None
+
     def video_dimensions(self, source: Path):
         return self.dimensions.get(source.name, (720, 1280) if source.exists() else None)
 
@@ -755,6 +758,48 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
     assert publisher.metadata["episodes"][0]["file"] == processed_file
     assert publisher.metadata["episodes"][1]["file"] == untouched_file
     assert publisher.metadata["episodeCount"] == 2
+
+
+def test_wechat_upload_rejects_low_bitrate_final_file(tmp_path):
+    class LowFinalBitrateProcessor(FakeProcessor):
+        def video_bitrate_bps(self, source: Path):
+            return 3_500_000 if source.exists() else None
+
+    source = tmp_path / "001.mp4"
+    source.write_bytes(b"video")
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=LowFinalBitrateProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    reason = runner._wechat_video_upload_rejection_reason(EpisodeMediaFile({"episodeNo": 1}, 1, source))
+
+    assert reason is not None
+    assert "视频码率 3.5Mbps，低于视频号要求的 4.0Mbps" in reason
+
+
+def test_wechat_upload_rejects_unreadable_final_bitrate(tmp_path):
+    class UnreadableFinalBitrateProcessor(FakeProcessor):
+        def video_bitrate_bps(self, source: Path):
+            return None
+
+    source = tmp_path / "001.mp4"
+    source.write_bytes(b"video")
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=UnreadableFinalBitrateProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+
+    reason = runner._wechat_video_upload_rejection_reason(EpisodeMediaFile({"episodeNo": 1}, 1, source))
+
+    assert reason is not None
+    assert "无法读取视频码率" in reason
 
 
 def test_publish_once_cleans_failed_transcode_cache_for_retry(tmp_path, monkeypatch):

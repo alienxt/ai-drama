@@ -1765,6 +1765,14 @@ class TaskRunner:
         width, height = dimensions
         if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
             return f"分辨率 {width}x{height}，低于视频号要求的 {WECHAT_VIDEO_MIN_WIDTH}x{WECHAT_VIDEO_MIN_HEIGHT}：{path.name}"
+        bitrate_bps = self._video_bitrate_bps(path)
+        if bitrate_bps is None:
+            return f"无法读取视频码率，需重新转码后再上传：{path.name}（{self._format_file_size(size)}）"
+        if bitrate_bps < WECHAT_VIDEO_MIN_BITRATE_BPS:
+            return (
+                f"视频码率 {self._format_bitrate_mbps(bitrate_bps)}Mbps，低于视频号要求的 "
+                f"{self._format_bitrate_mbps(WECHAT_VIDEO_MIN_BITRATE_BPS)}Mbps：{path.name}"
+            )
         return None
 
     def _tiktok_upload_rejection_reason(self, item: EpisodeMediaFile) -> str | None:
@@ -2009,6 +2017,22 @@ class TaskRunner:
             return None
         return parsed if parsed > 0 else None
 
+    def _video_bitrate_bps(self, source_file: Path) -> int | None:
+        video_bitrate = getattr(self.processor, "video_bitrate_bps", None)
+        if not callable(video_bitrate):
+            return None
+        try:
+            bitrate = video_bitrate(source_file)
+        except Exception:  # noqa: BLE001
+            return None
+        if bitrate is None:
+            return None
+        try:
+            parsed = int(bitrate)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
     def _is_valid_downloaded_episode_file(self, source_file: Path) -> bool:
         return self._video_duration_seconds(source_file) is not None
 
@@ -2055,6 +2079,10 @@ class TaskRunner:
         if size < 1024 * 1024:
             return f"{size / 1024:.1f}KB"
         return f"{size / 1024 / 1024:.1f}MB"
+
+    @staticmethod
+    def _format_bitrate_mbps(bitrate_bps: int) -> str:
+        return f"{bitrate_bps / 1_000_000:.1f}"
 
     def _processed_media_signature_matches(self, target: Path, expected: dict[str, Any]) -> bool:
         signature_file = self._processed_media_signature_path(target)

@@ -710,7 +710,7 @@ class FfmpegProcessor:
         min_bitrate_bps: int = WECHAT_VIDEO_MIN_BITRATE_BPS,
     ) -> bool:
         bitrate = self.video_bitrate_bps(source)
-        return bitrate is not None and bitrate < min_bitrate_bps
+        return bitrate is None or bitrate < min_bitrate_bps
 
     def needs_wechat_video_resolution_transcode(
         self,

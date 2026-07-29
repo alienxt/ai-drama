@@ -4,7 +4,9 @@ import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.TraceIdFilter;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -33,9 +35,20 @@ public class DesktopVersionController {
     @GetMapping("/api/admin/desktop-versions")
     ApiResponse<PageResult<VersionDtos.VersionResponse>> list(Pageable pageable) {
         return ApiResponse.ok(
-                PageResult.from(repository.findAll(pageable).map(VersionDtos.VersionResponse::from)),
+                PageResult.from(repository.findAll(versionListPageable(pageable)).map(VersionDtos.VersionResponse::from)),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
+    }
+
+    private Pageable versionListPageable(Pageable pageable) {
+        if (pageable.getSort().isSorted()) {
+            return pageable;
+        }
+        Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");
+        if (pageable.isPaged()) {
+            return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
+        }
+        return Pageable.unpaged(sort);
     }
 
     @PostMapping("/api/admin/desktop-versions")

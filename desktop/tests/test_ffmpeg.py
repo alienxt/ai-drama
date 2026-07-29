@@ -80,7 +80,7 @@ def test_ffmpeg_processor_falls_back_to_format_bitrate(monkeypatch, tmp_path):
     assert processor.needs_wechat_video_bitrate_transcode(source) is False
 
 
-def test_ffmpeg_processor_ignores_unreadable_bitrate(monkeypatch, tmp_path):
+def test_ffmpeg_processor_transcodes_unreadable_bitrate(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     source.write_text("video")
 
@@ -92,7 +92,7 @@ def test_ffmpeg_processor_ignores_unreadable_bitrate(monkeypatch, tmp_path):
     processor = FfmpegProcessor("ffmpeg")
 
     assert processor.video_bitrate_bps(source) is None
-    assert processor.needs_wechat_video_bitrate_transcode(source) is False
+    assert processor.needs_wechat_video_bitrate_transcode(source) is True
 
 
 def test_ffmpeg_processor_detects_low_wechat_video_resolution(monkeypatch, tmp_path):

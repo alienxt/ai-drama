@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.List;
@@ -86,12 +87,14 @@ class DesktopVersionControllerTest {
                 mock(DesktopVersionService.class),
                 mock(DesktopVersionStorage.class)
         );
-        when(repository.findAll(PageRequest.of(0, 20)))
+        PageRequest newestFirst = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
+        when(repository.findAll(newestFirst))
                 .thenReturn(new PageImpl<>(List.of(version("MAC", "0.2.0", true))));
 
         ApiResponse<?> response = controller.list(PageRequest.of(0, 20));
 
         assertThat(response.data()).isNotNull();
+        verify(repository).findAll(newestFirst);
     }
 
     private static DesktopVersion version(String platform, String version, boolean published) {
