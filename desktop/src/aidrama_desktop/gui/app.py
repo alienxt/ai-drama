@@ -1089,7 +1089,7 @@ class DesktopWindow(QMainWindow):
         update_row.addStretch(1)
         update_row.addWidget(self.update_check_button)
         cleanup_row = QHBoxLayout()
-        cleanup_hint = QLabel("只清理下载原片目录和转码成品目录中已上传成功超过 48 小时的短剧缓存")
+        cleanup_hint = QLabel("只清理下载原片目录和转码成品目录中已上传成功超过 24 小时的短剧缓存")
         cleanup_hint.setObjectName("mutedText")
         self.cleanup_data_button = QPushButton("清理数据")
         self.cleanup_data_button.clicked.connect(self.clean_upload_cache_now)

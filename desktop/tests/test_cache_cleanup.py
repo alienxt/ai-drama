@@ -28,7 +28,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-1",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-1",
-        uploaded_at=now - timedelta(hours=49),
+        uploaded_at=now - timedelta(hours=25),
     )
     mark_upload_success(
         old_processed,
@@ -36,7 +36,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-1",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-1",
-        uploaded_at=now - timedelta(hours=49),
+        uploaded_at=now - timedelta(hours=25),
     )
     mark_upload_success(
         fresh_download,
@@ -44,7 +44,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-2",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-2",
-        uploaded_at=now - timedelta(hours=47),
+        uploaded_at=now - timedelta(hours=23),
     )
 
     result = cleanup_uploaded_drama_cache(downloads, processed, now=now)
