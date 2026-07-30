@@ -55,8 +55,8 @@ node scripts/jianying/create-jianying-project.js \
 
 `--open-draft` is best-effort UI automation:
 
-- macOS: launches Jianying, activates the app by bundle id, double-clicks the newest draft card with CoreGraphics, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility permission.
-- Windows: launches Jianying/CapCut, brings the window forward with PowerShell/User32, double-clicks the newest draft card, then captures only the Jianying/CapCut main window rectangle.
+- macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
+- Windows: launches Jianying/CapCut, maximizes and brings the window forward with PowerShell/User32, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying/CapCut main window rectangle.
 
 Pass `--full-screen-capture` only when you intentionally need the entire desktop screenshot.
 

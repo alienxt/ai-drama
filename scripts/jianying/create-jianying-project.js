@@ -826,6 +826,9 @@ function macJianyingProcessNames(appPath) {
     appName,
     'VideoFusion-macOS',
     'JianyingPro',
+    'Jianying',
+    '剪映专业版',
+    '剪映',
     'CapCut',
   ]);
 }
@@ -874,6 +877,67 @@ print("\\(x),\\(y),\\(Int(visible.width)),\\(Int(visible.height))")
     // Use a conservative large-window fallback below.
   }
   return [0, 38, 1280, 800];
+}
+
+function macWindowBoundsViaCoreGraphics(appPath = null) {
+  const processNames = macJianyingProcessNames(appPath);
+  const processList = JSON.stringify(processNames);
+  const swift = `
+import CoreGraphics
+import Foundation
+
+let processNames = Set(${processList})
+let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+    exit(2)
+}
+
+func matchesOwner(_ owner: String) -> Bool {
+    let lowerOwner = owner.lowercased()
+    for name in processNames {
+        let lowerName = name.lowercased()
+        if owner == name || lowerOwner.contains(lowerName) || lowerName.contains(lowerOwner) {
+            return true
+        }
+    }
+    return false
+}
+
+for window in windows {
+    guard
+        let owner = window[kCGWindowOwnerName as String] as? String,
+        matchesOwner(owner),
+        let layer = window[kCGWindowLayer as String] as? Int,
+        layer == 0,
+        let bounds = window[kCGWindowBounds as String] as? [String: Any],
+        let x = bounds["X"] as? Double,
+        let y = bounds["Y"] as? Double,
+        let width = bounds["Width"] as? Double,
+        let height = bounds["Height"] as? Double,
+        width >= 480,
+        height >= 320
+    else {
+        continue
+    }
+    print("\\(Int(x)),\\(Int(y)),\\(Int(width)),\\(Int(height))")
+    exit(0)
+}
+
+exit(3)
+`;
+  try {
+    const output = execFileSync('swift', ['-e', swift], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const values = output.split(',').map(Number);
+    if (values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) {
+      return values;
+    }
+  } catch {
+    // Fall back to Accessibility-based window bounds below.
+  }
+  return null;
 }
 
 function macNormalizeJianyingWindow(appPath) {
@@ -1008,9 +1072,13 @@ if (-not $p) { exit 2 }
 }
 
 function macFrontWindowBounds(appPath = null) {
+  const coreGraphicsBounds = macWindowBoundsViaCoreGraphics(appPath);
+  if (coreGraphicsBounds) return coreGraphicsBounds;
   const processName = (appPath && macBringJianyingToFront(appPath)) || macFrontProcessName();
   if (!processName) fail('No front window process found');
-  const bounds = osascript(`
+  let bounds;
+  try {
+    bounds = osascript(`
 tell application "System Events"
   tell process ${appleScriptString(processName)}
     set p to position of window 1
@@ -1019,6 +1087,9 @@ tell application "System Events"
 end tell
 return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
 `);
+  } catch (error) {
+    fail(`Jianying window bounds unavailable. Tried CoreGraphics first, then macOS Accessibility fallback. Please grant Accessibility permission to the local AI Drama app or osascript/System Events. ${error.message}`);
+  }
   return bounds.split(',').map(Number);
 }
 

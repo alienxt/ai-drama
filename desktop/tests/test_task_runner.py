@@ -506,7 +506,7 @@ def test_publish_once_generates_storyboard_images_for_contract_upload(tmp_path, 
     assert ("分镜图已生成：神医归来 #2集（2 张，AI制作证明 1 张）", "task-1") in progress_events
 
 
-def test_publish_once_skips_disabled_jianying_project_screenshots(tmp_path, monkeypatch):
+def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypatch):
     class StoryboardApi(FakeApi):
         def get(self, path):
             self.calls.append(("GET", path, None))
@@ -581,9 +581,21 @@ def test_publish_once_skips_disabled_jianying_project_screenshots(tmp_path, monk
     assert runner.publish_once() == "succeeded"
 
     assert len(storyboard_generator.calls) == 1
-    assert jianying_generator.calls == []
-    assert "jianyingProjectScreenshots" not in publisher.metadata
-    assert all("剪映工程图" not in stage for stage, _task_id in progress_events)
+    assert len(jianying_generator.calls) == 4
+    screenshots = [
+        tmp_path
+        / "contracts"
+        / "generated"
+        / "神医归来-task-1"
+        / "剪映工程截图"
+        / f"剪映工程图-{index:02d}-第{episode}集.png"
+        for index, episode in enumerate(range(2, 6), start=1)
+    ]
+    assert publisher.metadata["jianyingProjectScreenshots"] == screenshots
+    for screenshot in screenshots:
+        assert screenshot in publisher.metadata["buyDramaContractImages"]
+    assert ("生成剪映工程图：神医归来（随机 4 集）", "task-1") in progress_events
+    assert ("剪映工程图已生成：神医归来（4 张）", "task-1") in progress_events
 
 
 def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
