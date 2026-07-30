@@ -879,7 +879,7 @@ print("\\(x),\\(y),\\(Int(visible.width)),\\(Int(visible.height))")
   return [0, 38, 1280, 800];
 }
 
-function macWindowBoundsViaCoreGraphics(appPath = null) {
+function macJianyingWindowCaptureTarget(appPath = null) {
   const processNames = macJianyingProcessNames(appPath);
   const processList = JSON.stringify(processNames);
   const swift = `
@@ -909,6 +909,7 @@ for window in windows {
         matchesOwner(owner),
         let layer = window[kCGWindowLayer as String] as? Int,
         layer == 0,
+        let windowId = window[kCGWindowNumber as String] as? Int,
         let bounds = window[kCGWindowBounds as String] as? [String: Any],
         let x = bounds["X"] as? Double,
         let y = bounds["Y"] as? Double,
@@ -919,7 +920,7 @@ for window in windows {
     else {
         continue
     }
-    print("\\(Int(x)),\\(Int(y)),\\(Int(width)),\\(Int(height))")
+    print("\\(windowId),\\(Int(x)),\\(Int(y)),\\(Int(width)),\\(Int(height))")
     exit(0)
 }
 
@@ -931,13 +932,20 @@ exit(3)
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
     const values = output.split(',').map(Number);
-    if (values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) {
-      return values;
+    if (values.length === 5 && values.every(Number.isFinite) && values[3] > 0 && values[4] > 0) {
+      return {
+        windowId: Math.round(values[0]),
+        bounds: values.slice(1),
+      };
     }
   } catch {
     // Fall back to Accessibility-based window bounds below.
   }
   return null;
+}
+
+function macWindowBoundsViaCoreGraphics(appPath = null) {
+  return macJianyingWindowCaptureTarget(appPath)?.bounds || null;
 }
 
 function macNormalizeJianyingWindow(appPath) {
@@ -1074,8 +1082,12 @@ if (-not $p) { exit 2 }
 function macFrontWindowBounds(appPath = null) {
   const coreGraphicsBounds = macWindowBoundsViaCoreGraphics(appPath);
   if (coreGraphicsBounds) return coreGraphicsBounds;
-  const processName = (appPath && macBringJianyingToFront(appPath)) || macFrontProcessName();
-  if (!processName) fail('No front window process found');
+  const processName = appPath ? macBringJianyingToFront(appPath) : macFrontProcessName();
+  if (!processName) {
+    fail(appPath
+      ? 'Jianying window was not found; refusing to capture the current desktop.'
+      : 'No front window process found');
+  }
   let bounds;
   try {
     bounds = osascript(`
@@ -1201,6 +1213,11 @@ function captureScreenshot(output, options = {}) {
       return output;
     }
     if (options.appPath) activateJianying(options.appPath);
+    const captureTarget = options.appPath ? macJianyingWindowCaptureTarget(options.appPath) : null;
+    if (captureTarget?.windowId) {
+      execFileSync('screencapture', ['-x', '-l', String(captureTarget.windowId), output], { stdio: 'ignore' });
+      return output;
+    }
     const [x, y, w, h] = positiveWindowRect(macFrontWindowBounds(options.appPath));
     execFileSync('screencapture', ['-x', '-R', `${x},${y},${w},${h}`, output], { stdio: 'ignore' });
     return output;

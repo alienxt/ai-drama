@@ -75,7 +75,9 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-window-id-v2"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
+MATERIAL_METADATA_STRING_KEYS = ("jianyingProjectCaptureVersion",)
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
     "costContractDocx",
@@ -723,9 +725,10 @@ class TaskRunner:
             required_keys=("jianyingProjectScreenshots",),
         )
         if cached_metadata:
-            screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
-            self._notify(f"复用剪映工程图：{drama_title}（{len(screenshots)} 张）", task_id)
-            return cached_metadata
+            if cached_metadata.get("jianyingProjectCaptureVersion") == JIANYING_PROJECT_CAPTURE_VERSION:
+                screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
+                self._notify(f"复用剪映工程图：{drama_title}（{len(screenshots)} 张）", task_id)
+                return cached_metadata
 
         selected_items = self._select_jianying_project_episode_items(
             upload_items,
@@ -756,7 +759,10 @@ class TaskRunner:
             screenshots.append(screenshot)
             self._notify(f"剪映工程图已生成：{drama_title} {episode_label}（{position}/{len(selected_items)}）", task_id)
 
-        metadata: dict[str, object] = {"jianyingProjectScreenshots": screenshots}
+        metadata: dict[str, object] = {
+            "jianyingProjectCaptureVersion": JIANYING_PROJECT_CAPTURE_VERSION,
+            "jianyingProjectScreenshots": screenshots,
+        }
         self._write_material_metadata_manifest(
             output_dir / JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME,
             metadata,
@@ -979,6 +985,10 @@ class TaskRunner:
     @staticmethod
     def _serialize_material_metadata(metadata: dict[str, object]) -> dict[str, object]:
         result: dict[str, object] = {}
+        for key in MATERIAL_METADATA_STRING_KEYS:
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                result[key] = value
         for key in MATERIAL_METADATA_SINGLE_PATH_KEYS:
             value = metadata.get(key)
             if isinstance(value, Path):
@@ -994,6 +1004,10 @@ class TaskRunner:
 
     def _deserialize_material_metadata(self, metadata: dict[str, object]) -> dict[str, object]:
         result: dict[str, object] = {}
+        for key in MATERIAL_METADATA_STRING_KEYS:
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                result[key] = value
         for key in MATERIAL_METADATA_SINGLE_PATH_KEYS:
             value = metadata.get(key)
             if not value:
