@@ -17,6 +17,7 @@ WECHAT_VIDEO_MIN_BITRATE_BPS = 4_000_000
 WECHAT_VIDEO_MIN_WIDTH = 720
 WECHAT_VIDEO_MIN_HEIGHT = 1280
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
+WECHAT_VIDEO_TARGET_FPS = 30
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
 WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v8"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
@@ -191,12 +192,9 @@ class FfmpegProcessor:
                 )
                 for segment in segments
             ]
-            concat_file = work_dir / "concat.txt"
-            concat_file.write_text(self._concat_clip_file_content(staged_clips), encoding="utf-8")
             timeline_command = self._reassembly_timeline_command(
-                concat_file,
+                staged_clips,
                 work_timeline,
-                staged_clips[0].path,
                 speed_factor=speed_factor,
                 swap_orientation=swap_orientation,
             )
@@ -207,9 +205,8 @@ class FfmpegProcessor:
                     raise
                 self._run_ffmpeg(
                     self._reassembly_timeline_command(
-                        concat_file,
+                        staged_clips,
                         work_timeline,
-                        staged_clips[0].path,
                         speed_factor=speed_factor,
                         swap_orientation=swap_orientation,
                         drop_audio=True,
@@ -503,33 +500,85 @@ class FfmpegProcessor:
 
     def _reassembly_timeline_command(
         self,
-        concat_file: Path,
+        clips: list[VideoReassemblySourceClip],
         timeline: Path,
-        first_source: Path,
         *,
         speed_factor: float,
         swap_orientation: bool,
         drop_audio: bool = False,
     ) -> list[str]:
-        command = [
-            self.ffmpeg_path,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
-        ]
-        video_filters = self._reassembly_video_filters(first_source, speed_factor, swap_orientation)
-        if video_filters:
-            command.extend(["-vf", ",".join(video_filters)])
-        if not drop_audio and self.has_audio_stream(first_source) and self._has_effective_speed_change(speed_factor):
-            command.extend(["-af", self._atempo_filter(speed_factor)])
+        command = [self.ffmpeg_path, "-y"]
+        for clip in clips:
+            command.extend(["-i", str(clip.path)])
+        filter_complex = self._reassembly_filter_complex(
+            clips,
+            speed_factor=speed_factor,
+            swap_orientation=swap_orientation,
+            drop_audio=drop_audio,
+        )
+        command.extend(["-filter_complex", filter_complex, "-map", "[outv]"])
+        if not drop_audio:
+            command.extend(["-map", "[outa]"])
         if drop_audio:
             command.append("-an")
-        command.extend([*self._wechat_video_output_args(), str(timeline)])
+        command.extend([*self._wechat_video_output_args(include_audio=not drop_audio), str(timeline)])
         return command
+
+    def _reassembly_filter_complex(
+        self,
+        clips: list[VideoReassemblySourceClip],
+        *,
+        speed_factor: float,
+        swap_orientation: bool,
+        drop_audio: bool,
+    ) -> str:
+        filters: list[str] = []
+        concat_inputs: list[str] = []
+        frame_filter = self._reassembly_frame_filter(clips[0].path, swap_orientation)
+        speed = max(speed_factor, 0.01)
+        formatted_speed = self._format_filter_number(speed)
+        for input_index, clip in enumerate(clips):
+            start = self._format_seconds(clip.start_seconds)
+            duration = self._format_seconds(clip.duration_seconds)
+            output_duration = self._format_seconds(clip.duration_seconds / speed)
+            filters.append(
+                f"[{input_index}:v]setpts=PTS-STARTPTS,"
+                f"trim=start={start}:duration={duration},"
+                f"setpts=(PTS-STARTPTS)/{formatted_speed},"
+                f"{frame_filter}[v{input_index}]"
+            )
+            if drop_audio:
+                concat_inputs.append(f"[v{input_index}]")
+                continue
+            if self.has_audio_stream(clip.path):
+                audio_filter = (
+                    f"[{input_index}:a]asetpts=PTS-STARTPTS,"
+                    f"atrim=start={start}:duration={duration},"
+                    "asetpts=PTS-STARTPTS,"
+                    "aresample=async=1:first_pts=0,"
+                    "aformat=sample_rates=48000:channel_layouts=stereo"
+                )
+                if self._has_effective_speed_change(speed):
+                    audio_filter += f",{self._atempo_filter(speed)}"
+                audio_filter += (
+                    f",apad,atrim=duration={output_duration},"
+                    f"asetpts=PTS-STARTPTS[a{input_index}]"
+                )
+                filters.append(audio_filter)
+            else:
+                filters.append(
+                    "anullsrc=r=48000:cl=stereo,"
+                    f"atrim=duration={output_duration},"
+                    f"asetpts=PTS-STARTPTS[a{input_index}]"
+                )
+            concat_inputs.append(f"[v{input_index}][a{input_index}]")
+        if drop_audio:
+            concat_filter = "".join(concat_inputs)
+            concat_filter += f"concat=n={len(clips)}:v=1:a=0[outv]"
+        else:
+            concat_filter = "".join(concat_inputs)
+            concat_filter += f"concat=n={len(clips)}:v=1:a=1[outv][outa]"
+        return ";".join([*filters, concat_filter])
 
     def _reassembly_segment_command(
         self,
@@ -593,23 +642,25 @@ class FfmpegProcessor:
             str(segment.target),
         ]
 
-    def _reassembly_video_filters(
+    def _reassembly_frame_filter(
         self,
         first_source: Path,
-        speed_factor: float,
         swap_orientation: bool,
-    ) -> list[str]:
+    ) -> str:
         filters: list[str] = []
         dimensions = self.video_dimensions(first_source)
         if dimensions:
             width, height = dimensions
             if swap_orientation:
-                filters.append(self._wechat_video_frame_filter(height, width))
+                filters.extend(self._wechat_video_frame_filters(height, width))
             elif self._is_below_wechat_video_minimum(width, height):
-                filters.append(self._wechat_video_frame_filter(WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT))
-        if self._has_effective_speed_change(speed_factor):
-            filters.append(f"setpts=PTS/{self._format_filter_number(speed_factor)}")
-        return filters
+                filters.extend(self._wechat_video_frame_filters(WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT))
+        if filters and filters[-1] == "format=yuv420p":
+            filters.pop()
+        if not filters:
+            filters.append("setsar=1")
+        filters.extend([f"fps={WECHAT_VIDEO_TARGET_FPS}", "format=yuv420p"])
+        return ",".join(filters)
 
     def _transcode_with_cover_command(self, source: Path, target: Path, cover_path: Path | None) -> list[str]:
         dimensions = self.video_dimensions(source)
@@ -662,11 +713,16 @@ class FfmpegProcessor:
 
     @staticmethod
     def _wechat_video_frame_filter(width: int, height: int) -> str:
-        return (
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-            "setsar=1,format=yuv420p"
-        )
+        return ",".join(FfmpegProcessor._wechat_video_frame_filters(width, height))
+
+    @staticmethod
+    def _wechat_video_frame_filters(width: int, height: int) -> list[str]:
+        return [
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+            "setsar=1",
+            "format=yuv420p",
+        ]
 
     @classmethod
     def _concat_file_content(cls, sources: list[Path]) -> str:
@@ -678,8 +734,8 @@ class FfmpegProcessor:
         return str(source.resolve()).replace("\\", "\\\\").replace("'", "\\'")
 
     @staticmethod
-    def _wechat_video_output_args() -> list[str]:
-        return [
+    def _wechat_video_output_args(include_audio: bool = True) -> list[str]:
+        args = [
             "-c:v:0",
             "libx264",
             "-b:v:0",
@@ -694,15 +750,25 @@ class FfmpegProcessor:
             "nal-hrd=cbr:filler=1",
             "-preset",
             "veryfast",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-pix_fmt:v:0",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
         ]
+        if include_audio:
+            args.extend(
+                [
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                ]
+            )
+        args.extend(
+            [
+                "-pix_fmt:v:0",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+            ]
+        )
+        return args
 
     def needs_wechat_video_bitrate_transcode(
         self,

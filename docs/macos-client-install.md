@@ -9,6 +9,8 @@
 | AI Drama Desktop | 客户端程序 | 由管理员提供 `.dmg` 安装包 | 拖入 Applications |
 | Google Chrome | 登录媒体号、自动打开发布页面、上传视频 | https://www.google.com/chrome/ | 默认安装 |
 | FFmpeg | 视频转码、提高码率、添加封面帧 | https://ffmpeg.org/download.html | 推荐 Homebrew 安装 |
+| Node.js | 运行剪映工程截图生成工具 | https://nodejs.org/ | 推荐 Homebrew 安装 |
+| 剪映专业版 | 生成剧目制作证明用剪映工程截图 | 官方剪映专业版安装包 | 安装 5.9 或兼容版本 |
 | LibreOffice | 将合同 Word `.docx` 转为 PDF | https://www.libreoffice.org/download/ | 默认安装或 Homebrew 安装 |
 | Poppler | 将合同 PDF 转为 PNG 图片 | https://poppler.freedesktop.org/ | 推荐 Homebrew 安装 |
 
@@ -56,7 +58,7 @@ xattr -dr com.apple.quarantine "/Applications/AI Drama Desktop.app"
 
 ## 3. 安装 Homebrew
 
-macOS 推荐用 Homebrew 安装 FFmpeg 和 Poppler。
+macOS 推荐用 Homebrew 安装 FFmpeg、Node.js 和 Poppler。
 
 Homebrew 官网：
 
@@ -226,7 +228,7 @@ launchctl setenv AIDRAMA_PDFTOPPM_PATH "$(which pdftoppm)"
 如果用户已经安装好 Homebrew，可以一次性执行：
 
 ```bash
-brew install ffmpeg poppler
+brew install ffmpeg node poppler
 brew install --cask google-chrome libreoffice
 ```
 
@@ -240,6 +242,7 @@ brew install --cask google-chrome libreoffice
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version
 ffmpeg -version
 ffprobe -version
+node -v
 "/Applications/LibreOffice.app/Contents/MacOS/soffice" --version
 pdftoppm -v
 ```

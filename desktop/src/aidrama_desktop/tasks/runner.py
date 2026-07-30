@@ -26,6 +26,7 @@ from aidrama_desktop.contracts import (
     render_contract_material_bundle,
     safe_contract_filename,
 )
+from aidrama_desktop.jianying import JianyingProjectGenerator
 from aidrama_desktop.platforms.base import PlatformPublisher, PlatformPublishPaused, PlatformPublishSubmittedError
 from aidrama_desktop.storyboard import (
     StoryboardGenerationConfig,
@@ -71,7 +72,10 @@ TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
 CONTRACT_MATERIALS_MANIFEST_FILENAME = ".contract-materials.json"
 STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
+JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
+JIANYING_PROJECT_SCREENSHOT_COUNT = 4
+JIANYING_PROJECT_MATERIALS_ENABLED = False
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
     "costContractDocx",
@@ -85,6 +89,7 @@ MATERIAL_METADATA_LIST_PATH_KEYS = (
     "rightsStatementImages",
     "buyDramaContractImages",
     "storyboardImages",
+    "jianyingProjectScreenshots",
 )
 TIKTOK_COVER_WIDTH = 768
 TIKTOK_COVER_HEIGHT = 1024
@@ -166,6 +171,7 @@ class TaskRunner:
     video_reassembly_config: VideoReassemblyConfig | None = None
     storyboard_generator: StoryboardGenerator | None = None
     storyboards_dir: Path | None = None
+    jianying_generator: JianyingProjectGenerator | None = None
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -373,6 +379,13 @@ class TaskRunner:
             platform=platform,
         )
         contract_metadata = self._append_storyboard_to_contract_metadata(contract_metadata, storyboard_metadata)
+        jianying_metadata = self._prepare_jianying_project_materials(
+            upload_items,
+            task_id,
+            drama_title,
+            platform=platform,
+        )
+        contract_metadata = self._append_jianying_to_contract_metadata(contract_metadata, jianying_metadata)
         self._progress(task_id, "UPLOADING", 75)
         self._notify(f"发布：{drama_title}", task_id, task_with_title)
         metadata = self._publish_metadata(effective_download_plan, upload_items, platform=platform)
@@ -688,6 +701,149 @@ class TaskRunner:
         if isinstance(proof_image, Path):
             merged["aiProductionProofImage"] = proof_image
         return merged
+
+    def _prepare_jianying_project_materials(
+        self,
+        upload_items: list[EpisodeMediaFile],
+        task_id: str,
+        drama_title: str,
+        *,
+        platform: str,
+    ) -> dict[str, object]:
+        if not JIANYING_PROJECT_MATERIALS_ENABLED:
+            return {}
+        if platform != "WECHAT_VIDEO" or not upload_items:
+            return {}
+        generator = self.jianying_generator
+        if generator is None:
+            return {}
+        output_dir = self._jianying_project_output_dir(task_id, drama_title)
+        cached_metadata = self._cached_material_metadata(
+            output_dir / JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME,
+            required_keys=("jianyingProjectScreenshots",),
+        )
+        if cached_metadata:
+            screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
+            self._notify(f"复用剪映工程图：{drama_title}（{len(screenshots)} 张）", task_id)
+            return cached_metadata
+
+        selected_items = self._select_jianying_project_episode_items(
+            upload_items,
+            JIANYING_PROJECT_SCREENSHOT_COUNT,
+        )
+        if not selected_items:
+            return {}
+
+        screenshots: list[Path] = []
+        self._notify(f"生成剪映工程图：{drama_title}（随机 {len(selected_items)} 集）", task_id)
+        for position, item in enumerate(selected_items, start=1):
+            raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            episode_label = self._jianying_project_episode_label(item)
+            episode_name = safe_contract_filename(f"{position:02d}-{episode_label}")
+            episode_output_dir = output_dir / episode_name
+            screenshot_path = output_dir / f"剪映工程图-{episode_name}.png"
+            result = generator.generate_project_screenshot(
+                video=item.file,
+                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑工程"),
+                output_dir=episode_output_dir,
+                screenshot_path=screenshot_path,
+                srt=self._jianying_project_srt_for_item(item),
+                bgm_files=self._jianying_project_bgm_files_for_item(item),
+            )
+            screenshot = Path(getattr(result, "screenshot_path", screenshot_path))
+            if not self._is_ready_material_file(screenshot):
+                raise RuntimeError(f"剪映工程图未生成：{screenshot}")
+            screenshots.append(screenshot)
+            self._notify(f"剪映工程图已生成：{drama_title} {episode_label}（{position}/{len(selected_items)}）", task_id)
+
+        metadata: dict[str, object] = {"jianyingProjectScreenshots": screenshots}
+        self._write_material_metadata_manifest(
+            output_dir / JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME,
+            metadata,
+        )
+        self._notify(f"剪映工程图已生成：{drama_title}（{len(screenshots)} 张）", task_id)
+        return metadata
+
+    @staticmethod
+    def _append_jianying_to_contract_metadata(
+        contract_metadata: dict[str, object],
+        jianying_metadata: dict[str, object],
+    ) -> dict[str, object]:
+        if not jianying_metadata:
+            return contract_metadata
+        screenshots = [
+            path
+            for path in (jianying_metadata.get("jianyingProjectScreenshots") or [])
+            if isinstance(path, Path)
+        ]
+        if not screenshots:
+            return contract_metadata
+        merged = dict(contract_metadata)
+        merged["jianyingProjectScreenshots"] = append_unique_paths(
+            merged.get("jianyingProjectScreenshots"),
+            screenshots,
+        )
+        merged["buyDramaContractImages"] = append_unique_paths(
+            merged.get("buyDramaContractImages"),
+            screenshots,
+        )
+        return merged
+
+    def _jianying_project_output_dir(self, task_id: str, drama_title: str) -> Path:
+        return self._contract_output_dir(task_id, drama_title) / "剪映工程截图"
+
+    @staticmethod
+    def _select_jianying_project_episode_items(
+        upload_items: list[EpisodeMediaFile],
+        count: int,
+    ) -> list[EpisodeMediaFile]:
+        if not upload_items:
+            return []
+        limit = min(max(1, count), len(upload_items))
+        if len(upload_items) <= limit:
+            return list(upload_items)
+        selected = random.SystemRandom().sample(upload_items, limit)
+        return sorted(selected, key=lambda item: item.episode_index)
+
+    @staticmethod
+    def _jianying_project_episode_label(item: EpisodeMediaFile) -> str:
+        source_range = item.episode.get("sourceEpisodeRange")
+        if source_range:
+            return f"第{source_range}集"
+        return f"第{episode_number(item.episode, item.episode_index)}集"
+
+    @staticmethod
+    def _jianying_project_srt_for_item(item: EpisodeMediaFile) -> Path | None:
+        candidates = [
+            item.file.with_suffix(".srt"),
+            item.file.with_name(f"{item.file.stem}.zh.srt"),
+            item.file.with_name(f"{item.file.stem}.中文字幕.srt"),
+            item.file.parent / "subtitles" / f"{item.file.stem}.srt",
+            item.file.parent.parent / "subtitles" / f"{item.file.stem}.srt",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _jianying_project_bgm_files_for_item(item: EpisodeMediaFile) -> list[Path]:
+        directories = [
+            item.file.parent / "audio",
+            item.file.parent.parent / "audio",
+            item.file.parent / "bgm",
+            item.file.parent.parent / "bgm",
+        ]
+        files: list[Path] = []
+        for directory in directories:
+            if not directory.exists() or not directory.is_dir():
+                continue
+            for candidate in sorted(directory.iterdir(), key=lambda path: path.name):
+                if candidate.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac"} and candidate.is_file():
+                    files.append(candidate)
+            if files:
+                break
+        return files[:3]
 
     def _prepare_contract_materials(
         self,

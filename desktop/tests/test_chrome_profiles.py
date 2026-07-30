@@ -771,10 +771,12 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
     publisher = WeChatVideoPublisher(ChromeController("chrome", tmp_path), account_id="media-1")
     purchase_image = tmp_path / "purchase.png"
     ai_proof_image = tmp_path / "ai-proof.jpg"
+    jianying_image = tmp_path / "jianying-project.png"
     rights_image = tmp_path / "rights.png"
     cost_image = tmp_path / "cost.png"
     purchase_image.write_bytes(b"purchase")
     ai_proof_image.write_bytes(b"ai-proof")
+    jianying_image.write_bytes(b"jianying")
     rights_image.write_bytes(b"rights")
     cost_image.write_bytes(b"cost")
 
@@ -896,6 +898,7 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
             "producerName": "乙方公司",
             "productionCostWan": 3,
             "buyDramaContractImages": [purchase_image],
+            "jianyingProjectScreenshots": [jianying_image],
             "aiProductionProofImage": ai_proof_image,
             "rightsStatementImages": [rights_image],
             "costConfigReportImages": [cost_image],
@@ -929,7 +932,7 @@ def test_wechat_video_publisher_sets_playlet_defaults_and_free_episode_count(tmp
         ("推广海报", tmp_path / "cover.jpg", ["推广海报"]),
         (
             "剧目制作证明材料",
-            [purchase_image],
+            [purchase_image, jianying_image],
             ["剧目制作证明材料", "制作证明材料", "剧目制作合同"],
         ),
         ("AI制作证明", [ai_proof_image], ["AI制作证明", "AI\\s*制作证明", "AI.*证明"]),

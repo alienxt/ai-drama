@@ -76,6 +76,7 @@ from aidrama_desktop.contracts import (
     should_normalize_contract_for_rendering,
 )
 from aidrama_desktop.gui.state import AppStatus, SettingsRow, desktop_nav_items, settings_rows, update_settings
+from aidrama_desktop.jianying import JianyingProjectGenerator
 from aidrama_desktop.local_agent import create_local_agent_server
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.storyboard import StoryboardGenerator
@@ -1433,6 +1434,7 @@ class DesktopWindow(QMainWindow):
             video_reassembly_config=self.video_reassembly_config,
             storyboard_generator=StoryboardGenerator(self.settings.ffmpeg_path, chrome_path),
             storyboards_dir=self.settings.work_dir / "storyboards",
+            jianying_generator=JianyingProjectGenerator(ffmpeg_path=self.settings.ffmpeg_path),
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):

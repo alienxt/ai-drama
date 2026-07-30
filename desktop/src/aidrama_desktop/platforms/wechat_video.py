@@ -923,6 +923,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             "buyDramaContractImages",
             "purchaseContractImages",
             "storyboardImages",
+            "jianyingProjectScreenshots",
         )
         if purchase_images:
             self._set_file_input_near_text(
@@ -1003,6 +1004,7 @@ class WeChatVideoPublisher(PlatformPublisher):
                 "buyDramaContractImages",
                 "purchaseContractImages",
                 "storyboardImages",
+                "jianyingProjectScreenshots",
                 "aiProductionProofImage",
                 "aiProductionProofImages",
                 "rightsStatementImages",

@@ -443,19 +443,12 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
     source_1.write_text("video-1")
     source_2.write_text("video-2")
     commands = []
-    concat_files = []
 
     def fake_run(command, check=False, capture_output=False, text=False):
         if command[0] == "ffprobe":
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
         commands.append(command)
-        if "-f" in command and command[command.index("-f") + 1] == "concat":
-            concat_path = Path(command[command.index("-i") + 1])
-            concat_files.append(concat_path)
-            content = concat_path.read_text(encoding="utf-8")
-            assert "source-001.mp4" in content
-            assert "inpoint 1" in content
-            assert "outpoint 61" in content
+        if Path(command[-1]).name == "timeline.mp4":
             Path(command[-1]).write_text("timeline")
         else:
             Path(command[-1]).write_text("segment")
@@ -480,17 +473,25 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
 
     assert result == [first_segment, second_segment]
     timeline_command = commands[0]
-    assert timeline_command[:7] == ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i"]
+    assert timeline_command[:2] == ["ffmpeg", "-y"]
+    assert timeline_command.count("-i") == 2
     assert Path(timeline_command[-1]).name == "timeline.mp4"
-    assert timeline_command[timeline_command.index("-vf") + 1] == "setpts=PTS/1.02"
-    assert timeline_command[timeline_command.index("-af") + 1] == "atempo=1.02"
+    filter_complex = timeline_command[timeline_command.index("-filter_complex") + 1]
+    assert "[0:v]setpts=PTS-STARTPTS,trim=start=1:duration=60,setpts=(PTS-STARTPTS)/1.02" in filter_complex
+    assert "setsar=1,fps=30,format=yuv420p[v0]" in filter_complex
+    assert "[0:a]asetpts=PTS-STARTPTS,atrim=start=1:duration=60,asetpts=PTS-STARTPTS" in filter_complex
+    assert "aresample=async=1:first_pts=0" in filter_complex
+    assert "aformat=sample_rates=48000:channel_layouts=stereo,atempo=1.02" in filter_complex
+    assert "apad,atrim=duration=58.824,asetpts=PTS-STARTPTS[a0]" in filter_complex
+    assert "concat=n=2:v=1:a=1[outv][outa]" in filter_complex
+    assert timeline_command[timeline_command.index("-map") + 1] == "[outv]"
+    assert timeline_command[timeline_command.index("-map", timeline_command.index("-map") + 1) + 1] == "[outa]"
     assert commands[1][commands[1].index("-ss") + 1] == "0"
     assert Path(commands[1][-1]).name == "segment-001.mp4"
     assert commands[2][commands[2].index("-ss") + 1] == "50"
     assert commands[2][commands[2].index("-t") + 1] == "67.647"
     assert first_segment.read_text() == "segment"
     assert second_segment.read_text() == "segment"
-    assert not concat_files[0].exists()
 
 
 def test_ffmpeg_processor_reassembly_retries_without_audio_on_bad_aac(monkeypatch, tmp_path):
@@ -506,7 +507,7 @@ def test_ffmpeg_processor_reassembly_retries_without_audio_on_bad_aac(monkeypatc
         if command[0] == "ffprobe":
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
         commands.append(command)
-        if "-f" in command and command[command.index("-f") + 1] == "concat":
+        if Path(command[-1]).name == "timeline.mp4":
             timeline_attempts += 1
             if timeline_attempts == 1:
                 Path(command[-1]).write_text("partial")
@@ -534,13 +535,13 @@ def test_ffmpeg_processor_reassembly_retries_without_audio_on_bad_aac(monkeypatc
     timeline_commands = [
         command
         for command in commands
-        if "-f" in command and command[command.index("-f") + 1] == "concat"
+        if Path(command[-1]).name == "timeline.mp4"
     ]
     assert result == [segment]
     assert len(timeline_commands) == 2
-    assert "-af" in timeline_commands[0]
+    assert "[outa]" in timeline_commands[0][timeline_commands[0].index("-filter_complex") + 1]
     assert "-an" in timeline_commands[1]
-    assert "-af" not in timeline_commands[1]
+    assert "[outa]" not in timeline_commands[1][timeline_commands[1].index("-filter_complex") + 1]
     assert segment.read_text() == "segment"
 
 
@@ -577,11 +578,12 @@ def test_ffmpeg_processor_reassembly_swaps_orientation_with_black_padding(monkey
     )
 
     timeline_command = commands[0]
-    assert timeline_command[timeline_command.index("-vf") + 1] == (
+    filter_complex = timeline_command[timeline_command.index("-filter_complex") + 1]
+    assert (
         "scale=1280:720:force_original_aspect_ratio=decrease,"
         "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
-        "setsar=1,format=yuv420p"
-    )
+        "setsar=1,fps=30,format=yuv420p"
+    ) in filter_complex
 
 
 def test_ffmpeg_processor_reassembly_segments_include_cover_frame(monkeypatch, tmp_path):

@@ -9,6 +9,8 @@
 | AI Drama Desktop | 客户端程序 | 由管理员提供 `.exe` 安装包 | 双击安装 |
 | Google Chrome | 登录媒体号、自动打开发布页面、上传视频 | https://www.google.com/chrome/ | 默认安装 |
 | FFmpeg | 视频转码、提高码率、添加封面帧 | https://ffmpeg.org/download.html | 下载 Windows 预编译包后解压 |
+| Node.js | 运行剪映工程截图生成工具 | https://nodejs.org/ | 默认安装 |
+| 剪映专业版 | 生成剧目制作证明用剪映工程截图 | 官方剪映专业版安装包 | 安装 5.9 或兼容版本 |
 | LibreOffice | 将合同 Word `.docx` 转为 PDF | https://www.libreoffice.org/download/ | 默认安装 |
 | Poppler | 将合同 PDF 转为 PNG 图片 | https://github.com/oschwartz10612/poppler-windows/releases | 下载 zip 后解压 |
 
@@ -279,6 +281,7 @@ setx AIDRAMA_TOKEN_FILE "D:\ai-drama\ai-drama-desktop\config\token"
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --version
 C:\Tools\ffmpeg\bin\ffmpeg.exe -version
 C:\Tools\ffmpeg\bin\ffprobe.exe -version
+node -v
 & "C:\Program Files\LibreOffice\program\soffice.exe" --version
 C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 ```

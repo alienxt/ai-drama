@@ -8,8 +8,10 @@ import sys
 
 
 project_root = Path.cwd()
+repo_root = project_root.parent
 src_root = project_root / "src"
 assets_dir = src_root / "aidrama_desktop" / "assets"
+jianying_tool = repo_root / "scripts" / "jianying" / "create-jianying-project.js"
 icon_path = assets_dir / ("app-icon.ico" if sys.platform.startswith("win") else "app-icon.icns")
 init_text = (src_root / "aidrama_desktop" / "__init__.py").read_text(encoding="utf-8")
 version_match = re.search(r'__version__ = "([^"]+)"', init_text)
@@ -20,7 +22,10 @@ a = Analysis(
     [str(src_root / "aidrama_desktop" / "gui" / "app.py")],
     pathex=[str(src_root)],
     binaries=[],
-    datas=[(str(assets_dir), "aidrama_desktop/assets")],
+    datas=[
+        (str(assets_dir), "aidrama_desktop/assets"),
+        (str(jianying_tool), "aidrama_desktop/tools/jianying"),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -215,6 +215,35 @@ class FakeStoryboardGenerator:
         return images
 
 
+class FakeJianyingGenerator:
+    def __init__(self):
+        self.calls = []
+
+    def generate_project_screenshot(
+        self,
+        *,
+        video,
+        draft_name,
+        output_dir,
+        screenshot_path,
+        srt=None,
+        bgm_files=None,
+    ):
+        self.calls.append(
+            {
+                "video": video,
+                "draft_name": draft_name,
+                "output_dir": output_dir,
+                "screenshot_path": screenshot_path,
+                "srt": srt,
+                "bgm_files": bgm_files,
+            }
+        )
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_path.write_bytes(b"png")
+        return type("Result", (), {"screenshot_path": screenshot_path})()
+
+
 class FailingPublisher:
     def publish(self, media_files, title, summary=None, metadata=None):
         raise RuntimeError("upload failed")
@@ -475,6 +504,86 @@ def test_publish_once_generates_storyboard_images_for_contract_upload(tmp_path, 
     assert publisher.metadata["aiProductionProofImage"] == proof_image
     assert ("生成分镜图：神医归来 #2集", "task-1") in progress_events
     assert ("分镜图已生成：神医归来 #2集（2 张，AI制作证明 1 张）", "task-1") in progress_events
+
+
+def test_publish_once_skips_disabled_jianying_project_screenshots(tmp_path, monkeypatch):
+    class StoryboardApi(FakeApi):
+        def get(self, path):
+            self.calls.append(("GET", path, None))
+            if path == "/desktop/storyboard-config":
+                return {
+                    "enabled": True,
+                    "deepseekApiKey": "configured-key",
+                    "targetShots": 15,
+                }
+            if path == "/desktop/media-accounts":
+                return [{"id": "media-1", "displayName": "用户1161", "externalAccountId": "wx-1"}]
+            return {
+                "dramaId": "drama-1",
+                "title": "神医归来",
+                "summary": "简介",
+                "aiSummary": "AI简介...",
+                "totalMinutes": 50,
+                "costAmountWan": 3,
+                "episodes": [
+                    {"episodeNo": index, "downloadUrl": f"/files/{index}.mp4"}
+                    for index in range(1, 6)
+                ],
+            }
+
+    class FakeRandom:
+        def choice(self, population):
+            return list(population)[0]
+
+        def sample(self, population, count):
+            return list(population)[1 : 1 + count]
+
+    def fake_download(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=None,
+        progress_callback=None,
+        should_stop=None,
+        should_pause=None,
+        should_skip=None,
+        max_concurrent_downloads=6,
+    ):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(episode["downloadUrl"])
+            files.append(target)
+        return files
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.random.SystemRandom", lambda: FakeRandom())
+
+    api = StoryboardApi()
+    publisher = FakePublisher()
+    storyboard_generator = FakeStoryboardGenerator()
+    jianying_generator = FakeJianyingGenerator()
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        contracts_dir=tmp_path / "contracts",
+        storyboard_generator=storyboard_generator,
+        storyboards_dir=tmp_path / "storyboards",
+        jianying_generator=jianying_generator,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert len(storyboard_generator.calls) == 1
+    assert jianying_generator.calls == []
+    assert "jianyingProjectScreenshots" not in publisher.metadata
+    assert all("剪映工程图" not in stage for stage, _task_id in progress_events)
 
 
 def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
