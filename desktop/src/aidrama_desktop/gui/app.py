@@ -3704,6 +3704,12 @@ class DesktopWindow(QMainWindow):
         if result == "no-task":
             self.update_task_progress("空闲，等待下一轮", None)
         elif result == "failed":
+            message = self.current_task_error_message()
+            if message and self.is_auto_stop_error(message):
+                self.stop_auto_task_for_error(message)
+                self.show_auto_error_once("自动执行", message)
+                self.update_task_control_buttons()
+                return
             self.update_task_progress("任务失败，等待下一轮", self.current_task_id)
         elif result == "cancelled":
             self.task_cancel_event.clear()
@@ -3723,17 +3729,20 @@ class DesktopWindow(QMainWindow):
         self.auto_task_busy = False
         message = self.clean_error_message(error)
         self.set_task_error_message(message)
-        if self.is_daily_publish_limit_error(message):
-            if self.auto_task_enabled:
-                self.auto_task_enabled = False
-                self.auto_task_timer.stop()
-                if hasattr(self, "auto_task_button"):
-                    self.auto_task_button.setText("启动自动执行")
-            self.update_task_progress(f"自动执行已停止：{message}", None)
+        if self.is_auto_stop_error(message):
+            self.stop_auto_task_for_error(message)
             self.show_auto_error_once("自动执行", message)
             return
         self.update_task_progress(f"任务失败：{message}", self.current_task_id)
         self.show_auto_error_once("自动执行", message)
+
+    def stop_auto_task_for_error(self, message: str) -> None:
+        if self.auto_task_enabled:
+            self.auto_task_enabled = False
+            self.auto_task_timer.stop()
+            if hasattr(self, "auto_task_button"):
+                self.auto_task_button.setText("启动自动执行")
+        self.update_task_progress(f"自动执行已停止：{message}", None)
 
     def run_scheduled_upload_cache_cleanup(self) -> None:
         now = datetime.now(CHINA_TIMEZONE)
@@ -3806,6 +3815,13 @@ class DesktopWindow(QMainWindow):
         self.cleanup_data_button.setText("清理中..." if busy else "清理数据")
 
     @staticmethod
+    def is_auto_stop_error(message: str) -> bool:
+        return (
+            DesktopWindow.is_daily_publish_limit_error(message)
+            or DesktopWindow.is_disk_space_error(message)
+        )
+
+    @staticmethod
     def is_daily_publish_limit_error(message: str) -> bool:
         return (
             "今日发布次数已达" in message
@@ -3814,6 +3830,11 @@ class DesktopWindow(QMainWindow):
             or "明天再发布" in message
             or "明天再执行" in message
         )
+
+    @staticmethod
+    def is_disk_space_error(message: str) -> bool:
+        normalized = message.lower()
+        return "no space left on device" in normalized or "磁盘空间不足" in message
 
     def set_task_error_message(self, message: str) -> None:
         if hasattr(self, "task_error_label"):

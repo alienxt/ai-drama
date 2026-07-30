@@ -1190,3 +1190,89 @@ def test_auto_daily_limit_error_stops_auto_and_shows_once(monkeypatch):
     assert window.current_task_label.text() == "当前任务：-"
     assert window.task_stage_label.text() == "当前阶段：自动执行已停止：今日领取任务次数已达 20 次，请明天再执行。"
     assert window.task_error_label.text() == "最近错误：今日领取任务次数已达 20 次，请明天再执行。"
+
+
+def test_auto_disk_space_exception_stops_auto_and_shows_once(monkeypatch):
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    stopped = []
+    warnings = []
+    window.current_task_id = "task-1"
+    window.current_media_account_id = None
+    window.current_media_account_snapshot = None
+    window.current_drama_title = None
+    window.manual_publish_busy = False
+    window.auto_task_busy = True
+    window.auto_task_enabled = True
+    window.task_paused = False
+    window.task_cancel_event = threading.Event()
+    window.task_pause_event = threading.Event()
+    window.task_skip_event = threading.Event()
+    window.auto_task_timer = SimpleNamespace(stop=lambda: stopped.append(True))
+    window.auto_task_button = QPushButton()
+    window.pause_task_button = QPushButton()
+    window.skip_task_button = QPushButton()
+    window.auto_task_state = QLabel()
+    window.current_task_label = QLabel()
+    window.current_drama_label = QLabel()
+    window.current_media_account_label = QLabel()
+    window.task_stage_label = QLabel()
+    window.task_error_label = QLabel("最近错误：-")
+    window.media_accounts = []
+    window.last_auto_error_popup_message = None
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+
+    error = "OSError: [Errno 28] No space left on device"
+
+    DesktopWindow.handle_auto_task_failed(window, error)
+    DesktopWindow.handle_auto_task_failed(window, error)
+
+    assert window.auto_task_enabled is False
+    assert window.auto_task_busy is False
+    assert stopped == [True]
+    assert len(warnings) == 1
+    assert window.auto_task_button.text() == "启动自动执行"
+    assert window.current_task_label.text() == "当前任务：-"
+    assert window.task_stage_label.text() == "当前阶段：自动执行已停止：[Errno 28] No space left on device"
+    assert window.task_error_label.text() == "最近错误：[Errno 28] No space left on device"
+
+
+def test_auto_failed_task_disk_space_message_stops_auto(monkeypatch):
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    stopped = []
+    warnings = []
+    window.current_task_id = "task-1"
+    window.current_media_account_id = None
+    window.current_media_account_snapshot = None
+    window.current_drama_title = None
+    window.manual_publish_busy = False
+    window.auto_task_busy = True
+    window.auto_task_enabled = True
+    window.task_paused = False
+    window.task_cancel_event = threading.Event()
+    window.task_pause_event = threading.Event()
+    window.task_skip_event = threading.Event()
+    window.auto_task_timer = SimpleNamespace(stop=lambda: stopped.append(True))
+    window.auto_task_button = QPushButton()
+    window.pause_task_button = QPushButton()
+    window.skip_task_button = QPushButton()
+    window.auto_task_state = QLabel()
+    window.current_task_label = QLabel()
+    window.current_drama_label = QLabel()
+    window.current_media_account_label = QLabel()
+    window.task_stage_label = QLabel()
+    window.task_error_label = QLabel("最近错误：磁盘空间不足。")
+    window.media_accounts = []
+    window.last_auto_error_popup_message = "old"
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+
+    DesktopWindow.handle_auto_task_done(window, "failed")
+
+    assert window.auto_task_enabled is False
+    assert window.auto_task_busy is False
+    assert stopped == [True]
+    assert len(warnings) == 1
+    assert window.auto_task_button.text() == "启动自动执行"
+    assert window.current_task_label.text() == "当前任务：-"
+    assert window.task_stage_label.text() == "当前阶段：自动执行已停止：磁盘空间不足。"
