@@ -35,6 +35,7 @@ from aidrama_desktop.storyboard import (
     ai_production_proof_path,
     infer_storyboard_style,
 )
+from aidrama_desktop.subtitles import WhisperSrtGenerationError, WhisperSrtGenerator
 from aidrama_desktop.tasks.cache_cleanup import mark_upload_success
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
@@ -76,10 +77,11 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-usable-home-window-v6"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-whisper-subtitles-v7"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_MUSIC_DIR_ENV_KEY = "AIDRAMA_JIANYING_MUSIC_DIR"
 JIANYING_PROJECT_MUSIC_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
+JIANYING_PROJECT_SUBTITLE_DIRNAME = "subtitles"
 MATERIAL_METADATA_STRING_KEYS = ("jianyingProjectCaptureVersion",)
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
@@ -748,12 +750,21 @@ class TaskRunner:
             episode_name = safe_contract_filename(f"{position:02d}-{episode_label}")
             episode_output_dir = output_dir / episode_name
             screenshot_path = output_dir / f"剪映工程图-{episode_name}.png"
+            srt_path = self._jianying_project_srt_for_item(item)
+            if srt_path is None:
+                srt_path = self._generate_jianying_project_srt_for_item(
+                    item,
+                    episode_output_dir,
+                    task_id,
+                    drama_title,
+                    episode_label,
+                )
             result = generator.generate_project_screenshot(
                 video=item.file,
                 draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑工程"),
                 output_dir=episode_output_dir,
                 screenshot_path=screenshot_path,
-                srt=self._jianying_project_srt_for_item(item),
+                srt=srt_path,
                 bgm_files=self._jianying_project_bgm_files_for_item(item),
             )
             screenshot = Path(getattr(result, "screenshot_path", screenshot_path))
@@ -834,6 +845,32 @@ class TaskRunner:
             if candidate.exists() and candidate.is_file():
                 return candidate
         return None
+
+    def _generate_jianying_project_srt_for_item(
+        self,
+        item: EpisodeMediaFile,
+        episode_output_dir: Path,
+        task_id: str,
+        drama_title: str,
+        episode_label: str,
+    ) -> Path | None:
+        target = (
+            episode_output_dir
+            / JIANYING_PROJECT_SUBTITLE_DIRNAME
+            / f"{safe_contract_filename(episode_label)}_中文字幕.srt"
+        )
+        try:
+            self._notify(f"识别剪映字幕：{drama_title} {episode_label}", task_id)
+            result = WhisperSrtGenerator().generate_srt(item.file, target)
+        except WhisperSrtGenerationError as exception:
+            self._notify(
+                f"剪映字幕识别跳过：{drama_title} {episode_label}（{exception}）",
+                task_id,
+            )
+            return None
+        action = "已生成" if result.created else "复用"
+        self._notify(f"剪映字幕{action}：{drama_title} {episode_label}", task_id)
+        return result.srt_path
 
     @staticmethod
     def _jianying_project_bgm_files_for_item(item: EpisodeMediaFile) -> list[Path]:

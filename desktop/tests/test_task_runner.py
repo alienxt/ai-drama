@@ -560,6 +560,19 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
     monkeypatch.setattr("aidrama_desktop.tasks.runner.random.SystemRandom", lambda: FakeRandom())
 
+    class FakeWhisperSrtGenerator:
+        def __init__(self):
+            self.calls = []
+
+        def generate_srt(self, video, target):
+            self.calls.append({"video": video, "target": target})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n")
+            return type("Result", (), {"srt_path": target, "created": True})()
+
+    whisper_generator = FakeWhisperSrtGenerator()
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.WhisperSrtGenerator", lambda: whisper_generator)
+
     api = StoryboardApi()
     publisher = FakePublisher()
     storyboard_generator = FakeStoryboardGenerator()
@@ -582,6 +595,7 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
 
     assert len(storyboard_generator.calls) == 1
     assert len(jianying_generator.calls) == 4
+    assert len(whisper_generator.calls) == 4
     screenshots = [
         tmp_path
         / "contracts"
@@ -592,6 +606,10 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
         for index, episode in enumerate(range(2, 6), start=1)
     ]
     assert publisher.metadata["jianyingProjectScreenshots"] == screenshots
+    for call in jianying_generator.calls:
+        assert call["srt"] is not None
+        assert call["srt"].name.endswith("_中文字幕.srt")
+        assert call["srt"].parent.name == "subtitles"
     for screenshot in screenshots:
         assert screenshot in publisher.metadata["buyDramaContractImages"]
     assert ("生成剪映工程图：神医归来（随机 4 集）", "task-1") in progress_events
