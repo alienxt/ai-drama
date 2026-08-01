@@ -30,17 +30,19 @@ const AUDIO_DISPLAY_STEMS = [
 ];
 
 const VIDEO_TRACK_NAMES = [
-  'V1 正片画面+原声',
+  'V1 正片画面',
 ];
 
 const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
 ];
 
-const AUDIO_TRACK_NAMES = [
-  'A1 背景音乐',
-  'A2 环境氛围',
-  'A3 转场音效',
+const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
+
+const BGM_AUDIO_TRACK_NAMES = [
+  'A2 背景音乐',
+  'A3 环境氛围',
+  'A4 转场音效',
 ];
 
 const HELP = `
@@ -361,6 +363,22 @@ function splitVideo({ source, outputDir, ranges, ffmpegBin }) {
     ], { stdio: 'ignore' });
     return { ...range, fileName, output };
   });
+}
+
+function extractDialogueAudio({ source, outputDir, ffmpegBin }) {
+  const baseName = sanitizeName(path.basename(source, path.extname(source)));
+  const fileName = `${baseName}-原声对白.wav`;
+  const output = path.join(outputDir, fileName);
+  execFileSync(ffmpegBin, [
+    '-y',
+    '-i', source,
+    '-vn',
+    '-ac', '2',
+    '-ar', '48000',
+    '-c:a', 'pcm_s16le',
+    output,
+  ], { stdio: 'ignore' });
+  return { fileName, output };
 }
 
 function defaultClip(scale = 1.0, x = 0.0, y = 0.0) {
@@ -1549,6 +1567,7 @@ function createProject(args) {
   if (!videoInfo.width || !videoInfo.height || !videoInfo.durationUs) fail(`Video has no readable video stream: ${video}`);
   const rng = createRng(`${draftName}|${video}|${videoInfo.durationUs}|${videoInfo.width}x${videoInfo.height}`);
   const captions = parseSrt(srt, videoInfo.durationUs);
+  const useSeparateDialogueAudio = videoInfo.hasAudio && captions.length > 0;
   const draftInfoFile = path.join(draftDir, 'draft_info.json');
   const draft = readJson(draftInfoFile);
   const baseVideo = clone(draft.materials?.videos?.[0]);
@@ -1573,6 +1592,15 @@ function createProject(args) {
   const splitClips = splitVideo({ source: video, outputDir: resourceMediaDir, ranges, ffmpegBin });
   const videoMaterials = [];
   const videoMetas = [];
+  const videoExtraRefKeys = useSeparateDialogueAudio
+    ? ['speeds', 'canvases']
+    : [
+      'speeds',
+      'canvases',
+      'sound_channel_mappings',
+      'loudnesses',
+      'vocal_separations',
+    ];
   let speedEditCount = 0;
   const videoSegments = splitClips.map((clip, index) => {
     const materialId = uuid();
@@ -1584,7 +1612,7 @@ function createProject(args) {
     const videoMaterial = {
       ...baseVideo,
       duration: clipInfo.durationUs || durationUs,
-      has_audio: videoInfo.hasAudio,
+      has_audio: videoInfo.hasAudio && !useSeparateDialogueAudio,
       height: videoInfo.height,
       id: materialId,
       local_material_id: materialLocalId,
@@ -1602,13 +1630,7 @@ function createProject(args) {
       size: fs.statSync(clip.output).size,
       width: videoInfo.width,
     });
-    const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
-      'speeds',
-      'canvases',
-      'sound_channel_mappings',
-      'loudnesses',
-      'vocal_separations',
-    ], (key, material) => {
+    const extraRefs = makeExtraRefs(draft.materials, baseExtras, videoExtraRefKeys, (key, material) => {
       if (key === 'speeds') {
         material.speed = speed;
         material.mode = 0;
@@ -1623,8 +1645,51 @@ function createProject(args) {
 
   const bgmVolume = Number(args.bgmVolume ?? DEFAULTS.bgmVolume);
   const audioMaterials = [];
+  const bgmAudioMaterials = [];
   const audioMetas = [];
   const audioInfos = [];
+  let dialogueAudioTrack = null;
+  if (useSeparateDialogueAudio) {
+    const dialogueAudio = extractDialogueAudio({ source: video, outputDir: resourceAudioDir, ffmpegBin });
+    const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
+    const materialId = uuid();
+    const materialLocalId = localId();
+    const dialogueMaterial = makeAudioMaterial({
+      id: materialId,
+      localMaterialId: materialLocalId,
+      fileName: dialogueAudio.fileName,
+      durationUs: dialogueInfo.durationUs || videoInfo.durationUs,
+      filePath: dialogueAudio.output,
+    });
+    audioMaterials.push(dialogueMaterial);
+    audioMetas.push({
+      durationUs: dialogueMaterial.duration,
+      localMaterialId: materialLocalId,
+      name: dialogueAudio.fileName,
+      size: fs.statSync(dialogueAudio.output).size,
+    });
+    dialogueAudioTrack = {
+      name: DIALOGUE_AUDIO_TRACK_NAME,
+      segments: captions.map((caption) => {
+        const duration = Math.min(caption.duration, Math.max(0, dialogueMaterial.duration - caption.start));
+        if (duration <= 0) return null;
+        const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
+          'speeds',
+          'sound_channel_mappings',
+          'loudnesses',
+          'vocal_separations',
+        ]);
+        return makeAudioSegment(
+          dialogueMaterial.id,
+          caption.start,
+          caption.start,
+          duration,
+          extraRefs,
+          1.0,
+        );
+      }).filter(Boolean),
+    };
+  }
   bgmFiles.forEach((file, index) => {
     const info = mediaInfo(file, ffprobeBin);
     audioInfos.push(info);
@@ -1633,13 +1698,15 @@ function createProject(args) {
     fs.copyFileSync(file, audioPath);
     const materialId = uuid();
     const materialLocalId = localId();
-    audioMaterials.push(makeAudioMaterial({
+    const audioMaterial = makeAudioMaterial({
       id: materialId,
       localMaterialId: materialLocalId,
       fileName: audioName,
       durationUs: info.durationUs,
       filePath: audioPath,
-    }));
+    });
+    audioMaterials.push(audioMaterial);
+    bgmAudioMaterials.push(audioMaterial);
     audioMetas.push({
       durationUs: info.durationUs,
       localMaterialId: materialLocalId,
@@ -1650,7 +1717,7 @@ function createProject(args) {
   const audioPlans = makeAudioPlan({ bgmFiles, audioInfos, totalUs: videoInfo.durationUs, rng });
   const audioTracks = audioPlans
     .map((plans, trackIndex) => ({
-      name: AUDIO_TRACK_NAMES[trackIndex] || `A${trackIndex + 1} 情绪配乐`,
+      name: BGM_AUDIO_TRACK_NAMES[trackIndex] || `A${trackIndex + 2} 情绪配乐`,
       segments: plans.map((plan, index) => {
         const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
           'speeds',
@@ -1659,7 +1726,7 @@ function createProject(args) {
           'vocal_separations',
         ]);
         return makeAudioSegment(
-          audioMaterials[plan.audioIndex].id,
+          bgmAudioMaterials[plan.audioIndex].id,
           plan.sourceStart,
           plan.start,
           plan.duration,
@@ -1693,6 +1760,10 @@ function createProject(args) {
     count: 1,
   });
   const auxTracks = [];
+  const allAudioTracks = [
+    ...(dialogueAudioTrack?.segments.length ? [dialogueAudioTrack] : []),
+    ...audioTracks,
+  ];
 
   draft.id = draftId;
   draft.name = draftName;
@@ -1706,7 +1777,7 @@ function createProject(args) {
   videoTracks.forEach((track, index) => {
     draftTracks.push(makeTrack('video', assignTrackRenderIndex(track.segments, index), track.name));
   });
-  audioTracks.forEach((track, index) => {
+  allAudioTracks.forEach((track, index) => {
     draftTracks.push(makeTrack('audio', assignTrackRenderIndex(track.segments, index), track.name));
   });
   let textTrackRenderIndex = 0;
@@ -1776,11 +1847,13 @@ function createProject(args) {
     tracks: {
       video_segments: videoSegments.length,
       video_tracks: videoTracks.length,
-      audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      audio_segments: allAudioTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      dialogue_audio_segments: dialogueAudioTrack?.segments.length || 0,
+      background_audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       text_segments: textSegments.length,
       subtitle_text_tracks: subtitleTracks.length,
       auxiliary_text_segments: auxTracks.reduce((sum, track) => sum + track.segments.length, 0),
-      audio_tracks: audioTracks.length,
+      audio_tracks: allAudioTracks.length,
       auxiliary_text_tracks: auxTracks.length,
       total_tracks: draft.tracks.length,
     },
