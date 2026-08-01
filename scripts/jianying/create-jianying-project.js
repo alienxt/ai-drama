@@ -952,8 +952,13 @@ function macNormalizeJianyingWindow(appPath) {
   const processName = macBringJianyingToFront(appPath);
   if (!processName) return false;
   const [x, y, w, h] = macVisibleTopLeftBounds();
-  try {
-    osascript(`
+  const minW = Math.min(1100, Math.max(640, Math.round(w * 0.8)));
+  const minH = Math.min(700, Math.max(480, Math.round(h * 0.75)));
+  const windowLooksLargeEnough = () => {
+    const bounds = macWindowBoundsViaCoreGraphics(appPath);
+    return Boolean(bounds && bounds[2] >= minW && bounds[3] >= minH);
+  };
+  const setWindowToVisibleFrame = () => osascript(`
 tell application "System Events"
   tell process ${appleScriptString(processName)}
     set position of window 1 to {${Math.round(x)}, ${Math.round(y)}}
@@ -961,8 +966,25 @@ tell application "System Events"
   end tell
 end tell
 `);
+  const clickZoomButton = () => osascript(`
+tell application "System Events"
+  tell process ${appleScriptString(processName)}
+    if not (exists window 1) then error "window missing"
+    set zoomButtons to every button of window 1 whose subrole is "AXZoomButton"
+    if (count of zoomButtons) is 0 then error "zoom button missing"
+    click item 1 of zoomButtons
+  end tell
+end tell
+`);
+  try {
+    setWindowToVisibleFrame();
     sleep(0.5);
-    return true;
+    if (windowLooksLargeEnough()) return true;
+    clickZoomButton();
+    sleep(0.8);
+    setWindowToVisibleFrame();
+    sleep(0.5);
+    return windowLooksLargeEnough();
   } catch {
     return false;
   }
@@ -1043,12 +1065,57 @@ function macWaitForEditor(appPath, timeoutSeconds = 14) {
   return false;
 }
 
+function macDismissJianyingStartupDialogs(appPath, timeoutSeconds = 8) {
+  if (process.platform !== 'darwin') return true;
+  const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000;
+  while (Date.now() < deadline) {
+    let sawProcess = false;
+    let closedDialog = false;
+    for (const processName of macJianyingProcessNames(appPath)) {
+      try {
+        const result = osascript(`
+tell application "System Events"
+  tell process ${appleScriptString(processName)}
+    if not (exists window 1) then return "WAIT"
+    set didClose to false
+    repeat with currentWindow in windows
+      set windowName to ""
+      try
+        set windowName to name of currentWindow as text
+      end try
+      if windowName contains "版本更新" or windowName contains "Update" then
+        try
+          click button 1 of currentWindow
+          set didClose to true
+        end try
+      end if
+    end repeat
+    if didClose then return "CLOSED"
+    return "READY"
+  end tell
+end tell
+`);
+        sawProcess = true;
+        if (result === 'CLOSED') {
+          closedDialog = true;
+          break;
+        }
+        if (result === 'READY') return true;
+      } catch {
+        // Try the next known process name.
+      }
+    }
+    sleep(closedDialog || !sawProcess ? 0.8 : 0.4);
+  }
+  return false;
+}
+
 function macClickDraftTitle(appPath, draftName) {
   if (!draftName) return false;
   const targetName = `HomePageDraftTitle:${draftName}`;
   for (const processName of macJianyingProcessNames(appPath)) {
     try {
-      osascript(`
+      const boundsText = osascript(`
 set targetName to ${appleScriptString(targetName)}
 set fallbackName to ${appleScriptString(draftName)}
 tell application "System Events"
@@ -1057,11 +1124,30 @@ tell application "System Events"
     set matches to every UI element of window 1 whose name is targetName
     if (count of matches) is 0 then set matches to every UI element of window 1 whose name contains fallbackName
     if (count of matches) is 0 then error "draft card not found"
-    click item 1 of matches
+    set e to item 1 of matches
+    set p to position of e
+    set s to size of e
+    return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
   end tell
 end tell
 `);
-      return true;
+      const [titleX, titleY, titleW, titleH] = boundsText.split(',').map(Number);
+      if ([titleX, titleY, titleW, titleH].some((value) => !Number.isFinite(value))) {
+        throw new Error(`invalid draft title bounds: ${boundsText}`);
+      }
+      const titleCenterX = Math.round(titleX + titleW / 2);
+      const titleCenterY = Math.round(titleY + titleH / 2);
+      const cardClickPoints = [
+        [titleCenterX, Math.max(0, Math.round(titleY - 65))],
+        [titleCenterX, Math.max(0, Math.round(titleY - 85))],
+        [titleCenterX, titleCenterY],
+      ];
+      for (const [clickX, clickY] of cardClickPoints) {
+        macMouseClick(clickX, clickY, 2);
+        sleep(1.2);
+        if (macWaitForEditor(appPath, 3)) return true;
+      }
+      return false;
     } catch {
       // Try the next known process name.
     }
@@ -1087,6 +1173,7 @@ function openJianying(appPath) {
   if (process.platform === 'darwin') {
     execFileSync('open', [appPath], { stdio: 'ignore' });
     activateJianying(appPath);
+    macDismissJianyingStartupDialogs(appPath);
     return true;
   }
   if (process.platform === 'win32') {
@@ -1220,7 +1307,10 @@ if ${count} > 1 {
 function openFirstDraftCard(appPath, draftName = '') {
   if (process.platform === 'darwin') {
     activateJianying(appPath);
-    macNormalizeJianyingWindow(appPath);
+    macDismissJianyingStartupDialogs(appPath);
+    if (!macNormalizeJianyingWindow(appPath)) {
+      fail('Jianying window could not be enlarged; refusing blind coordinate clicks. Please grant Accessibility permission and keep the screen available during capture.');
+    }
     const [x, y, w, h] = macFrontWindowBounds(appPath);
     if (!macClickStaticText(appPath, '首页')) {
       macMouseClick(
@@ -1231,6 +1321,9 @@ function openFirstDraftCard(appPath, draftName = '') {
     sleep(2.5);
     if (macClickDraftTitle(appPath, draftName) && macWaitForEditor(appPath)) {
       return true;
+    }
+    if (draftName) {
+      fail(`Could not open Jianying draft by title: ${draftName}`);
     }
     const candidates = [
       [DEFAULTS.draftCardClickXRatio, DEFAULTS.draftCardClickYRatio],
