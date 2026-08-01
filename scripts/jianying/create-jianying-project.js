@@ -30,20 +30,17 @@ const AUDIO_DISPLAY_STEMS = [
 ];
 
 const VIDEO_TRACK_NAMES = [
-  'V1 正片画面',
-  'V2 补镜头重排',
-  'V3 转场校色层',
+  'V1 正片画面+原声',
 ];
 
 const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
-  'ST2 字幕校对补位',
 ];
 
 const AUDIO_TRACK_NAMES = [
-  'A1 轻音乐铺底',
-  'A2 情绪音效点',
-  'A3 反转氛围',
+  'A1 背景音乐',
+  'A2 环境氛围',
+  'A3 转场音效',
 ];
 
 const HELP = `
@@ -1688,12 +1685,12 @@ function createProject(args) {
   const videoTracks = namedSegmentTracks({
     segments: videoSegments,
     names: VIDEO_TRACK_NAMES,
-    count: videoSegments.length >= 12 ? 2 : 1,
+    count: 1,
   });
   const subtitleTracks = namedSegmentTracks({
     segments: textSegments,
     names: SUBTITLE_TRACK_NAMES,
-    count: textSegments.length >= 8 ? 2 : 1,
+    count: 1,
   });
   const auxTracks = [];
 
