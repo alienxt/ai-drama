@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import inspect
+import json
+import os
 import random
 import re
 import shutil
@@ -75,8 +76,10 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-card-cover-click-v4"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-random-music-clips-v5"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
+JIANYING_PROJECT_MUSIC_DIR_ENV_KEY = "AIDRAMA_JIANYING_MUSIC_DIR"
+JIANYING_PROJECT_MUSIC_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 MATERIAL_METADATA_STRING_KEYS = ("jianyingProjectCaptureVersion",)
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
@@ -834,22 +837,31 @@ class TaskRunner:
 
     @staticmethod
     def _jianying_project_bgm_files_for_item(item: EpisodeMediaFile) -> list[Path]:
+        shared_music_dir = Path(
+            os.environ.get(JIANYING_PROJECT_MUSIC_DIR_ENV_KEY)
+            or (Path.home() / "Desktop" / "短剧" / "音乐")
+        )
         directories = [
             item.file.parent / "audio",
             item.file.parent.parent / "audio",
             item.file.parent / "bgm",
             item.file.parent.parent / "bgm",
+            shared_music_dir,
         ]
         files: list[Path] = []
         for directory in directories:
             if not directory.exists() or not directory.is_dir():
                 continue
             for candidate in sorted(directory.iterdir(), key=lambda path: path.name):
-                if candidate.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac"} and candidate.is_file():
+                if candidate.suffix.lower() in JIANYING_PROJECT_MUSIC_EXTENSIONS and candidate.is_file():
                     files.append(candidate)
             if files:
                 break
-        return files[:3]
+        if not files:
+            return []
+        rng = random.SystemRandom()
+        count = min(len(files), rng.choice((3, 4)))
+        return rng.sample(files, count)
 
     def _prepare_contract_materials(
         self,

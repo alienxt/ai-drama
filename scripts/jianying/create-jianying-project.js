@@ -553,18 +553,20 @@ function makeAuxiliaryTextTrack({
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
   if (!bgmFiles.length) return [[], []];
   const plans = [[], []];
-  const starts = [
-    0,
-    Math.round(totalUs * randomBetween(rng, 0.18, 0.32)),
-    Math.round(totalUs * randomBetween(rng, 0.42, 0.58)),
-    Math.round(totalUs * randomBetween(rng, 0.68, 0.82)),
-  ].filter((start) => start < totalUs - 500000);
-  starts.forEach((start, index) => {
-    const audioIndex = index % bgmFiles.length;
+  const segmentCount = totalUs >= 12000000
+    ? randomInt(rng, 3, 4)
+    : Math.max(1, Math.min(2, bgmFiles.length));
+  const slotDuration = totalUs / segmentCount;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const audioIndex = randomInt(rng, 0, bgmFiles.length - 1);
     const audioDuration = audioInfos[audioIndex].durationUs;
     const desired = Math.round(randomBetween(rng, 4800000, 11500000));
+    const slotStart = Math.round(slotDuration * index);
+    const slotEnd = Math.round(slotDuration * (index + 1));
+    const latestStart = Math.max(slotStart, Math.min(slotEnd - 800000, totalUs - 500000));
+    const start = Math.round(randomBetween(rng, slotStart, latestStart));
     const duration = Math.min(audioDuration, desired, totalUs - start);
-    if (duration <= 500000) return;
+    if (duration <= 500000) continue;
     const sourceStartMax = Math.max(0, audioDuration - duration);
     plans[index % 2].push({
       audioIndex,
@@ -572,7 +574,7 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
       sourceStart: Math.round(randomBetween(rng, 0, sourceStartMax)),
       start,
     });
-  });
+  }
   return plans;
 }
 
