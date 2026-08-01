@@ -31,6 +31,7 @@ const AUDIO_DISPLAY_STEMS = [
 
 const VIDEO_TRACK_NAMES = [
   'V1 正片画面',
+  'V2 补画面/转场层',
 ];
 
 const SUBTITLE_TRACK_NAMES = [
@@ -403,11 +404,11 @@ function makeTrack(type, segments, name = '') {
   };
 }
 
-function makeVideoSegment(baseSegment, materialId, targetRange, index, extraRefs, speed = 1.0) {
+function makeVideoSegment(baseSegment, materialId, targetRange, index, extraRefs, speed = 1.0, options = {}) {
   const segment = clone(baseSegment);
   segment.id = uuid();
   segment.material_id = materialId;
-  segment.source_timerange = { start: 0, duration: targetRange.duration };
+  segment.source_timerange = { start: options.sourceStart || 0, duration: targetRange.duration };
   segment.target_timerange = targetRange;
   delete segment.render_timerange;
   segment.render_index = index;
@@ -415,7 +416,7 @@ function makeVideoSegment(baseSegment, materialId, targetRange, index, extraRefs
   segment.extra_material_refs = extraRefs;
   segment.keyframe_refs = [];
   segment.common_keyframes = [];
-  segment.clip = defaultClip();
+  segment.clip = options.clip || defaultClip();
   segment.speed = speed;
   segment.uniform_scale = { on: true, value: 1.0 };
   segment.visible = true;
@@ -579,6 +580,63 @@ function namedSegmentTracks({ segments, names, count }) {
   }));
 }
 
+function makeOverlayVideoSegments({
+  baseSegment,
+  baseExtras,
+  draftMaterials,
+  rng,
+  sourceSegments,
+  totalUs,
+}) {
+  if (sourceSegments.length < 8 || totalUs < 12000000) return [];
+  const desiredCount = Math.min(randomInt(rng, 4, 7), Math.max(1, Math.floor(sourceSegments.length / 4)));
+  const candidateIndexes = [];
+  for (let index = 2; index < sourceSegments.length - 1; index += 1) {
+    if (index % 3 === 0 || index % 5 === 0) candidateIndexes.push(index);
+  }
+  const segments = [];
+  while (segments.length < desiredCount && candidateIndexes.length) {
+    const pickedOffset = randomInt(rng, 0, candidateIndexes.length - 1);
+    const [sourceIndex] = candidateIndexes.splice(pickedOffset, 1);
+    const source = sourceSegments[sourceIndex];
+    const maxDuration = Math.min(source.target_timerange.duration, Math.round(randomBetween(rng, 900000, 1800000)));
+    if (maxDuration <= 500000) continue;
+    const offsetMax = Math.max(0, source.target_timerange.duration - maxDuration);
+    const sourceOffset = Math.round(randomBetween(rng, 0, offsetMax));
+    const extraRefs = makeExtraRefs(draftMaterials, baseExtras, [
+      'speeds',
+      'canvases',
+    ], (key, material) => {
+      if (key === 'speeds') {
+        material.speed = 1.0;
+        material.mode = 0;
+        material.curve_speed = null;
+      }
+    });
+    const clip = defaultClip(
+      randomBetween(rng, 1.03, 1.08),
+      randomBetween(rng, -0.018, 0.018),
+      randomBetween(rng, -0.018, 0.018),
+    );
+    segments.push(makeVideoSegment(
+      baseSegment,
+      source.material_id,
+      {
+        start: source.target_timerange.start + sourceOffset,
+        duration: maxDuration,
+      },
+      segments.length,
+      extraRefs,
+      1.0,
+      {
+        clip,
+        sourceStart: sourceOffset,
+      },
+    ));
+  }
+  return segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start);
+}
+
 function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
 }
@@ -618,29 +676,60 @@ function makeAuxiliaryTextTrack({
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
   if (!bgmFiles.length) return [[], [], []];
   const plans = [[], [], []];
-  const segmentCount = totalUs >= 12000000
-    ? randomInt(rng, 3, 5)
-    : Math.max(1, Math.min(3, bgmFiles.length));
-  const slotDuration = totalUs / segmentCount;
-  for (let index = 0; index < segmentCount; index += 1) {
-    const audioIndex = randomInt(rng, 0, bgmFiles.length - 1);
+  const makePlan = ({ audioIndex, start, duration }) => {
     const audioDuration = audioInfos[audioIndex].durationUs;
-    const desired = Math.round(randomBetween(rng, 4800000, 11500000));
-    const slotStart = Math.round(slotDuration * index);
-    const slotEnd = Math.round(slotDuration * (index + 1));
-    const latestStart = Math.max(slotStart, Math.min(slotEnd - 800000, totalUs - 500000));
-    const start = Math.round(randomBetween(rng, slotStart, latestStart));
-    const duration = Math.min(audioDuration, desired, totalUs - start);
-    if (duration <= 500000) continue;
-    const sourceStartMax = Math.max(0, audioDuration - duration);
-    plans[index % plans.length].push({
+    const safeDuration = Math.min(audioDuration, duration, totalUs - start);
+    if (safeDuration <= 500000) return null;
+    const sourceStartMax = Math.max(0, audioDuration - safeDuration);
+    return {
       audioIndex,
-      duration,
+      duration: safeDuration,
       sourceStart: Math.round(randomBetween(rng, 0, sourceStartMax)),
       start,
+    };
+  };
+
+  const bedAudioIndex = randomInt(rng, 0, bgmFiles.length - 1);
+  const bedDuration = Math.min(
+    audioInfos[bedAudioIndex].durationUs,
+    Math.round(totalUs * randomBetween(rng, 0.55, 0.82)),
+    totalUs,
+  );
+  const bedStartMax = Math.max(0, Math.min(2200000, totalUs - bedDuration));
+  const bedPlan = makePlan({
+    audioIndex: bedAudioIndex,
+    start: Math.round(randomBetween(rng, 0, bedStartMax)),
+    duration: bedDuration,
+  });
+  if (bedPlan) plans[0].push(bedPlan);
+
+  const ambienceCount = totalUs >= 20000000 ? randomInt(rng, 2, 3) : 1;
+  const ambienceSlot = totalUs / Math.max(1, ambienceCount + 1);
+  for (let index = 0; index < ambienceCount; index += 1) {
+    const audioIndex = randomInt(rng, 0, bgmFiles.length - 1);
+    const audioDuration = audioInfos[audioIndex].durationUs;
+    const desired = Math.min(audioDuration, Math.round(randomBetween(rng, 5800000, 14000000)));
+    const slotStart = Math.round(ambienceSlot * index + randomBetween(rng, 1800000, 4500000));
+    const startMax = Math.max(0, totalUs - desired);
+    const plan = makePlan({
+      audioIndex,
+      start: Math.min(slotStart, startMax),
+      duration: desired,
     });
+    if (plan) plans[1].push(plan);
   }
-  return plans;
+
+  const effectCount = totalUs >= 20000000 ? randomInt(rng, 3, 5) : randomInt(rng, 1, 2);
+  const effectSlot = totalUs / Math.max(1, effectCount + 1);
+  for (let index = 0; index < effectCount; index += 1) {
+    const audioIndex = randomInt(rng, 0, bgmFiles.length - 1);
+    const desired = Math.round(randomBetween(rng, 900000, 2600000));
+    const centered = Math.round(effectSlot * (index + 1));
+    const start = Math.max(0, Math.min(totalUs - desired, centered + Math.round(randomBetween(rng, -1300000, 1300000))));
+    const plan = makePlan({ audioIndex, start, duration: desired });
+    if (plan) plans[2].push(plan);
+  }
+  return plans.map((track) => track.sort((left, right) => left.start - right.start));
 }
 
 function makeAudioDisplayName(file, index) {
@@ -1749,11 +1838,18 @@ function createProject(args) {
     textMaterials.push(material);
     return makeTextSegment(material.id, caption, index, captionScale);
   });
-  const videoTracks = namedSegmentTracks({
-    segments: videoSegments,
-    names: VIDEO_TRACK_NAMES,
-    count: 1,
+  const overlayVideoSegments = makeOverlayVideoSegments({
+    baseSegment,
+    baseExtras,
+    draftMaterials: draft.materials,
+    rng,
+    sourceSegments: videoSegments,
+    totalUs: videoInfo.durationUs,
   });
+  const videoTracks = [
+    { name: VIDEO_TRACK_NAMES[0], segments: videoSegments },
+    ...(overlayVideoSegments.length ? [{ name: VIDEO_TRACK_NAMES[1], segments: overlayVideoSegments }] : []),
+  ];
   const subtitleTracks = namedSegmentTracks({
     segments: textSegments,
     names: SUBTITLE_TRACK_NAMES,
@@ -1847,6 +1943,7 @@ function createProject(args) {
     tracks: {
       video_segments: videoSegments.length,
       video_tracks: videoTracks.length,
+      overlay_video_segments: overlayVideoSegments.length,
       audio_segments: allAudioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       dialogue_audio_segments: dialogueAudioTrack?.segments.length || 0,
       background_audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
