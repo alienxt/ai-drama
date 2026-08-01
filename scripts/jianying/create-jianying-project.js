@@ -1695,42 +1695,7 @@ function createProject(args) {
     names: SUBTITLE_TRACK_NAMES,
     count: textSegments.length >= 8 ? 2 : 1,
   });
-  const auxTracks = [
-    {
-      name: '滤镜',
-      labels: ['柔光', '冷暖微调'],
-      color: '#C4B5FD',
-      y: -1.12,
-    },
-    {
-      name: '特效',
-      labels: ['情绪增强', '镜头推进', '节奏点', '高光保留'],
-      color: '#F9A8D4',
-      y: -1.24,
-    },
-    {
-      name: '贴纸',
-      labels: ['字幕安全区', '画面修饰', '氛围标记', '人物强调'],
-      color: '#FDE68A',
-      y: 1.16,
-    },
-    {
-      name: '工程标记',
-      labels: ['第1版校对', 'AI成片验证'],
-      color: '#93C5FD',
-      y: 1.28,
-    },
-  ].map((track) => ({
-    name: track.name,
-    segments: makeAuxiliaryTextTrack({
-      labels: track.labels,
-      totalUs: videoInfo.durationUs,
-      rng,
-      textMaterials,
-      color: track.color,
-      y: track.y,
-    }),
-  })).filter((track) => track.segments.length);
+  const auxTracks = [];
 
   draft.id = draftId;
   draft.name = draftName;
