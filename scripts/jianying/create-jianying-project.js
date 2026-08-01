@@ -985,6 +985,90 @@ end tell
   }
 }
 
+function macWindowUiNames(appPath) {
+  for (const processName of macJianyingProcessNames(appPath)) {
+    try {
+      return osascript(`
+tell application "System Events"
+  tell process ${appleScriptString(processName)}
+    if not (exists window 1) then error "window missing"
+    set uiNames to name of every UI element of window 1
+  end tell
+end tell
+return uiNames as text
+`);
+    } catch {
+      // Try the next known process name.
+    }
+  }
+  return '';
+}
+
+function macUiLooksLikeHome(names) {
+  const text = String(names || '');
+  return text.includes('HomePageDraftTitle:')
+    || text.includes('HomePageStart')
+    || text.includes('开始创作')
+    || text.includes('最近删除');
+}
+
+function macUiLooksLikeEditor(names) {
+  const text = String(names || '');
+  if (!text || macUiLooksLikeHome(text)) return false;
+  const hasEditorTimeline = text.includes('VETreeMainCellItem:')
+    || text.includes('VETreeSubCellItem:')
+    || text.includes('VECollectTitleView:')
+    || text.includes('currentProgress')
+    || text.includes('totalProgress')
+    || text.includes('MTLSText:');
+  if (hasEditorTimeline) return true;
+  const hasEditorChrome = text.includes('播放器')
+    || text.includes('草稿参数')
+    || text.includes('导出');
+  const hasToolTabs = text.includes('媒体')
+    || text.includes('音频')
+    || text.includes('文本')
+    || text.includes('字幕');
+  return hasEditorChrome && hasToolTabs;
+}
+
+function macWaitForEditor(appPath, timeoutSeconds = 14) {
+  const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000;
+  let lastNames = '';
+  while (Date.now() < deadline) {
+    lastNames = macWindowUiNames(appPath) || lastNames;
+    if (macUiLooksLikeEditor(lastNames)) return true;
+    sleep(0.8);
+  }
+  return false;
+}
+
+function macClickDraftTitle(appPath, draftName) {
+  if (!draftName) return false;
+  const targetName = `HomePageDraftTitle:${draftName}`;
+  for (const processName of macJianyingProcessNames(appPath)) {
+    try {
+      osascript(`
+set targetName to ${appleScriptString(targetName)}
+set fallbackName to ${appleScriptString(draftName)}
+tell application "System Events"
+  tell process ${appleScriptString(processName)}
+    if not (exists window 1) then error "window missing"
+    set matches to every UI element of window 1 whose name is targetName
+    if (count of matches) is 0 then set matches to every UI element of window 1 whose name contains fallbackName
+    if (count of matches) is 0 then error "draft card not found"
+    click item 1 of matches
+  end tell
+end tell
+`);
+      return true;
+    } catch {
+      // Try the next known process name.
+    }
+  }
+  return false;
+}
+
 function closeExistingJianying() {
   if (process.platform === 'darwin') {
     for (const name of ['VideoFusion-macOS', 'JianyingPro', 'CapCut']) {
@@ -1133,7 +1217,7 @@ if ${count} > 1 {
   execFileSync('swift', ['-e', swift], { stdio: 'ignore' });
 }
 
-function openFirstDraftCard(appPath) {
+function openFirstDraftCard(appPath, draftName = '') {
   if (process.platform === 'darwin') {
     activateJianying(appPath);
     macNormalizeJianyingWindow(appPath);
@@ -1145,10 +1229,23 @@ function openFirstDraftCard(appPath) {
       );
     }
     sleep(2.5);
-    const clickX = Math.round(x + w * DEFAULTS.draftCardClickXRatio);
-    const clickY = Math.round(y + h * DEFAULTS.draftCardClickYRatio);
-    macMouseClick(clickX, clickY, 2);
-    return true;
+    if (macClickDraftTitle(appPath, draftName) && macWaitForEditor(appPath)) {
+      return true;
+    }
+    const candidates = [
+      [DEFAULTS.draftCardClickXRatio, DEFAULTS.draftCardClickYRatio],
+      [0.18, 0.50],
+      [0.24, 0.50],
+      [0.30, 0.50],
+      [0.36, 0.50],
+    ];
+    for (const [clickXRatio, clickYRatio] of candidates) {
+      const clickX = Math.round(x + w * clickXRatio);
+      const clickY = Math.round(y + h * clickYRatio);
+      macMouseClick(clickX, clickY, 2);
+      if (macWaitForEditor(appPath, 8)) return true;
+    }
+    fail('Jianying draft editor did not open; refusing to capture the home page.');
   }
   if (process.platform === 'win32') {
     activateJianying(appPath);
@@ -1566,6 +1663,7 @@ function createProject(args) {
 }
 
 function postCreateAutomation(args, audit) {
+  let draftOpened = !args.openDraft;
   if (args.closeExisting) {
     closeExistingJianying();
     sleep(1.5);
@@ -1577,13 +1675,18 @@ function postCreateAutomation(args, audit) {
   if (args.open || args.openDraft) sleep(Number(args.homepageDelay ?? DEFAULTS.homepageDelay));
   if (args.openDraft) {
     try {
-      openFirstDraftCard(appPath);
+      openFirstDraftCard(appPath, audit.draft_name);
+      draftOpened = true;
       sleep(Number(args.editorDelay ?? DEFAULTS.editorDelay));
     } catch (error) {
       audit.warnings.push(`Could not open newest draft card automatically: ${error.message}`);
     }
   }
   if (args.capture) {
+    if (args.openDraft && !draftOpened) {
+      audit.warnings.push('Screenshot skipped because Jianying editor did not open.');
+      return;
+    }
     if (args.open || args.openDraft) activateJianying(appPath);
     sleep(Number(args.captureDelay ?? DEFAULTS.captureDelay));
     const screenshot = path.resolve(args.screenshot || path.join(audit.output_dir, `${audit.draft_name}_工程图.png`));
