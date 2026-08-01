@@ -20,6 +20,32 @@ const DEFAULTS = {
   draftCardClickYRatio: 0.34,
 };
 
+const AUDIO_DISPLAY_STEMS = [
+  '回忆_轻快_叙事',
+  '节拍_甜美_欢喜',
+  '反转_黄昏_心动',
+  '悬念_低频_氛围',
+  '温柔_留白_铺底',
+  '推进_鼓点_情绪',
+];
+
+const VIDEO_TRACK_NAMES = [
+  'V1 正片画面',
+  'V2 补镜头重排',
+  'V3 转场校色层',
+];
+
+const SUBTITLE_TRACK_NAMES = [
+  'ST1 中文对白字幕',
+  'ST2 字幕校对补位',
+];
+
+const AUDIO_TRACK_NAMES = [
+  'A1 轻音乐铺底',
+  'A2 情绪音效点',
+  'A3 反转氛围',
+];
+
 const HELP = `
 Create a Jianying/CapCut desktop draft from local video, SRT and BGM files.
 
@@ -514,6 +540,30 @@ function makeTextSegment(materialId, caption, index, scale, y = -0.78) {
   };
 }
 
+function distributeSegmentsAcrossTracks(segments, trackCount) {
+  const count = Math.max(1, Math.min(trackCount, segments.length || 1));
+  const tracks = Array.from({ length: count }, () => []);
+  segments.forEach((segment, index) => {
+    tracks[index % count].push(segment);
+  });
+  return tracks.filter((track) => track.length);
+}
+
+function assignTrackRenderIndex(segments, trackIndex) {
+  segments.forEach((segment, index) => {
+    segment.render_index = index;
+    segment.track_render_index = trackIndex;
+  });
+  return segments;
+}
+
+function namedSegmentTracks({ segments, names, count }) {
+  return distributeSegmentsAcrossTracks(segments, count).map((trackSegments, index) => ({
+    name: names[index] || `${names[0] || '轨道'} ${index + 1}`,
+    segments: trackSegments,
+  }));
+}
+
 function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
 }
@@ -551,11 +601,11 @@ function makeAuxiliaryTextTrack({
 }
 
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
-  if (!bgmFiles.length) return [[], []];
-  const plans = [[], []];
+  if (!bgmFiles.length) return [[], [], []];
+  const plans = [[], [], []];
   const segmentCount = totalUs >= 12000000
-    ? randomInt(rng, 3, 4)
-    : Math.max(1, Math.min(2, bgmFiles.length));
+    ? randomInt(rng, 3, 5)
+    : Math.max(1, Math.min(3, bgmFiles.length));
   const slotDuration = totalUs / segmentCount;
   for (let index = 0; index < segmentCount; index += 1) {
     const audioIndex = randomInt(rng, 0, bgmFiles.length - 1);
@@ -568,7 +618,7 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
     const duration = Math.min(audioDuration, desired, totalUs - start);
     if (duration <= 500000) continue;
     const sourceStartMax = Math.max(0, audioDuration - duration);
-    plans[index % 2].push({
+    plans[index % plans.length].push({
       audioIndex,
       duration,
       sourceStart: Math.round(randomBetween(rng, 0, sourceStartMax)),
@@ -576,6 +626,12 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
     });
   }
   return plans;
+}
+
+function makeAudioDisplayName(file, index) {
+  const ext = path.extname(file) || '.mp3';
+  const stem = AUDIO_DISPLAY_STEMS[index % AUDIO_DISPLAY_STEMS.length];
+  return `${String(index + 1).padStart(2, '0')}-${stem}${ext}`;
 }
 
 function resetMaterialBuckets(materials, keys) {
@@ -1575,8 +1631,7 @@ function createProject(args) {
   bgmFiles.forEach((file, index) => {
     const info = mediaInfo(file, ffprobeBin);
     audioInfos.push(info);
-    const ext = path.extname(file) || '.mp3';
-    const audioName = `${String(index + 1).padStart(2, '0')}-${sanitizeName(path.basename(file, ext))}${ext}`;
+    const audioName = makeAudioDisplayName(file, index);
     const audioPath = path.join(resourceAudioDir, audioName);
     fs.copyFileSync(file, audioPath);
     const materialId = uuid();
@@ -1597,23 +1652,26 @@ function createProject(args) {
   });
   const audioPlans = makeAudioPlan({ bgmFiles, audioInfos, totalUs: videoInfo.durationUs, rng });
   const audioTracks = audioPlans
-    .map((plans) => plans.map((plan, index) => {
-      const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
-        'speeds',
-        'sound_channel_mappings',
-        'loudnesses',
-        'vocal_separations',
-      ]);
-      return makeAudioSegment(
-        audioMaterials[plan.audioIndex].id,
-        plan.sourceStart,
-        plan.start,
-        plan.duration,
-        extraRefs,
-        Math.max(0.18, Math.min(0.5, bgmVolume + (index % 2 ? 0.05 : 0))),
-      );
+    .map((plans, trackIndex) => ({
+      name: AUDIO_TRACK_NAMES[trackIndex] || `A${trackIndex + 1} 情绪配乐`,
+      segments: plans.map((plan, index) => {
+        const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
+          'speeds',
+          'sound_channel_mappings',
+          'loudnesses',
+          'vocal_separations',
+        ]);
+        return makeAudioSegment(
+          audioMaterials[plan.audioIndex].id,
+          plan.sourceStart,
+          plan.start,
+          plan.duration,
+          extraRefs,
+          Math.max(0.16, Math.min(0.5, bgmVolume + (trackIndex === 1 ? 0.04 : 0))),
+        );
+      }),
     }))
-    .filter((segments) => segments.length);
+    .filter((track) => track.segments.length);
 
   const captionScale = Number(args.captionScale ?? DEFAULTS.captionScale);
   const captionTextSize = Number(args.captionTextSize ?? DEFAULTS.captionTextSize);
@@ -1626,6 +1684,16 @@ function createProject(args) {
     });
     textMaterials.push(material);
     return makeTextSegment(material.id, caption, index, captionScale);
+  });
+  const videoTracks = namedSegmentTracks({
+    segments: videoSegments,
+    names: VIDEO_TRACK_NAMES,
+    count: videoSegments.length >= 12 ? 2 : 1,
+  });
+  const subtitleTracks = namedSegmentTracks({
+    segments: textSegments,
+    names: SUBTITLE_TRACK_NAMES,
+    count: textSegments.length >= 8 ? 2 : 1,
   });
   const auxTracks = [
     {
@@ -1672,12 +1740,23 @@ function createProject(args) {
   draft.materials.videos = videoMaterials;
   draft.materials.audios = audioMaterials;
   draft.materials.texts = textMaterials;
-  draft.tracks = [
-    makeTrack('video', videoSegments, '正片画面'),
-    ...audioTracks.map((segments, index) => makeTrack('audio', segments, index === 0 ? '轻音乐铺底' : '舒缓氛围')),
-    ...(textSegments.length ? [makeTrack('text', textSegments, '中文字幕')] : []),
-    ...auxTracks.map((track) => makeTrack('text', track.segments, track.name)),
-  ];
+  const draftTracks = [];
+  videoTracks.forEach((track, index) => {
+    draftTracks.push(makeTrack('video', assignTrackRenderIndex(track.segments, index), track.name));
+  });
+  audioTracks.forEach((track, index) => {
+    draftTracks.push(makeTrack('audio', assignTrackRenderIndex(track.segments, index), track.name));
+  });
+  let textTrackRenderIndex = 0;
+  subtitleTracks.forEach((track) => {
+    draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
+    textTrackRenderIndex += 1;
+  });
+  auxTracks.forEach((track) => {
+    draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
+    textTrackRenderIndex += 1;
+  });
+  draft.tracks = draftTracks;
   draft.relationships = [];
   const missingRefs = validateRefs(draft);
   if (missingRefs.length) fail(`Draft has missing material refs: ${missingRefs.join(', ')}`);
@@ -1734,11 +1813,14 @@ function createProject(args) {
     root_backup: rootBackup,
     tracks: {
       video_segments: videoSegments.length,
-      audio_segments: audioTracks.reduce((sum, segments) => sum + segments.length, 0),
+      video_tracks: videoTracks.length,
+      audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       text_segments: textSegments.length,
+      subtitle_text_tracks: subtitleTracks.length,
       auxiliary_text_segments: auxTracks.reduce((sum, track) => sum + track.segments.length, 0),
       audio_tracks: audioTracks.length,
       auxiliary_text_tracks: auxTracks.length,
+      total_tracks: draft.tracks.length,
     },
     materials: {
       videos: videoMaterials.length,
