@@ -960,6 +960,10 @@ function macNormalizeJianyingWindow(appPath) {
     const bounds = macWindowBoundsViaCoreGraphics(appPath);
     return Boolean(bounds && bounds[2] >= minW && bounds[3] >= minH);
   };
+  const windowLooksUsable = () => {
+    const names = macWindowUiNames(appPath);
+    return macUiLooksLikeHome(names) || macUiLooksLikeEditor(names);
+  };
   const setWindowToVisibleFrame = () => osascript(`
 tell application "System Events"
   tell process ${appleScriptString(processName)}
@@ -981,14 +985,14 @@ end tell
   try {
     setWindowToVisibleFrame();
     sleep(0.5);
-    if (windowLooksLargeEnough()) return true;
+    if (windowLooksLargeEnough() || windowLooksUsable()) return true;
     clickZoomButton();
     sleep(0.8);
     setWindowToVisibleFrame();
     sleep(0.5);
-    return windowLooksLargeEnough();
+    return windowLooksLargeEnough() || windowLooksUsable();
   } catch {
-    return false;
+    return windowLooksUsable();
   }
 }
 
@@ -1311,7 +1315,7 @@ function openFirstDraftCard(appPath, draftName = '') {
     activateJianying(appPath);
     macDismissJianyingStartupDialogs(appPath);
     if (!macNormalizeJianyingWindow(appPath)) {
-      fail('Jianying window could not be enlarged; refusing blind coordinate clicks. Please grant Accessibility permission and keep the screen available during capture.');
+      fail('Jianying home/editor window was not ready. Please grant Accessibility permission to AI Drama and keep the screen available during capture.');
     }
     const [x, y, w, h] = macFrontWindowBounds(appPath);
     if (!macClickStaticText(appPath, '首页')) {
