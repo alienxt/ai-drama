@@ -1891,6 +1891,31 @@ def test_wechat_video_publisher_rejects_too_many_cost_report_files(tmp_path: Pat
         raise AssertionError("expected cost report upload count rejection")
 
 
+def test_wechat_video_publisher_allows_ten_production_proof_files(tmp_path: Path):
+    files = []
+    for index in range(10):
+        path = tmp_path / f"production-proof-{index}.png"
+        path.write_bytes(b"proof")
+        files.append(path)
+
+    WeChatVideoPublisher._validate_material_upload_file_count(files, "剧目制作证明材料")
+
+
+def test_wechat_video_publisher_rejects_more_than_ten_production_proof_files(tmp_path: Path):
+    files = []
+    for index in range(11):
+        path = tmp_path / f"production-proof-{index}.png"
+        path.write_bytes(b"proof")
+        files.append(path)
+
+    try:
+        WeChatVideoPublisher._validate_material_upload_file_count(files, "剧目制作证明材料")
+    except RuntimeError as exception:
+        assert "最多支持上传 10 个文件" in str(exception)
+    else:
+        raise AssertionError("expected production proof upload count rejection")
+
+
 def test_wechat_video_publisher_rejects_too_many_ai_proof_files(tmp_path: Path):
     proof_first = tmp_path / "ai-proof-1.jpg"
     proof_second = tmp_path / "ai-proof-2.jpg"

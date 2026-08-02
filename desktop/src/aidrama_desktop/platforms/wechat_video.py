@@ -2232,7 +2232,7 @@ class WeChatVideoPublisher(PlatformPublisher):
             "推广海报": 1,
             "成本配置比例情况报告": 1,
             "AI制作证明": 1,
-            "剧目制作证明材料": 4,
+            "剧目制作证明材料": 10,
             "版权采购&播出授权证明材料": 4,
         }
         limit = limits.get(field_label)
