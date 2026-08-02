@@ -1571,7 +1571,7 @@ function captureScreenshot(output, options = {}) {
     if (options.appPath) activateJianying(options.appPath);
     const captureTarget = options.appPath ? macJianyingWindowCaptureTarget(options.appPath) : null;
     if (captureTarget?.windowId) {
-      execFileSync('screencapture', ['-x', '-l', String(captureTarget.windowId), output], { stdio: 'ignore' });
+      execFileSync('screencapture', ['-x', '-o', '-l', String(captureTarget.windowId), output], { stdio: 'ignore' });
       return output;
     }
     const [x, y, w, h] = positiveWindowRect(macFrontWindowBounds(options.appPath));
