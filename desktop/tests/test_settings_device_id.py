@@ -72,15 +72,40 @@ def test_load_settings_auto_resolves_ffmpeg_with_ffprobe(monkeypatch, tmp_path):
     assert settings.ffmpeg_path == str(ffmpeg)
 
 
-def test_load_settings_keeps_explicit_ffmpeg_path(monkeypatch, tmp_path):
-    monkeypatch.setenv("AIDRAMA_FFMPEG_PATH", "/custom/bin/ffmpeg")
+def test_load_settings_keeps_valid_explicit_ffmpeg_path(monkeypatch, tmp_path):
+    custom_bin = tmp_path / "custom" / "bin"
+    custom_bin.mkdir(parents=True)
+    ffmpeg = custom_bin / "ffmpeg"
+    ffprobe = custom_bin / "ffprobe"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffprobe.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("AIDRAMA_FFMPEG_PATH", str(ffmpeg))
     monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
     monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(tmp_path / "config" / "token"))
     monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
 
     settings = load_settings()
 
-    assert settings.ffmpeg_path == "/custom/bin/ffmpeg"
+    assert settings.ffmpeg_path == str(ffmpeg)
+
+
+def test_load_settings_falls_back_when_explicit_ffmpeg_path_is_missing(monkeypatch, tmp_path):
+    fallback_bin = tmp_path / "fallback" / "bin"
+    fallback_bin.mkdir(parents=True)
+    ffmpeg = fallback_bin / "ffmpeg"
+    ffprobe = fallback_bin / "ffprobe"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffprobe.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("AIDRAMA_FFMPEG_PATH", str(tmp_path / "missing" / "ffmpeg"))
+    monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
+    monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(tmp_path / "config" / "token"))
+    monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: str(ffmpeg) if name == "ffmpeg" else None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
+
+    settings = load_settings()
+
+    assert settings.ffmpeg_path == str(ffmpeg)
 
 
 def test_load_settings_persists_generated_device_id(monkeypatch, tmp_path):

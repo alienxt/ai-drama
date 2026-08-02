@@ -27,7 +27,7 @@ def default_device_id() -> str:
 
 
 def ffprobe_path_for_ffmpeg(ffmpeg_path: str) -> str:
-    ffmpeg = Path(ffmpeg_path)
+    ffmpeg = Path(normalize_executable_path(ffmpeg_path))
     name_lower = ffmpeg.name.lower()
     if name_lower in {"ffmpeg", "ffmpeg.exe"}:
         ffprobe_name = "ffprobe.exe" if name_lower.endswith(".exe") else "ffprobe"
@@ -37,18 +37,37 @@ def ffprobe_path_for_ffmpeg(ffmpeg_path: str) -> str:
     return "ffprobe"
 
 
-def resolve_ffmpeg_path(ffmpeg_path: str) -> str:
-    if ffmpeg_path != "ffmpeg":
-        return ffmpeg_path
+def normalize_executable_path(executable_path: str | None, *, default: str = "ffmpeg") -> str:
+    value = str(executable_path or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    return value or default
+
+
+def ffmpeg_path_is_usable(ffmpeg_path: str) -> bool:
+    candidate = normalize_executable_path(ffmpeg_path)
+    return Path(candidate).is_file() and Path(ffprobe_path_for_ffmpeg(candidate)).is_file()
+
+
+def find_ffmpeg_fallback_path(*, exclude: str | None = None) -> str | None:
+    excluded = normalize_executable_path(exclude) if exclude else None
     candidates = [path for path in (shutil.which("ffmpeg"), *COMMON_FFMPEG_PATHS) if path]
     seen: set[str] = set()
     for candidate in candidates:
-        if candidate in seen:
+        normalized = normalize_executable_path(candidate)
+        if normalized in seen or normalized == excluded:
             continue
-        seen.add(candidate)
-        if Path(candidate).is_file() and Path(ffprobe_path_for_ffmpeg(candidate)).is_file():
-            return candidate
-    return ffmpeg_path
+        seen.add(normalized)
+        if ffmpeg_path_is_usable(normalized):
+            return normalized
+    return None
+
+
+def resolve_ffmpeg_path(ffmpeg_path: str) -> str:
+    requested = normalize_executable_path(ffmpeg_path)
+    if ffmpeg_path_is_usable(requested):
+        return requested
+    return find_ffmpeg_fallback_path(exclude=requested) or requested
 
 
 class Settings(BaseSettings):

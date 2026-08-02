@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -26,6 +27,7 @@ def normalize_base_url(base_url: str) -> str:
 class ApiClient:
     base_url: str
     token_store: TokenStore
+    auth_refresher: Callable[[], bool] | None = None
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
@@ -67,21 +69,60 @@ class ApiClient:
         payload: dict[str, Any] | None = None,
         auth: bool = True,
     ) -> Any:
-        headers = self._headers() if auth else {}
+        refreshed = False
+        while True:
+            headers = self._headers() if auth else {}
+            try:
+                with httpx.Client(base_url=self.base_url, timeout=API_REQUEST_TIMEOUT_SECONDS) as client:
+                    response = client.request(method, path, json=payload, headers=headers)
+            except httpx.TimeoutException as exception:
+                raise ApiError("服务请求超时，请稍后重试。") from exception
+            except httpx.RequestError as exception:
+                raise ApiError(connection_error_message(self.base_url, exception)) from exception
+            body = self._parse_body(response)
+            if self._should_refresh_auth(auth, refreshed, response, body):
+                refreshed = True
+                if self._refresh_auth():
+                    continue
+            if getattr(response, "status_code", 200) >= 400:
+                raise ApiError(self._error_message(response, body))
+            if not body.get("success"):
+                error = body.get("error") or {}
+                raise ApiError(error.get("message", "API request failed"))
+            return body.get("data")
+
+    def _refresh_auth(self) -> bool:
+        if not self.auth_refresher:
+            return False
         try:
-            with httpx.Client(base_url=self.base_url, timeout=API_REQUEST_TIMEOUT_SECONDS) as client:
-                response = client.request(method, path, json=payload, headers=headers)
-        except httpx.TimeoutException as exception:
-            raise ApiError("服务请求超时，请稍后重试。") from exception
-        except httpx.RequestError as exception:
-            raise ApiError(connection_error_message(self.base_url, exception)) from exception
-        body = self._parse_body(response)
-        if getattr(response, "status_code", 200) >= 400:
-            raise ApiError(self._error_message(response, body))
-        if not body.get("success"):
-            error = body.get("error") or {}
-            raise ApiError(error.get("message", "API request failed"))
-        return body.get("data")
+            return bool(self.auth_refresher())
+        except Exception:  # noqa: BLE001
+            return False
+
+    @classmethod
+    def _should_refresh_auth(
+        cls,
+        auth: bool,
+        refreshed: bool,
+        response: httpx.Response,
+        body: dict[str, Any],
+    ) -> bool:
+        if not auth or refreshed or getattr(response, "status_code", 200) not in {401, 403}:
+            return False
+        return not cls._is_device_binding_error(body)
+
+    @staticmethod
+    def _is_device_binding_error(body: dict[str, Any]) -> bool:
+        error = body.get("error") if isinstance(body, dict) else None
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get("code") or "").upper()
+        message = str(error.get("message") or "")
+        return (
+            code in {"DEVICE_MISMATCH", "DEVICE_NOT_BOUND", "DEVICE_FORBIDDEN"}
+            or "绑定其他设备" in message
+            or "当前设备登录" in message
+        )
 
     @staticmethod
     def _parse_body(response: httpx.Response) -> dict[str, Any]:

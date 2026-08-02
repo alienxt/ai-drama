@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 
 UPLOAD_SUCCESS_MARKER = ".aidrama-upload-success.json"
 DEFAULT_UPLOAD_CACHE_RETENTION = timedelta(hours=24)
+DEFAULT_STALE_CACHE_RETENTION = timedelta(hours=48)
 
 
 @dataclass(frozen=True)
@@ -52,9 +54,12 @@ def cleanup_uploaded_drama_cache(
     *,
     now: datetime | None = None,
     retention: timedelta = DEFAULT_UPLOAD_CACHE_RETENTION,
+    stale_retention: timedelta = DEFAULT_STALE_CACHE_RETENTION,
+    protected_dirs: Iterable[Path] | None = None,
 ) -> UploadCacheCleanupResult:
     now = now or _utc_now()
     roots = _safe_cache_roots(downloads_dir, processed_dir)
+    protected = _protected_cache_dirs(protected_dirs)
     scanned = 0
     deleted = 0
     skipped = 0
@@ -70,17 +75,27 @@ def cleanup_uploaded_drama_cache(
                 skipped += 1
                 continue
             scanned += 1
+            if _is_protected_dir(child, protected):
+                skipped += 1
+                continue
             marker = child / UPLOAD_SUCCESS_MARKER
-            if not marker.is_file():
-                skipped += 1
-                continue
-            try:
-                uploaded_at = _marker_uploaded_at(marker)
-            except (OSError, ValueError, json.JSONDecodeError) as exception:
-                skipped += 1
-                errors.append(f"{child}: {exception}")
-                continue
-            if now - uploaded_at < retention:
+            if marker.is_file():
+                try:
+                    cache_at = _marker_uploaded_at(marker)
+                except (OSError, ValueError, json.JSONDecodeError) as exception:
+                    skipped += 1
+                    errors.append(f"{child}: {exception}")
+                    continue
+                effective_retention = retention
+            else:
+                try:
+                    cache_at = _directory_latest_modified_at(child)
+                except OSError as exception:
+                    skipped += 1
+                    errors.append(f"{child}: {exception}")
+                    continue
+                effective_retention = stale_retention
+            if now - cache_at < effective_retention:
                 skipped += 1
                 continue
             if not _is_direct_child_of(child, root_resolved):
@@ -130,6 +145,33 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _protected_cache_dirs(protected_dirs: Iterable[Path] | None) -> tuple[Path, ...]:
+    if not protected_dirs:
+        return ()
+    protected: list[Path] = []
+    for path in protected_dirs:
+        try:
+            protected.append(Path(path).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+    return tuple(protected)
+
+
+def _is_protected_dir(directory: Path, protected_dirs: tuple[Path, ...]) -> bool:
+    if not protected_dirs:
+        return False
+    directory_resolved = directory.resolve(strict=False)
+    for protected in protected_dirs:
+        if directory_resolved == protected:
+            return True
+        try:
+            protected.relative_to(directory_resolved)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def _safe_cache_roots(downloads_dir: Path, processed_dir: Path) -> list[Path]:
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -164,3 +206,15 @@ def _directory_size(directory: Path) -> int:
             except OSError:
                 continue
     return total
+
+
+def _directory_latest_modified_at(directory: Path) -> datetime:
+    latest = directory.stat().st_mtime
+    for path in directory.rglob("*"):
+        if path.is_symlink():
+            continue
+        try:
+            latest = max(latest, path.stat().st_mtime)
+        except OSError:
+            continue
+    return datetime.fromtimestamp(latest, timezone.utc)

@@ -371,6 +371,7 @@ class DesktopWindow(QMainWindow):
         self.auto_task_busy = False
         self.manual_publish_busy = False
         self.current_task_id: str | None = None
+        self.current_task_snapshot: dict[str, Any] | None = None
         self.current_media_account_id: str | None = None
         self.current_media_account_snapshot: dict[str, Any] | None = None
         self.current_drama_title: str | None = None
@@ -1090,7 +1091,7 @@ class DesktopWindow(QMainWindow):
         update_row.addStretch(1)
         update_row.addWidget(self.update_check_button)
         cleanup_row = QHBoxLayout()
-        cleanup_hint = QLabel("只清理下载原片目录和转码成品目录中已上传成功超过 24 小时的短剧缓存")
+        cleanup_hint = QLabel("清理已上传成功超过 24 小时、或失败残留超过 48 小时的短剧缓存")
         cleanup_hint.setObjectName("mutedText")
         self.cleanup_data_button = QPushButton("清理数据")
         self.cleanup_data_button.clicked.connect(self.clean_upload_cache_now)
@@ -1341,7 +1342,18 @@ class DesktopWindow(QMainWindow):
         QApplication.instance().quit()
 
     def api(self) -> ApiClient:
-        return ApiClient(self.settings.server_url, self.token_store)
+        return ApiClient(self.settings.server_url, self.token_store, auth_refresher=self.refresh_auth_token)
+
+    def refresh_auth_token(self) -> bool:
+        remembered = RememberedLoginStore(self.settings.remembered_login_file).get()
+        if not remembered:
+            return False
+        username, password = remembered
+        try:
+            ApiClient(self.settings.server_url, self.token_store).login(username, password, self.settings.device_id)
+        except Exception:  # noqa: BLE001
+            return False
+        return True
 
     def check_for_updates(self, manual: bool = False) -> None:
         platform = detect_platform()
@@ -3779,14 +3791,51 @@ class DesktopWindow(QMainWindow):
         )
 
     def cleanup_uploaded_drama_cache(self) -> UploadCacheCleanupResult:
-        return cleanup_uploaded_drama_cache_dirs(self.settings.downloads_dir, self.settings.processed_dir)
+        return cleanup_uploaded_drama_cache_dirs(
+            self.settings.downloads_dir,
+            self.settings.processed_dir,
+            protected_dirs=self.current_upload_cache_protected_dirs(),
+        )
+
+    def current_upload_cache_protected_dirs(self) -> list[Path]:
+        if not (getattr(self, "manual_publish_busy", False) or getattr(self, "auto_task_busy", False)):
+            return []
+        protected: list[Path] = []
+        settings = getattr(self, "settings", None)
+        base_dirs = [
+            getattr(settings, "downloads_dir", None),
+            getattr(settings, "processed_dir", None),
+        ]
+        task = getattr(self, "current_task_snapshot", None)
+        if task:
+            for base_dir in base_dirs:
+                if base_dir:
+                    protected.extend(self.contract_drama_dir_candidates(Path(base_dir), task))
+        title = str(getattr(self, "current_drama_title", None) or "").strip()
+        if title:
+            title_prefix = drama_directory_name({"dramaId": "", "title": title})
+            for base_dir in base_dirs:
+                if not base_dir:
+                    continue
+                root = Path(base_dir)
+                if not root.is_dir():
+                    continue
+                try:
+                    protected.extend(
+                        child
+                        for child in root.iterdir()
+                        if child.is_dir() and (child.name == title_prefix or child.name.startswith(f"{title_prefix}-"))
+                    )
+                except OSError:
+                    pass
+        return protected
 
     def handle_upload_cache_cleanup_done(self, result: UploadCacheCleanupResult) -> None:
         self.upload_cache_cleanup_busy = False
         if result.deleted_dirs <= 0 and not result.errors:
             return
         freed = TaskRunner._format_file_size(result.bytes_deleted)
-        message = f"缓存清理完成：删除 {result.deleted_dirs} 个已上传剧目录，释放 {freed}"
+        message = f"缓存清理完成：删除 {result.deleted_dirs} 个剧缓存目录，释放 {freed}"
         if result.errors:
             message += f"，跳过 {len(result.errors)} 项异常"
         self.append_log(message)
@@ -3802,7 +3851,7 @@ class DesktopWindow(QMainWindow):
         QMessageBox.information(
             self,
             "清理数据",
-            f"清理完成：删除 {result.deleted_dirs} 个已上传剧目录，释放 {freed}。",
+            f"清理完成：删除 {result.deleted_dirs} 个剧缓存目录，释放 {freed}。",
         )
 
     def handle_manual_upload_cache_cleanup_failed(self, error: str) -> None:
@@ -3919,6 +3968,10 @@ class DesktopWindow(QMainWindow):
 
     def update_task_progress(self, stage: str, task_id: str | None, task: dict[str, Any] | None = None) -> None:
         self.current_task_id = task_id
+        if task:
+            self.current_task_snapshot = dict(task)
+        elif task_id is None:
+            self.current_task_snapshot = None
         media_account_id = str((task or {}).get("mediaAccountId") or "").strip()
         if media_account_id:
             self.current_media_account_id = media_account_id

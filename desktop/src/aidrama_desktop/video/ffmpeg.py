@@ -11,6 +11,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from aidrama_desktop.config.settings import (
+    ffprobe_path_for_ffmpeg,
+    find_ffmpeg_fallback_path,
+    normalize_executable_path,
+)
 from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
 
 WECHAT_VIDEO_MIN_BITRATE_BPS = 4_000_000
@@ -225,8 +230,36 @@ class FfmpegProcessor:
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
         except FileNotFoundError as exception:
+            fallback_command = self._ffmpeg_fallback_command(command)
+            if fallback_command:
+                try:
+                    subprocess.run(
+                        fallback_command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        **hidden_subprocess_kwargs(),
+                    )
+                    self.ffmpeg_path = fallback_command[0]
+                    return target
+                except FileNotFoundError:
+                    pass
+                except subprocess.CalledProcessError as fallback_exception:
+                    self._cleanup_failed_target(target)
+                    detail = self._process_output_tail(fallback_exception.stdout, fallback_exception.stderr)
+                    if detail == "没有返回错误详情":
+                        detail = f"{detail}；目标文件：{target}；命令摘要：{self._command_summary(fallback_command)}"
+                    raise FfmpegError(
+                        f"FFmpeg 转码退出码 {self._format_process_returncode(fallback_exception.returncode)}：{detail}"
+                    ) from fallback_exception
+                except OSError as fallback_exception:
+                    self._cleanup_failed_target(target)
+                    raise FfmpegError(f"FFmpeg 无法启动：{fallback_exception}") from fallback_exception
             self._cleanup_failed_target(target)
-            raise FfmpegError(f"找不到 FFmpeg 可执行文件：{self.ffmpeg_path}") from exception
+            raise FfmpegError(
+                f"找不到 FFmpeg 可执行文件：{command[0]}。"
+                "已尝试 PATH 和常见安装目录兜底，仍未找到可用的 FFmpeg/FFprobe。"
+            ) from exception
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
             detail = self._process_output_tail(exception.stdout, exception.stderr)
@@ -897,6 +930,25 @@ class FfmpegProcessor:
                 **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exception:
+            fallback_path = find_ffmpeg_fallback_path(exclude=self.ffmpeg_path)
+            if fallback_path:
+                self.ffmpeg_path = fallback_path
+                try:
+                    subprocess.run(
+                        [self.ffprobe_path(), "-version"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        **hidden_subprocess_kwargs(),
+                    )
+                    return
+                except FileNotFoundError:
+                    pass
+                except subprocess.CalledProcessError as fallback_exception:
+                    detail = self._process_output_tail(fallback_exception.stdout, fallback_exception.stderr)
+                    raise FfmpegError(f"FFprobe 无法运行：{detail}") from fallback_exception
+                except OSError as fallback_exception:
+                    raise FfmpegError(f"FFprobe 无法启动：{fallback_exception}") from fallback_exception
             raise FfmpegError(
                 f"找不到 FFprobe 可执行文件：{self.ffprobe_path()}。"
                 "请安装 FFmpeg/FFprobe，或把 AIDRAMA_FFMPEG_PATH 配置为 ffmpeg 的绝对路径。"
@@ -908,12 +960,16 @@ class FfmpegProcessor:
             raise FfmpegError(f"FFprobe 无法启动：{exception}") from exception
 
     def ffprobe_path(self) -> str:
-        ffmpeg = Path(self.ffmpeg_path)
-        if ffmpeg.name == "ffmpeg":
-            return str(ffmpeg.with_name("ffprobe")) if ffmpeg.parent != Path(".") else "ffprobe"
-        if ffmpeg.name.startswith("ffmpeg"):
-            return str(ffmpeg.with_name(ffmpeg.name.replace("ffmpeg", "ffprobe", 1)))
-        return "ffprobe"
+        return ffprobe_path_for_ffmpeg(self.ffmpeg_path)
+
+    def _ffmpeg_fallback_command(self, command: list[str]) -> list[str] | None:
+        if not command:
+            return None
+        configured_path = normalize_executable_path(command[0])
+        fallback_path = find_ffmpeg_fallback_path(exclude=configured_path)
+        if not fallback_path:
+            return None
+        return [fallback_path, *command[1:]]
 
     @staticmethod
     def _bitrate_from_probe_payload(payload: dict) -> int | None:

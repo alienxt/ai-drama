@@ -193,6 +193,8 @@ def test_ffmpeg_processor_reports_missing_ffprobe(monkeypatch):
         raise FileNotFoundError(command[0])
 
     monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
 
     processor = FfmpegProcessor("/opt/ffmpeg/bin/ffmpeg")
 
@@ -201,6 +203,41 @@ def test_ffmpeg_processor_reports_missing_ffprobe(monkeypatch):
 
     assert "找不到 FFprobe 可执行文件：/opt/ffmpeg/bin/ffprobe" in str(error.value)
     assert "AIDRAMA_FFMPEG_PATH" in str(error.value)
+
+
+def test_ffmpeg_processor_retries_missing_ffmpeg_with_path_fallback(monkeypatch, tmp_path):
+    stale_ffmpeg = tmp_path / "missing" / "ffmpeg"
+    fallback_bin = tmp_path / "fallback" / "bin"
+    fallback_bin.mkdir(parents=True)
+    fallback_ffmpeg = fallback_bin / "ffmpeg"
+    fallback_ffprobe = fallback_bin / "ffprobe"
+    fallback_ffmpeg.write_text("#!/bin/sh\n")
+    fallback_ffprobe.write_text("#!/bin/sh\n")
+    source = tmp_path / "source.mp4"
+    target = tmp_path / "target.mp4"
+    source.write_text("video")
+    commands: list[list[str]] = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] in {str(stale_ffmpeg), str(stale_ffmpeg.with_name("ffprobe"))}:
+            raise FileNotFoundError(command[0])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aidrama_desktop.config.settings.shutil.which",
+        lambda name: str(fallback_ffmpeg) if name == "ffmpeg" else None,
+    )
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
+
+    processor = FfmpegProcessor(str(stale_ffmpeg))
+
+    assert processor.transcode_for_wechat_video(source, target) == target
+    stale_ffmpeg_index = next(index for index, command in enumerate(commands) if command[0] == str(stale_ffmpeg))
+    fallback_ffmpeg_index = next(index for index, command in enumerate(commands) if command[0] == str(fallback_ffmpeg))
+    assert stale_ffmpeg_index < fallback_ffmpeg_index
+    assert processor.ffmpeg_path == str(fallback_ffmpeg)
 
 
 def test_ffmpeg_processor_transcodes_low_resolution_to_wechat_video_minimum(monkeypatch, tmp_path):

@@ -161,6 +161,94 @@ def test_check_update_sends_platform_and_current_version(monkeypatch):
     ]
 
 
+def test_authenticated_request_refreshes_token_once_for_expired_auth(monkeypatch):
+    requests = []
+
+    class Response:
+        def __init__(self, status_code, body=None):
+            self.status_code = status_code
+            self.body = body
+
+        def json(self):
+            if self.body is None:
+                raise ValueError("not json")
+            return self.body
+
+    class Client:
+        def __init__(self, base_url, timeout):
+            self.base_url = base_url
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method, path, json=None, headers=None):
+            requests.append((method, path, json, headers))
+            if len(requests) == 1:
+                return Response(403)
+            return Response(200, {"success": True, "data": {"ok": True}, "error": None})
+
+    monkeypatch.setattr("aidrama_desktop.api.client.httpx.Client", Client)
+    store = Store()
+    store.token = "old-token"
+
+    def refresh_auth():
+        store.token = "new-token"
+        return True
+
+    client = ApiClient("http://server/api", store, auth_refresher=refresh_auth)
+
+    assert client.get("/desktop/tasks") == {"ok": True}
+    assert requests == [
+        ("GET", "/desktop/tasks", None, {"Authorization": "Bearer old-token"}),
+        ("GET", "/desktop/tasks", None, {"Authorization": "Bearer new-token"}),
+    ]
+
+
+def test_authenticated_request_does_not_refresh_device_binding_error(monkeypatch):
+    refreshed = []
+
+    class Response:
+        status_code = 403
+
+        def json(self):
+            return {
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": "DEVICE_MISMATCH",
+                    "message": "账号已绑定其他设备，不允许在当前设备登录",
+                },
+            }
+
+    class Client:
+        def __init__(self, base_url, timeout):
+            self.base_url = base_url
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method, path, json=None, headers=None):
+            return Response()
+
+    monkeypatch.setattr("aidrama_desktop.api.client.httpx.Client", Client)
+    store = Store()
+    store.token = "token-1"
+    client = ApiClient("http://server/api", store, auth_refresher=lambda: refreshed.append(True) or True)
+
+    with pytest.raises(ApiError, match="账号已绑定其他设备"):
+        client.get("/desktop/tasks")
+
+    assert refreshed == []
+
+
 def test_connection_error_message_keeps_useful_reason():
     error = httpx.ConnectError("nodename nor servname provided")
 
