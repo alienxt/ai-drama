@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QStyle,
     QTableWidget,
@@ -54,7 +55,7 @@ from aidrama_desktop import __version__
 from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
 from aidrama_desktop.browser.chrome import ChromeController, find_chrome
-from aidrama_desktop.config.settings import Settings, load_settings
+from aidrama_desktop.config.settings import Settings, load_settings, save_tool_path_config
 from aidrama_desktop.contracts import (
     ContractConfigStore,
     CONTRACT_TEMPLATE_TYPES,
@@ -1076,11 +1077,17 @@ class DesktopWindow(QMainWindow):
         return page
 
     def _settings_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
         page = QWidget()
+        scroll.setWidget(page)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self._video_reassembly_settings_panel())
+        layout.addWidget(self._tool_path_settings_panel())
         panel, panel_layout = self._panel("运行配置")
         update_row = QHBoxLayout()
         update_hint = QLabel(f"当前版本：{__version__}")
@@ -1126,15 +1133,72 @@ class DesktopWindow(QMainWindow):
                 open_button.clicked.connect(lambda _=False, item=setting: self.open_settings_row(item))
                 table.setCellWidget(row, 2, open_button)
             table.setRowHeight(row, 38)
-        table.setMinimumHeight(420)
+        table.setMinimumHeight(360)
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
         panel_layout.addLayout(update_row)
         panel_layout.addLayout(cleanup_row)
         panel_layout.addWidget(note)
         panel_layout.addWidget(table, 1)
-        layout.addWidget(panel, 1)
-        return page
+        layout.addWidget(panel)
+        layout.addStretch(1)
+        return scroll
+
+    def _tool_path_settings_panel(self) -> QFrame:
+        panel, panel_layout = self._panel("工具路径")
+        hint = QLabel("Whisper 路径保存后会优先使用，不依赖 launchctl 环境变量。留空则自动探测常见安装位置。")
+        hint.setObjectName("mutedText")
+        panel_layout.addWidget(hint)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignLeft)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+
+        self.whisper_path_input = QLineEdit(str(self.settings.whisper_path or ""))
+        self.whisper_path_input.setPlaceholderText("例如：/Users/mac/Library/Python/3.9/bin/whisper")
+        form.addRow("Whisper", self._path_input_row(self.whisper_path_input, self.choose_whisper_path))
+
+        self.node_path_input = QLineEdit(str(self.settings.node_path or ""))
+        self.node_path_input.setPlaceholderText("例如：/opt/homebrew/bin/node")
+        form.addRow("Node.js", self._path_input_row(self.node_path_input, self.choose_node_path))
+
+        self.jianying_draft_root_input = QLineEdit(str(self.settings.jianying_draft_root or ""))
+        self.jianying_draft_root_input.setPlaceholderText(
+            "例如：/Users/mac/Movies/JianyingPro/User Data/Projects/com.lveditor.draft"
+        )
+        form.addRow("剪映草稿目录", self._path_input_row(self.jianying_draft_root_input, self.choose_jianying_draft_root))
+
+        self.jianying_music_dir_input = QLineEdit(str(self.settings.jianying_music_dir or ""))
+        self.jianying_music_dir_input.setPlaceholderText(
+            "例如：/Users/mac/Library/Application Support/ai-drama-desktop/work/dramas/wav"
+        )
+        form.addRow("剪映音乐目录", self._path_input_row(self.jianying_music_dir_input, self.choose_jianying_music_dir))
+        panel_layout.addLayout(form)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+        save_button = QPushButton("保存工具路径")
+        save_button.clicked.connect(self.save_tool_path_settings)
+        action_row.addWidget(save_button)
+        panel_layout.addLayout(action_row)
+        return panel
+
+    def _path_input_row(self, input_widget: QLineEdit, choose_callback: Callable[[], None]) -> QHBoxLayout:
+        input_widget.setMinimumHeight(34)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(input_widget, 1)
+        browse_button = QPushButton("选择")
+        browse_button.setMinimumHeight(34)
+        browse_button.clicked.connect(choose_callback)
+        clear_button = QPushButton("清空")
+        clear_button.setMinimumHeight(34)
+        clear_button.clicked.connect(lambda: input_widget.clear())
+        row.addWidget(browse_button)
+        row.addWidget(clear_button)
+        return row
 
     def _video_reassembly_settings_panel(self) -> QFrame:
         panel, panel_layout = self._panel("去重配置")
@@ -1251,6 +1315,58 @@ class DesktopWindow(QMainWindow):
         self.video_reassembly_summary_label.setText(f"当前方案：{config.summary()}")
         self.append_log(f"去重配置已保存：{config.summary()}")
         QMessageBox.information(self, "去重配置", "去重配置已保存。")
+
+    def choose_whisper_path(self) -> None:
+        self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
+
+    def choose_node_path(self) -> None:
+        self._choose_file_path(self.node_path_input, "选择 Node.js 命令")
+
+    def choose_jianying_draft_root(self) -> None:
+        self._choose_directory_path(self.jianying_draft_root_input, "选择剪映草稿目录")
+
+    def choose_jianying_music_dir(self) -> None:
+        self._choose_directory_path(self.jianying_music_dir_input, "选择剪映音乐目录")
+
+    def _choose_file_path(self, input_widget: QLineEdit, title: str) -> None:
+        start_dir = str(Path(input_widget.text()).expanduser().parent) if input_widget.text() else ""
+        path, _ = QFileDialog.getOpenFileName(self, title, start_dir)
+        if path:
+            input_widget.setText(path)
+
+    def _choose_directory_path(self, input_widget: QLineEdit, title: str) -> None:
+        start_dir = input_widget.text().strip() or str(self.settings.work_dir)
+        path = QFileDialog.getExistingDirectory(self, title, start_dir)
+        if path:
+            input_widget.setText(path)
+
+    def save_tool_path_settings(self) -> None:
+        whisper_path = self.whisper_path_input.text().strip() or None
+        node_path = self.node_path_input.text().strip() or None
+        jianying_draft_root = self.jianying_draft_root_input.text().strip() or None
+        jianying_music_dir = self.jianying_music_dir_input.text().strip() or None
+        save_tool_path_config(
+            self.settings.config_dir,
+            whisper_path=whisper_path,
+            node_path=node_path,
+            jianying_draft_root=jianying_draft_root,
+            jianying_music_dir=jianying_music_dir,
+        )
+        self.settings = update_settings(
+            self.settings,
+            whisper_path=whisper_path,
+            node_path=node_path,
+            jianying_draft_root=Path(jianying_draft_root).expanduser() if jianying_draft_root else None,
+            jianying_music_dir=Path(jianying_music_dir).expanduser() if jianying_music_dir else None,
+        )
+        self.append_log(
+            "工具路径已保存："
+            f"Whisper={whisper_path or '自动探测'}，"
+            f"Node.js={node_path or '自动探测'}，"
+            f"剪映草稿目录={jianying_draft_root or '自动探测'}，"
+            f"剪映音乐目录={jianying_music_dir or '默认目录'}"
+        )
+        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的 Whisper 路径。")
 
     def _logs_page(self) -> QWidget:
         page = QWidget()
@@ -1446,7 +1562,13 @@ class DesktopWindow(QMainWindow):
             video_reassembly_config=self.video_reassembly_config,
             storyboard_generator=StoryboardGenerator(self.settings.ffmpeg_path, chrome_path),
             storyboards_dir=self.settings.work_dir / "storyboards",
-            jianying_generator=JianyingProjectGenerator(ffmpeg_path=self.settings.ffmpeg_path),
+            jianying_generator=JianyingProjectGenerator(
+                ffmpeg_path=self.settings.ffmpeg_path,
+                node_path=self.settings.node_path,
+                draft_root=self.settings.jianying_draft_root,
+            ),
+            whisper_path=self.settings.whisper_path,
+            jianying_music_dir=self.settings.jianying_music_dir,
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
@@ -4405,6 +4527,15 @@ def apply_style(app: QApplication) -> None:
             border: 1px solid #d9dee8;
             border-radius: 7px;
             padding: 7px;
+        }
+        QLineEdit, QComboBox, QDoubleSpinBox {
+            min-height: 30px;
+        }
+        QComboBox, QDoubleSpinBox {
+            background: #ffffff;
+            border: 1px solid #d9dee8;
+            border-radius: 7px;
+            padding: 4px 8px;
         }
         QTableWidget {
             gridline-color: #eef1f5;

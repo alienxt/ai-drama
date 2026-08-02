@@ -60,6 +60,10 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
         SettingsRow("更新包目录", str(settings.updates_dir), "directory"),
         SettingsRow("浏览器登录态目录", str(settings.browser_profile_dir), "directory"),
         SettingsRow("FFmpeg", settings.ffmpeg_path),
+        SettingsRow("Whisper", settings.whisper_path or "自动探测"),
+        SettingsRow("Node.js", settings.node_path or "自动探测"),
+        SettingsRow("剪映草稿目录", str(settings.jianying_draft_root) if settings.jianying_draft_root else "自动探测"),
+        SettingsRow("剪映音乐目录", str(settings.jianying_music_dir) if settings.jianying_music_dir else "默认目录"),
         SettingsRow("LibreOffice", settings.soffice_path),
     ]
 

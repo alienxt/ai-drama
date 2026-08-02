@@ -571,7 +571,7 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
             return type("Result", (), {"srt_path": target, "created": True})()
 
     whisper_generator = FakeWhisperSrtGenerator()
-    monkeypatch.setattr("aidrama_desktop.tasks.runner.WhisperSrtGenerator", lambda: whisper_generator)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.WhisperSrtGenerator", lambda **_: whisper_generator)
 
     api = StoryboardApi()
     publisher = FakePublisher()

@@ -179,6 +179,8 @@ class TaskRunner:
     storyboard_generator: StoryboardGenerator | None = None
     storyboards_dir: Path | None = None
     jianying_generator: JianyingProjectGenerator | None = None
+    whisper_path: str | None = None
+    jianying_music_dir: Path | None = None
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -861,7 +863,10 @@ class TaskRunner:
         )
         try:
             self._notify(f"识别剪映字幕：{drama_title} {episode_label}", task_id)
-            result = WhisperSrtGenerator().generate_srt(item.file, target)
+            result = WhisperSrtGenerator(
+                command_path=self.whisper_path,
+                ffmpeg_path=getattr(self.processor, "ffmpeg_path", None),
+            ).generate_srt(item.file, target)
         except WhisperSrtGenerationError as exception:
             self._notify(
                 f"剪映字幕识别跳过：{drama_title} {episode_label}（{exception}）",
@@ -872,10 +877,10 @@ class TaskRunner:
         self._notify(f"剪映字幕{action}：{drama_title} {episode_label}", task_id)
         return result.srt_path
 
-    @staticmethod
-    def _jianying_project_bgm_files_for_item(item: EpisodeMediaFile) -> list[Path]:
+    def _jianying_project_bgm_files_for_item(self, item: EpisodeMediaFile) -> list[Path]:
         shared_music_dir = Path(
-            os.environ.get(JIANYING_PROJECT_MUSIC_DIR_ENV_KEY)
+            self.jianying_music_dir
+            or os.environ.get(JIANYING_PROJECT_MUSIC_DIR_ENV_KEY)
             or (Path.home() / "Desktop" / "短剧" / "音乐")
         )
         directories = [

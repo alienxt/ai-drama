@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from aidrama_desktop.config.settings import COMMON_WHISPER_PATHS as SETTINGS_COMMON_WHISPER_PATHS
+from aidrama_desktop.config.settings import resolve_whisper_path
 from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
 
 
@@ -20,15 +21,7 @@ DEFAULT_WHISPER_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_WHISPER_INITIAL_PROMPT = (
     "以下是普通话短剧对白，请使用简体中文和中文标点输出。"
 )
-COMMON_WHISPER_PATHS = (
-    Path("~/.venvs/whisper/bin/whisper"),
-    Path("~/.pyenv/shims/whisper"),
-    Path("/opt/homebrew/opt/pyenv/shims/whisper"),
-    Path("/opt/homebrew/bin/whisper"),
-    Path("/usr/local/bin/whisper"),
-)
-
-
+COMMON_WHISPER_PATHS = SETTINGS_COMMON_WHISPER_PATHS
 class WhisperSrtGenerationError(RuntimeError):
     pass
 
@@ -46,6 +39,7 @@ class WhisperSrtGenerator:
     language: str | None = None
     initial_prompt: str | None = None
     timeout_seconds: int | None = None
+    ffmpeg_path: str | None = None
 
     def generate_srt(self, video: Path, target: Path) -> WhisperSrtGenerationResult:
         video = Path(video)
@@ -87,6 +81,7 @@ class WhisperSrtGenerator:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds(),
+                env=self._subprocess_env(command_path),
                 **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exception:
@@ -110,23 +105,36 @@ class WhisperSrtGenerator:
         return WhisperSrtGenerationResult(srt_path=target, created=True)
 
     def _resolve_command_path(self) -> str:
-        candidates = [
-            self.command_path,
-            os.environ.get(WHISPER_PATH_ENV_KEY),
-            shutil.which("whisper"),
-            *COMMON_WHISPER_PATHS,
-            "whisper",
-        ]
-        for candidate in candidates:
-            if not candidate:
-                continue
-            candidate_path = Path(candidate).expanduser()
-            if candidate_path.is_file():
-                return str(candidate_path)
-            resolved = shutil.which(str(candidate))
-            if resolved:
-                return resolved
+        resolved = resolve_whisper_path(self.command_path or os.environ.get(WHISPER_PATH_ENV_KEY))
+        if resolved:
+            return resolved
         raise WhisperSrtGenerationError("找不到本机 whisper 命令")
+
+    def _subprocess_env(self, command_path: str) -> dict[str, str]:
+        env = dict(os.environ)
+        path_dirs = [
+            Path(command_path).expanduser().parent,
+            Path(self.ffmpeg_path).expanduser().parent if self.ffmpeg_path else None,
+            Path("/opt/homebrew/bin"),
+            Path("/usr/local/bin"),
+            Path("/usr/bin"),
+            Path("/bin"),
+            Path("/usr/sbin"),
+            Path("/sbin"),
+        ]
+        existing_path = env.get("PATH") or ""
+        merged: list[str] = []
+        seen: set[str] = set()
+        for directory in [*path_dirs, *(Path(part) for part in existing_path.split(os.pathsep) if part)]:
+            if not directory:
+                continue
+            text = str(directory)
+            if text == "." or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+        env["PATH"] = os.pathsep.join(merged)
+        return env
 
     def _model(self) -> str:
         return str(self.model or os.environ.get(WHISPER_MODEL_ENV_KEY) or DEFAULT_WHISPER_MODEL)

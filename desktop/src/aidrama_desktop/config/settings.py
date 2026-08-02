@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -18,6 +19,20 @@ COMMON_FFMPEG_PATHS = (
     r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
     r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
 )
+COMMON_WHISPER_PATHS = (
+    Path("~/Library/Python/3.13/bin/whisper"),
+    Path("~/Library/Python/3.12/bin/whisper"),
+    Path("~/Library/Python/3.11/bin/whisper"),
+    Path("~/Library/Python/3.10/bin/whisper"),
+    Path("~/Library/Python/3.9/bin/whisper"),
+    Path("~/.local/bin/whisper"),
+    Path("~/.venvs/whisper/bin/whisper"),
+    Path("~/.pyenv/shims/whisper"),
+    Path("/opt/homebrew/opt/pyenv/shims/whisper"),
+    Path("/opt/homebrew/bin/whisper"),
+    Path("/usr/local/bin/whisper"),
+)
+TOOL_PATHS_CONFIG_FILENAME = "tool-paths.json"
 
 
 def default_device_id() -> str:
@@ -42,6 +57,13 @@ def normalize_executable_path(executable_path: str | None, *, default: str = "ff
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1].strip()
     return value or default
+
+
+def normalize_optional_executable_path(executable_path: str | None) -> str | None:
+    value = str(executable_path or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    return value or None
 
 
 def ffmpeg_path_is_usable(ffmpeg_path: str) -> bool:
@@ -70,11 +92,80 @@ def resolve_ffmpeg_path(ffmpeg_path: str) -> str:
     return find_ffmpeg_fallback_path(exclude=requested) or requested
 
 
+def resolve_whisper_path(whisper_path: str | None = None) -> str | None:
+    candidates = [
+        normalize_optional_executable_path(whisper_path),
+        shutil.which("whisper"),
+        *COMMON_WHISPER_PATHS,
+        "whisper",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(str(candidate)).expanduser()
+        normalized = str(candidate_path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if candidate_path.is_file():
+            return normalized
+        resolved = shutil.which(str(candidate))
+        if resolved:
+            return resolved
+    return normalize_optional_executable_path(whisper_path)
+
+
+def load_tool_path_config(config_dir: Path) -> dict[str, str]:
+    path = config_dir / TOOL_PATHS_CONFIG_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, str] = {}
+    key_map = {
+        "whisperPath": "whisper_path",
+        "nodePath": "node_path",
+        "jianyingDraftRoot": "jianying_draft_root",
+        "jianyingMusicDir": "jianying_music_dir",
+    }
+    for raw_key, settings_key in key_map.items():
+        value = normalize_optional_executable_path(data.get(raw_key))
+        if value:
+            result[settings_key] = value
+    return result
+
+
+def save_tool_path_config(
+    config_dir: Path,
+    *,
+    whisper_path: str | None,
+    node_path: str | None = None,
+    jianying_draft_root: str | None = None,
+    jianying_music_dir: str | None = None,
+) -> None:
+    path = config_dir / TOOL_PATHS_CONFIG_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "whisperPath": normalize_optional_executable_path(whisper_path) or "",
+        "nodePath": normalize_optional_executable_path(node_path) or "",
+        "jianyingDraftRoot": normalize_optional_executable_path(jianying_draft_root) or "",
+        "jianyingMusicDir": normalize_optional_executable_path(jianying_music_dir) or "",
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class Settings(BaseSettings):
     server_url: str = Field(default=API_BASE_URL)
     device_id: str = Field(default_factory=default_device_id)
     chrome_path: str | None = None
     ffmpeg_path: str = "ffmpeg"
+    whisper_path: str | None = None
+    node_path: str | None = None
+    jianying_draft_root: Path | None = None
+    jianying_music_dir: Path | None = None
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
     download_concurrency: int = 6
@@ -124,12 +215,30 @@ class Settings(BaseSettings):
     def contracts_dir(self) -> Path:
         return self.work_dir / "contracts"
 
+    @property
+    def tool_paths_file(self) -> Path:
+        return self.config_dir / TOOL_PATHS_CONFIG_FILENAME
+
 
 def load_settings() -> Settings:
     settings = Settings()
     settings.ffmpeg_path = resolve_ffmpeg_path(settings.ffmpeg_path)
     settings.work_dir.mkdir(parents=True, exist_ok=True)
     settings.config_dir.mkdir(parents=True, exist_ok=True)
+    tool_path_config = load_tool_path_config(settings.config_dir)
+    if tool_path_config.get("whisper_path"):
+        settings.whisper_path = tool_path_config["whisper_path"]
+    if tool_path_config.get("node_path"):
+        settings.node_path = tool_path_config["node_path"]
+    if tool_path_config.get("jianying_draft_root"):
+        settings.jianying_draft_root = Path(tool_path_config["jianying_draft_root"]).expanduser()
+    elif os.environ.get("JIANYING_DRAFT_ROOT"):
+        settings.jianying_draft_root = Path(str(os.environ["JIANYING_DRAFT_ROOT"])).expanduser()
+    if tool_path_config.get("jianying_music_dir"):
+        settings.jianying_music_dir = Path(tool_path_config["jianying_music_dir"]).expanduser()
+    elif os.environ.get("AIDRAMA_JIANYING_MUSIC_DIR"):
+        settings.jianying_music_dir = Path(str(os.environ["AIDRAMA_JIANYING_MUSIC_DIR"])).expanduser()
+    settings.whisper_path = resolve_whisper_path(settings.whisper_path or os.environ.get("AIDRAMA_WHISPER_PATH"))
     if "AIDRAMA_DEVICE_ID" not in os.environ:
         if settings.device_id_file.exists():
             stored_device_id = settings.device_id_file.read_text(encoding="utf-8").strip()

@@ -1,4 +1,6 @@
-from aidrama_desktop.config.settings import Settings, load_settings
+from pathlib import Path
+
+from aidrama_desktop.config.settings import Settings, load_settings, resolve_whisper_path, save_tool_path_config
 
 
 def test_settings_default_device_id_uses_mac_address(monkeypatch):
@@ -106,6 +108,53 @@ def test_load_settings_falls_back_when_explicit_ffmpeg_path_is_missing(monkeypat
     settings = load_settings()
 
     assert settings.ffmpeg_path == str(ffmpeg)
+
+
+def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp_path):
+    saved_whisper = tmp_path / "tools" / "whisper"
+    saved_node = tmp_path / "tools" / "node"
+    draft_root = tmp_path / "jianying" / "drafts"
+    music_dir = tmp_path / "music"
+    saved_whisper.parent.mkdir(parents=True)
+    saved_whisper.write_text("#!/bin/sh\n")
+    saved_node.write_text("#!/bin/sh\n")
+    draft_root.mkdir(parents=True)
+    music_dir.mkdir()
+    config_dir = tmp_path / "config"
+    save_tool_path_config(
+        config_dir,
+        whisper_path=str(saved_whisper),
+        node_path=str(saved_node),
+        jianying_draft_root=str(draft_root),
+        jianying_music_dir=str(music_dir),
+    )
+    monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
+    monkeypatch.setenv("JIANYING_DRAFT_ROOT", str(tmp_path / "old" / "drafts"))
+    monkeypatch.setenv("AIDRAMA_JIANYING_MUSIC_DIR", str(tmp_path / "old" / "music"))
+    monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
+    monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(config_dir / "token"))
+    monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
+
+    settings = load_settings()
+
+    assert settings.whisper_path == str(saved_whisper)
+    assert settings.node_path == str(saved_node)
+    assert settings.jianying_draft_root == draft_root
+    assert settings.jianying_music_dir == music_dir
+
+
+def test_resolve_whisper_path_detects_user_python_install(monkeypatch, tmp_path):
+    user_whisper = tmp_path / "Library" / "Python" / "3.9" / "bin" / "whisper"
+    user_whisper.parent.mkdir(parents=True)
+    user_whisper.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "aidrama_desktop.config.settings.COMMON_WHISPER_PATHS",
+        (Path("~/Library/Python/3.9/bin/whisper"),),
+    )
+
+    assert resolve_whisper_path() == str(user_whisper)
 
 
 def test_load_settings_persists_generated_device_id(monkeypatch, tmp_path):
