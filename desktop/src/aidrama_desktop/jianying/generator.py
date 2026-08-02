@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aidrama_desktop.config.settings import ffprobe_path_for_ffmpeg
 from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
 
 
@@ -79,6 +80,8 @@ class JianyingProjectGenerator:
             str(screenshot_path),
             "--ffmpeg",
             self.ffmpeg_path,
+            "--ffprobe",
+            ffprobe_path_for_ffmpeg(self.ffmpeg_path),
         ]
         if self.close_existing:
             command.append("--close-existing")

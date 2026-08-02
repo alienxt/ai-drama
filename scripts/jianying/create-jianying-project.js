@@ -79,6 +79,8 @@ Proof/screenshot options:
   --full-screen-capture   Capture the whole screen instead of the Jianying/CapCut window.
   --close-existing        Close existing Jianying process before opening.
   --jianying-app <path>   App path override. Useful on Windows installs.
+  --ffmpeg <path>         FFmpeg command/path.
+  --ffprobe <path>        FFprobe command/path. Defaults to sibling of --ffmpeg.
 
 Environment overrides:
   JIANYING_DRAFT_ROOT, JIANYING_APP
@@ -228,6 +230,18 @@ function candidateDraftRoots() {
 function defaultDraftRoot() {
   const candidates = candidateDraftRoots();
   return candidates.find(existsDir) || candidates[0];
+}
+
+function ffprobePathForFfmpeg(ffmpegBin) {
+  const value = String(ffmpegBin || 'ffmpeg').trim();
+  const parsed = path.parse(value);
+  const lower = parsed.base.toLowerCase();
+  if (lower === 'ffmpeg.exe') return parsed.dir ? path.join(parsed.dir, 'ffprobe.exe') : 'ffprobe.exe';
+  if (lower === 'ffmpeg') return parsed.dir ? path.join(parsed.dir, 'ffprobe') : 'ffprobe';
+  if (lower.startsWith('ffmpeg')) {
+    return path.join(parsed.dir, parsed.base.replace(/^ffmpeg/i, 'ffprobe'));
+  }
+  return 'ffprobe';
 }
 
 function ensureInside(parent, child) {
@@ -1627,7 +1641,7 @@ $bmp.Dispose()
 
 function createProject(args) {
   const ffmpegBin = args.ffmpeg || 'ffmpeg';
-  const ffprobeBin = args.ffprobe || 'ffprobe';
+  const ffprobeBin = args.ffprobe || ffprobePathForFfmpeg(ffmpegBin);
   const video = resolveExistingFile(args.video, 'Video');
   const srt = args.srt ? resolveExistingFile(args.srt, 'SRT') : null;
   const bgmFiles = args.bgm.map((file, index) => resolveExistingFile(file, `BGM #${index + 1}`));
