@@ -20,6 +20,13 @@ DEFAULT_WHISPER_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_WHISPER_INITIAL_PROMPT = (
     "以下是普通话短剧对白，请使用简体中文和中文标点输出。"
 )
+COMMON_WHISPER_PATHS = (
+    Path("~/.venvs/whisper/bin/whisper"),
+    Path("~/.pyenv/shims/whisper"),
+    Path("/opt/homebrew/opt/pyenv/shims/whisper"),
+    Path("/opt/homebrew/bin/whisper"),
+    Path("/usr/local/bin/whisper"),
+)
 
 
 class WhisperSrtGenerationError(RuntimeError):
@@ -103,12 +110,17 @@ class WhisperSrtGenerator:
         return WhisperSrtGenerationResult(srt_path=target, created=True)
 
     def _resolve_command_path(self) -> str:
-        explicit = self.command_path or os.environ.get(WHISPER_PATH_ENV_KEY)
-        candidates = [explicit, shutil.which("whisper"), "whisper"]
+        candidates = [
+            self.command_path,
+            os.environ.get(WHISPER_PATH_ENV_KEY),
+            shutil.which("whisper"),
+            *COMMON_WHISPER_PATHS,
+            "whisper",
+        ]
         for candidate in candidates:
             if not candidate:
                 continue
-            candidate_path = Path(candidate)
+            candidate_path = Path(candidate).expanduser()
             if candidate_path.is_file():
                 return str(candidate_path)
             resolved = shutil.which(str(candidate))
