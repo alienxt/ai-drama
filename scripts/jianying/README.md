@@ -24,6 +24,14 @@ Inputs:
 - `--video`: required source episode video.
 - `--srt`: optional subtitle file. SRT timestamps become Jianying text segments.
 - `--bgm`: optional BGM file. Can be repeated; files become audio materials and timeline segments.
+- `--template`: optional explicit clean template draft. If omitted, the tool creates a built-in clean seed draft.
+
+Template policy:
+
+- A dedicated `AI_DRAMA_TEMPLATE_DRAFT` is no longer used by default. Pass it via `--template` only when you intentionally want an external compatibility template.
+- The built-in seed contains no drama title, media path, backup, or Jianying runtime cache.
+- The tool no longer automatically uses ordinary business drafts as templates, because copied Jianying cache files can carry old drama media references into the new draft.
+- `--allow-draft-template-fallback` exists only for manual debugging. Do not enable it on production clients.
 
 Outputs:
 

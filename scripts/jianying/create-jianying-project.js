@@ -63,7 +63,11 @@ Common options:
   --srt <file>            Optional SRT captions. If omitted, no text track is created.
   --bgm <file>            Optional BGM. Can be repeated.
   --audio <file>          Alias of --bgm for backward compatibility.
-  --template <dir>        Template draft dir. If omitted, uses the newest usable local draft.
+  --template <dir>        Optional explicit template draft dir. If omitted, uses
+                          the built-in clean seed.
+  --allow-draft-template-fallback
+                          Unsafe fallback: use a normal Jianying draft as template when
+                          AI_DRAMA_TEMPLATE_DRAFT is missing. Disabled by default.
   --draft-root <dir>      Jianying draft root. Defaults to the local OS path.
   --name <name>           Draft name. Defaults to "<video-name>_剪辑工程".
   --clip-count <n>        Physical video clips on the timeline. Default: 24.
@@ -106,6 +110,7 @@ function parseArgs(argv) {
     closeExisting: false,
     debugWindowsOpen: false,
     fullScreenCapture: false,
+    allowDraftTemplateFallback: false,
     open: false,
     openDraft: false,
     overwrite: false,
@@ -118,7 +123,7 @@ function parseArgs(argv) {
     }
     if (!arg.startsWith('--')) fail(`Unexpected argument: ${arg}`);
     const key = normalizeKey(arg.slice(2));
-    if (['capture', 'closeExisting', 'debugWindowsOpen', 'fullScreenCapture', 'open', 'openDraft', 'overwrite'].includes(key)) {
+    if (['allowDraftTemplateFallback', 'capture', 'closeExisting', 'debugWindowsOpen', 'fullScreenCapture', 'open', 'openDraft', 'overwrite'].includes(key)) {
       args[key] = true;
       continue;
     }
@@ -261,6 +266,350 @@ function emptyDirInside(parent, child) {
   ensureInside(parent, child);
   fs.rmSync(child, { recursive: true, force: true });
   fs.mkdirSync(child, { recursive: true });
+}
+
+function removeInside(parent, child) {
+  ensureInside(parent, child);
+  fs.rmSync(child, { recursive: true, force: true });
+}
+
+function removeTemplateRuntimeArtifacts(draftDir) {
+  const names = [
+    '.backup',
+    'codex_audit.json',
+    'draft_info.json.bak',
+    'template.tmp',
+    'template-2.tmp',
+  ];
+  for (const name of names) removeInside(draftDir, path.join(draftDir, name));
+  for (const entry of fs.readdirSync(draftDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (/^template(?:-\d+)?\.tmp$/i.test(entry.name) || /\.bak$/i.test(entry.name)) {
+      removeInside(draftDir, path.join(draftDir, entry.name));
+    }
+  }
+}
+
+const MATERIAL_BUCKET_KEYS = [
+  'ai_translates',
+  'audio_balances',
+  'audio_effects',
+  'audio_fades',
+  'audio_track_indexes',
+  'audios',
+  'beats',
+  'canvases',
+  'chromas',
+  'color_curves',
+  'digital_humans',
+  'drafts',
+  'effects',
+  'flowers',
+  'green_screens',
+  'handwrites',
+  'hsl',
+  'images',
+  'log_color_wheels',
+  'loudnesses',
+  'manual_deformations',
+  'masks',
+  'material_animations',
+  'material_colors',
+  'multi_language_refs',
+  'placeholders',
+  'plugin_effects',
+  'primary_color_wheels',
+  'realtime_denoises',
+  'shapes',
+  'smart_crops',
+  'smart_relights',
+  'sound_channel_mappings',
+  'speeds',
+  'stickers',
+  'tail_leaders',
+  'text_templates',
+  'texts',
+  'time_marks',
+  'transitions',
+  'video_effects',
+  'video_trackings',
+  'videos',
+  'vocal_beautifys',
+  'vocal_separations',
+];
+
+function makeBuiltInSeedMaterials(videoId, localMaterialId, extraIds) {
+  const materials = Object.fromEntries(MATERIAL_BUCKET_KEYS.map((key) => [key, []]));
+  materials.videos = [{
+    aigc_type: 'none',
+    audio_fade: null,
+    cartoon_path: '',
+    category_id: '',
+    category_name: 'local',
+    check_flag: 63487,
+    crop: {
+      lower_left_x: 0,
+      lower_left_y: 1,
+      lower_right_x: 1,
+      lower_right_y: 1,
+      upper_left_x: 0,
+      upper_left_y: 0,
+      upper_right_x: 1,
+      upper_right_y: 0,
+    },
+    crop_ratio: 'free',
+    crop_scale: 1,
+    duration: 1000000,
+    extra_type_option: 0,
+    formula_id: '',
+    freeze: null,
+    has_audio: true,
+    height: 1280,
+    id: videoId,
+    intensifies_audio_path: '',
+    intensifies_path: '',
+    is_ai_generate_content: false,
+    is_copyright: false,
+    is_text_edit_overdub: false,
+    is_unified_beauty_mode: false,
+    local_id: '',
+    local_material_id: localMaterialId,
+    material_id: '',
+    material_name: 'ai-drama-template-placeholder.mp4',
+    material_url: '',
+    matting: {
+      flag: 0,
+      has_use_quick_brush: false,
+      has_use_quick_eraser: false,
+      interactiveTime: [],
+      path: '',
+      strokes: [],
+    },
+    media_path: './Resources/media/ai-drama-template-placeholder.mp4',
+    object_locked: null,
+    origin_material_id: '',
+    path: './Resources/media/ai-drama-template-placeholder.mp4',
+    picture_from: 'none',
+    picture_set_category_id: '',
+    picture_set_category_name: '',
+    request_id: '',
+    reverse_intensifies_path: '',
+    reverse_path: '',
+    smart_motion: null,
+    source: 0,
+    source_platform: 0,
+    stable: {
+      matrix_path: '',
+      stable_level: 0,
+      time_range: { duration: 0, start: 0 },
+    },
+    team_id: '',
+    type: 'video',
+    video_algorithm: {
+      algorithms: [],
+      complement_frame_config: null,
+      deflicker: null,
+      gameplay_configs: [],
+      motion_blur_config: null,
+      noise_reduction: null,
+      path: '',
+      quality_enhance: null,
+      time_range: null,
+    },
+    width: 720,
+  }];
+  materials.speeds = [{
+    curve_speed: null,
+    id: extraIds.speed,
+    mode: 0,
+    speed: 1,
+    type: 'speed',
+  }];
+  materials.canvases = [{
+    album_image: '',
+    blur: 0,
+    color: '',
+    id: extraIds.canvas,
+    image: '',
+    image_id: '',
+    image_name: '',
+    source_platform: 0,
+    team_id: '',
+    type: 'canvas_color',
+  }];
+  materials.sound_channel_mappings = [{
+    audio_channel_mapping: 0,
+    id: extraIds.soundChannelMapping,
+    is_config_open: false,
+    type: 'none',
+  }];
+  materials.vocal_separations = [{
+    choice: 0,
+    id: extraIds.vocalSeparation,
+    production_path: '',
+    time_range: null,
+    type: 'vocal_separation',
+  }];
+  return materials;
+}
+
+function makeBuiltInSeedDraftInfo(timestampUs) {
+  const videoId = uuid();
+  const extraIds = {
+    canvas: uuid(),
+    soundChannelMapping: uuid(),
+    speed: uuid(),
+    vocalSeparation: uuid(),
+  };
+  return {
+    canvas_config: { height: 1920, ratio: 'original', width: 1080 },
+    color_space: 0,
+    config: {
+      adjust_max_index: 1,
+      attachment_info: [],
+      combination_max_index: 1,
+      export_range: null,
+      extract_audio_last_index: 1,
+      lyrics_recognition_id: '',
+      lyrics_sync: true,
+      lyrics_taskinfo: [],
+      maintrack_adsorb: true,
+      material_save_mode: 0,
+      multi_language_current: 'none',
+      multi_language_list: [],
+      multi_language_main: 'none',
+      multi_language_mode: 'none',
+      original_sound_last_index: 1,
+      record_audio_last_index: 1,
+      sticker_max_index: 1,
+      subtitle_keywords_config: null,
+      subtitle_recognition_id: '',
+      subtitle_sync: true,
+      subtitle_taskinfo: [],
+      system_font_list: [],
+      video_mute: false,
+      zoom_info_params: null,
+    },
+    cover: null,
+    create_time: timestampUs,
+    duration: 1000000,
+    extra_info: null,
+    fps: 30,
+    free_render_index_mode_on: false,
+    group_container: null,
+    id: uuid(),
+    keyframe_graph_list: [],
+    keyframes: {
+      adjusts: [],
+      audios: [],
+      effects: [],
+      filters: [],
+      handwrites: [],
+      stickers: [],
+      texts: [],
+      videos: [],
+    },
+    materials: makeBuiltInSeedMaterials(videoId, localId(), extraIds),
+    mutable_config: null,
+    name: 'AI_DRAMA_BUILT_IN_SEED',
+    new_version: '',
+    platform: { app_id: 3704, app_source: 'lv' },
+    relationships: [],
+    render_index_track_mode_on: false,
+    retouch_cover: null,
+    source: 'default',
+    static_cover_image_path: '',
+    time_marks: null,
+    tracks: [{
+      attribute: 0,
+      flag: 0,
+      id: uuid(),
+      is_default_name: false,
+      name: 'V1 seed',
+      segments: [{
+        caption_info: null,
+        cartoon: false,
+        clip: defaultClip(),
+        common_keyframes: [],
+        enable_adjust: true,
+        enable_color_correct_adjust: false,
+        enable_color_curves: true,
+        enable_color_match_adjust: false,
+        enable_color_wheels: true,
+        enable_lut: true,
+        enable_smart_color_adjust: false,
+        extra_material_refs: [
+          extraIds.speed,
+          extraIds.canvas,
+          extraIds.soundChannelMapping,
+          extraIds.vocalSeparation,
+        ],
+        group_id: '',
+        hdr_settings: { intensity: 1, mode: 1, nits: 1000 },
+        id: uuid(),
+        intensifies_audio: false,
+        is_placeholder: false,
+        is_tone_modify: false,
+        keyframe_refs: [],
+        last_nonzero_volume: 1,
+        material_id: videoId,
+        render_index: 0,
+        responsive_layout: {
+          enable: false,
+          horizontal_pos_layout: 0,
+          size_layout: 0,
+          target_follow: '',
+          vertical_pos_layout: 0,
+        },
+        reverse: false,
+        source_timerange: { duration: 1000000, start: 0 },
+        speed: 1,
+        target_timerange: { duration: 1000000, start: 0 },
+        template_id: '',
+        template_scene: 'default',
+        track_attribute: 0,
+        track_render_index: 0,
+        uniform_scale: { on: true, value: 1 },
+        visible: true,
+        volume: 1,
+      }],
+      type: 'video',
+    }],
+    update_time: timestampUs,
+    version: 360000,
+  };
+}
+
+function createBuiltInSeedDraft(draftDir) {
+  fs.mkdirSync(draftDir, { recursive: true });
+  for (const dir of [
+    path.join(draftDir, 'Resources', 'media'),
+    path.join(draftDir, 'Resources', 'audio'),
+    path.join(draftDir, 'Resources', 'audioAlg'),
+    path.join(draftDir, 'Resources', 'videoAlg'),
+    path.join(draftDir, 'matting'),
+    path.join(draftDir, 'smart_crop'),
+  ]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const timestampUs = nowUs();
+  writeJson(path.join(draftDir, 'draft_info.json'), makeBuiltInSeedDraftInfo(timestampUs));
+  writeJson(path.join(draftDir, 'draft_meta_info.json'), {
+    draft_cover: 'draft_cover.jpg',
+    draft_fold_path: draftDir,
+    draft_id: '',
+    draft_materials: [],
+    draft_name: 'AI_DRAMA_BUILT_IN_SEED',
+    draft_root_path: path.dirname(draftDir),
+    draft_timeline_materials_size_: 0,
+    tm_draft_create: timestampUs,
+    tm_draft_modified: timestampUs,
+    tm_duration: 1000000,
+  });
+  writeJson(path.join(draftDir, 'draft_virtual_store.json'), {
+    draft_materials: [],
+    draft_virtual_store: [],
+  });
 }
 
 function ffprobe(file, ffprobeBin) {
@@ -781,7 +1130,7 @@ function makeExtraRefs(materials, templates, keys, configure = null) {
   return refs;
 }
 
-function findTemplateDraft(draftRoot, explicitTemplate) {
+function findTemplateDraft(draftRoot, explicitTemplate, { allowDraftFallback = false } = {}) {
   if (explicitTemplate) {
     const template = path.resolve(explicitTemplate);
     if (!existsDir(template)) fail(`Template draft not found: ${template}`);
@@ -793,6 +1142,17 @@ function findTemplateDraft(draftRoot, explicitTemplate) {
   }
   const root = readJson(rootFile);
   const stores = Array.isArray(root.all_draft_store) ? root.all_draft_store : [];
+  if (!allowDraftFallback) {
+    return null;
+  }
+  const installedTemplate = stores.find((item) => item?.draft_name === 'AI_DRAMA_TEMPLATE_DRAFT');
+  const installedTemplateDirs = [
+    installedTemplate?.draft_fold_path,
+    path.join(draftRoot, 'AI_DRAMA_TEMPLATE_DRAFT'),
+  ].filter(Boolean);
+  for (const installedTemplateDir of installedTemplateDirs) {
+    if (existsDir(installedTemplateDir)) return installedTemplateDir;
+  }
   for (const item of stores) {
     const draftDir = item.draft_fold_path;
     const draftInfoFile = draftDir && path.join(draftDir, 'draft_info.json');
@@ -927,13 +1287,23 @@ function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
 }
 
 function collectDraftResourceReferenceProblems(draftDir) {
-  const files = [
-    'draft_info.json',
-    'draft_meta_info.json',
-    'draft_virtual_store.json',
-  ];
+  const textFileExtensions = new Set(['.json', '.tmp', '.bak']);
+  const files = [];
   const problems = [];
   const seen = new Set();
+
+  function collectFiles(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectFiles(file);
+      } else if (entry.isFile() && textFileExtensions.has(path.extname(entry.name).toLowerCase())) {
+        files.push(file);
+      }
+    }
+  }
+
+  collectFiles(draftDir);
 
   function addProblem(fileName, location, kind, resourceName) {
     const resourcePath = path.join(draftDir, 'Resources', kind, resourceName);
@@ -972,10 +1342,14 @@ function collectDraftResourceReferenceProblems(draftDir) {
     if (typeof value === 'string') inspectString(value, fileName, location);
   }
 
-  for (const fileName of files) {
-    const file = path.join(draftDir, fileName);
-    if (!fs.existsSync(file)) continue;
-    walk(readJson(file), fileName, '');
+  for (const file of files) {
+    let content;
+    try {
+      content = readJson(file);
+    } catch {
+      continue;
+    }
+    walk(content, path.relative(draftDir, file), '');
   }
   return problems;
 }
@@ -2304,7 +2678,9 @@ function createProject(args) {
   if (!existsDir(draftRoot)) fail(`Jianying draft root not found: ${draftRoot}`);
   const rootFile = path.join(draftRoot, 'root_meta_info.json');
   if (!fs.existsSync(rootFile)) fail(`root_meta_info.json not found: ${rootFile}`);
-  const templateDraft = findTemplateDraft(draftRoot, args.template);
+  const templateDraft = findTemplateDraft(draftRoot, args.template, {
+    allowDraftFallback: Boolean(args.allowDraftTemplateFallback),
+  });
   const draftName = sanitizeName(args.name || `${path.basename(video, path.extname(video))}_剪辑工程`);
   const draftDir = path.join(draftRoot, draftName);
   ensureInside(draftRoot, draftDir);
@@ -2313,11 +2689,20 @@ function createProject(args) {
     fs.rmSync(draftDir, { recursive: true, force: true });
   }
 
-  fs.cpSync(templateDraft, draftDir, { recursive: true });
+  if (templateDraft) {
+    fs.cpSync(templateDraft, draftDir, { recursive: true });
+    removeTemplateRuntimeArtifacts(draftDir);
+  } else {
+    createBuiltInSeedDraft(draftDir);
+  }
   const resourceMediaDir = path.join(draftDir, 'Resources', 'media');
   const resourceAudioDir = path.join(draftDir, 'Resources', 'audio');
   emptyDirInside(draftDir, resourceMediaDir);
   emptyDirInside(draftDir, resourceAudioDir);
+  emptyDirInside(draftDir, path.join(draftDir, 'Resources', 'audioAlg'));
+  emptyDirInside(draftDir, path.join(draftDir, 'Resources', 'videoAlg'));
+  emptyDirInside(draftDir, path.join(draftDir, 'matting'));
+  emptyDirInside(draftDir, path.join(draftDir, 'smart_crop'));
 
   const timestampUs = nowUs();
   const draftId = uuid();
