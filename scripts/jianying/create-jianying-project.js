@@ -1642,12 +1642,7 @@ function Test-EditorReady {
     $p = Get-TargetProcess
     if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
   } catch {}
-  try {
-    $root = Get-RootElement
-    return Test-Editor $root
-  } catch {
-    return $false
-  }
+  return $false
 }
 
 function Click-Element($element, [int]$clickCount) {
@@ -1752,54 +1747,39 @@ function Try-OpenNewestDraftByWindowClick {
     Start-Sleep -Milliseconds 700
   }
   $draftPoints = @(
+    @(0.135, 0.290),
+    @(0.180, 0.290),
+    @(0.235, 0.290),
     @(0.160, 0.340),
     @(0.210, 0.340),
     @(0.270, 0.340),
+    @(0.340, 0.340),
     @(0.160, 0.430),
     @(0.210, 0.430),
-    @(0.270, 0.430)
+    @(0.270, 0.430),
+    @(0.340, 0.430)
   )
   foreach ($point in $draftPoints) {
     Write-Output ("stage=window-click-draft {0},{1}" -f $point[0], $point[1])
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
-    Start-Sleep -Milliseconds 1800
-    if (Wait-ForEditor 4) { return $true }
+    Start-Sleep -Milliseconds 1200
+    if (Wait-ForEditor 2) { return $true }
   }
   return $false
 }
 
 $root = Get-RootElement
 Write-Output 'stage=window-ready'
-$draftElement = Find-NamedElement $root @("HomePageDraftTitle:$draftName", $draftName) $true
-if (-not $draftElement) {
-  Write-Output 'stage=draft-title-not-visible'
-  $home = Find-ExactNamedElement $root @('首页', 'Home')
-  if (-not $home) {
-    $home = Find-ContainsNamedElement $root @('首页') 1800 600
-  }
-  if ($home) {
-    Write-Output 'stage=click-home'
-    Click-Element $home 1
-    Start-Sleep -Milliseconds 1200
-  }
-  $draftElement = Wait-ForDraftTitle 4
+if (Try-OpenNewestDraftByWindowClick) {
+  Write-Output 'opened-by-window-click'
+  exit 0
 }
-if (-not $draftElement) {
-  if (Try-OpenNewestDraftByWindowClick) {
-    Write-Output 'opened-by-window-click'
-    exit 0
-  }
-  throw "Could not find or open Jianying draft title: $draftName"
-}
-Write-Output 'stage=draft-title-found'
-if (-not (Open-DraftElement $draftElement)) {
-  if (Try-OpenNewestDraftByWindowClick) {
-    Write-Output 'opened-by-window-click'
-    exit 0
-  }
-  throw "Found draft title but Jianying editor did not become ready after clicking: $draftName"
-}
-Write-Output "opened-by-title"
+Write-Output 'stage=window-click-fallback-not-opened'
+try {
+  $p = Get-TargetProcess
+  Write-Output ("stage=window-title {0}" -f $p.MainWindowTitle)
+} catch {}
+throw "Could not open Jianying draft by window click fallback: $draftName"
 `;
   try {
     return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
@@ -1813,7 +1793,7 @@ Write-Output "opened-by-title"
     const stderr = String(error.stderr || '').trim();
     const message = String(error.message || '').trim();
     const details = [];
-    if (timedOut) details.push('Windows Jianying draft opening timed out while searching/clicking UI controls.');
+    if (timedOut) details.push('Windows Jianying draft opening timed out while clicking the draft card inside the app window.');
     if (stderr) details.push(`PowerShell error:\n${stderr}`);
     if (stdout) details.push(`PowerShell progress:\n${stdout}`);
     if (!timedOut && message) details.push(message);
