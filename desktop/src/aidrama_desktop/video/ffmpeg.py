@@ -24,7 +24,7 @@ WECHAT_VIDEO_MIN_HEIGHT = 1280
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_TARGET_FPS = 30
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
-WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v8"
+WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v9"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
 DRAMA_STRATEGY1_TRIM_HEAD_SECONDS = 1.0
 DRAMA_STRATEGY1_TRIM_TAIL_SECONDS = 1.0
@@ -37,6 +37,12 @@ DRAMA_STRATEGY1_MAX_SPEED = 1.05
 
 class FfmpegError(RuntimeError):
     pass
+
+
+def minimum_wechat_video_dimensions(width: int, height: int) -> tuple[int, int]:
+    if width >= height:
+        return WECHAT_VIDEO_MIN_HEIGHT, WECHAT_VIDEO_MIN_WIDTH
+    return WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT
 
 
 @dataclass(frozen=True)
@@ -74,9 +80,55 @@ class VideoReassemblySegment:
 class FfmpegProcessor:
     ffmpeg_path: str
 
-    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
+    def transcode_for_wechat_video(
+        self,
+        source: Path,
+        target: Path,
+        cover_path: Path | None = None,
+        *,
+        trim_head_seconds: float = 0.0,
+        trim_tail_seconds: float = 0.0,
+        speed_factor: float = 1.0,
+        swap_orientation: bool = False,
+        bgm_files: list[Path] | None = None,
+        bgm_volume_percent: float = 0.0,
+        audio_pitch_semitones: float = 0.0,
+        border_percent: float = 0.0,
+        mirror_horizontal: bool = False,
+        rotate_degrees: float = 0.0,
+    ) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
-        command = self._transcode_with_cover_command(source, target, cover_path) if cover_path else self._transcode_command(source, target)
+        has_effects = any(
+            [
+                trim_head_seconds > 0,
+                trim_tail_seconds > 0,
+                self._has_effective_speed_change(speed_factor),
+                swap_orientation,
+                bool(bgm_files),
+                bgm_volume_percent > 0,
+                abs(audio_pitch_semitones) >= 0.001,
+                border_percent > 0,
+                mirror_horizontal,
+                abs(rotate_degrees) >= 0.001,
+            ]
+        )
+        if has_effects:
+            command = self._transcode_with_effects_command(
+                source,
+                target,
+                trim_head_seconds=trim_head_seconds,
+                trim_tail_seconds=trim_tail_seconds,
+                speed_factor=speed_factor,
+                swap_orientation=swap_orientation,
+                bgm_files=bgm_files or [],
+                bgm_volume_percent=bgm_volume_percent,
+                audio_pitch_semitones=audio_pitch_semitones,
+                border_percent=border_percent,
+                mirror_horizontal=mirror_horizontal,
+                rotate_degrees=rotate_degrees,
+            )
+        else:
+            command = self._transcode_with_cover_command(source, target, cover_path) if cover_path else self._transcode_command(source, target)
         return self._run_ffmpeg(command, target)
 
     def merge_videos_for_tiktok(self, sources: list[Path], target: Path) -> Path:
@@ -174,6 +226,12 @@ class FfmpegProcessor:
         *,
         speed_factor: float = 1.0,
         swap_orientation: bool = False,
+        bgm_files: list[Path] | None = None,
+        bgm_volume_percent: float = 0.0,
+        audio_pitch_semitones: float = 0.0,
+        border_percent: float = 0.0,
+        mirror_horizontal: bool = False,
+        rotate_degrees: float = 0.0,
         cover_path: Path | None = None,
     ) -> list[Path]:
         if not clips:
@@ -187,6 +245,12 @@ class FfmpegProcessor:
             work_dir = Path(work_dir_value)
             staged_clips = self._stage_reassembly_clips(clips, work_dir)
             staged_cover = self._stage_reassembly_cover(cover_path, work_dir)
+            timeline_duration = sum(max(segment.duration_seconds, 0.0) for segment in segments)
+            staged_bgm_files = self._stage_reassembly_bgm_files(
+                bgm_files or [],
+                work_dir,
+                timeline_duration=timeline_duration,
+            )
             work_timeline = work_dir / "timeline.mp4"
             work_segments = [
                 VideoReassemblySegment(
@@ -202,6 +266,12 @@ class FfmpegProcessor:
                 work_timeline,
                 speed_factor=speed_factor,
                 swap_orientation=swap_orientation,
+                bgm_files=staged_bgm_files,
+                bgm_volume_percent=bgm_volume_percent,
+                audio_pitch_semitones=audio_pitch_semitones,
+                border_percent=border_percent,
+                mirror_horizontal=mirror_horizontal,
+                rotate_degrees=rotate_degrees,
             )
             try:
                 self._run_ffmpeg(timeline_command, work_timeline)
@@ -214,6 +284,12 @@ class FfmpegProcessor:
                         work_timeline,
                         speed_factor=speed_factor,
                         swap_orientation=swap_orientation,
+                        bgm_files=staged_bgm_files,
+                        bgm_volume_percent=bgm_volume_percent,
+                        audio_pitch_semitones=audio_pitch_semitones,
+                        border_percent=border_percent,
+                        mirror_horizontal=mirror_horizontal,
+                        rotate_degrees=rotate_degrees,
                         drop_audio=True,
                     ),
                     work_timeline,
@@ -297,6 +373,63 @@ class FfmpegProcessor:
         staged_cover = work_dir / f"cover{suffix}"
         self._stage_reassembly_file(cover_path, staged_cover)
         return staged_cover
+
+    def _stage_reassembly_bgm_files(
+        self,
+        bgm_files: list[Path],
+        work_dir: Path,
+        *,
+        timeline_duration: float,
+    ) -> list[Path]:
+        if not bgm_files or timeline_duration <= 0:
+            return []
+        staged_pool: list[Path] = []
+        durations: list[float] = []
+        for index, file in enumerate(bgm_files, start=1):
+            if not file.exists() or not file.is_file():
+                continue
+            suffix = file.suffix if file.suffix else ".m4a"
+            staged_path = work_dir / f"bgm-{index:03d}{suffix}"
+            self._stage_reassembly_file(file, staged_path)
+            duration = self.media_duration_seconds(staged_path)
+            if duration is None or duration <= 0:
+                continue
+            staged_pool.append(staged_path)
+            durations.append(duration)
+        if not staged_pool:
+            return []
+        playlist: list[Path] = []
+        remaining = timeline_duration
+        cursor = 0
+        while remaining > 0.001 and cursor < 512:
+            index = cursor % len(staged_pool)
+            playlist.append(staged_pool[index])
+            remaining -= durations[index]
+            cursor += 1
+        return playlist
+
+    def _loop_bgm_files_for_duration(self, bgm_files: list[Path], duration_seconds: float) -> list[Path]:
+        if not bgm_files or duration_seconds <= 0:
+            return []
+        playable: list[tuple[Path, float]] = []
+        for file in bgm_files:
+            if not file.exists() or not file.is_file():
+                continue
+            media_duration = self.media_duration_seconds(file)
+            if media_duration is None or media_duration <= 0:
+                continue
+            playable.append((file, media_duration))
+        if not playable:
+            return []
+        playlist: list[Path] = []
+        remaining = duration_seconds
+        cursor = 0
+        while remaining > 0.001 and cursor < 512:
+            file, media_duration = playable[cursor % len(playable)]
+            playlist.append(file)
+            remaining -= media_duration
+            cursor += 1
+        return playlist
 
     @staticmethod
     def _stage_reassembly_file(source: Path, target: Path) -> None:
@@ -531,6 +664,103 @@ class FfmpegProcessor:
         command.extend([*self._wechat_video_output_args(), str(target)])
         return command
 
+    def _transcode_with_effects_command(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        trim_head_seconds: float,
+        trim_tail_seconds: float,
+        speed_factor: float,
+        swap_orientation: bool,
+        bgm_files: list[Path],
+        bgm_volume_percent: float,
+        audio_pitch_semitones: float,
+        border_percent: float,
+        mirror_horizontal: bool,
+        rotate_degrees: float,
+    ) -> list[str]:
+        source_duration = self.video_duration_seconds(source)
+        if source_duration is None:
+            raise FfmpegError(f"无法读取转码源视频时长：{source}")
+        start_seconds = min(max(trim_head_seconds, 0.0), source_duration)
+        end_seconds = max(start_seconds, source_duration - max(trim_tail_seconds, 0.0))
+        usable_duration = end_seconds - start_seconds
+        if usable_duration <= 0:
+            raise FfmpegError(f"转码后无可用视频时长：{source}")
+        output_duration = usable_duration / max(speed_factor, 0.01)
+        playlist = self._loop_bgm_files_for_duration(bgm_files, output_duration)
+        command = [self.ffmpeg_path, "-y", "-i", str(source)]
+        for bgm_file in playlist:
+            command.extend(["-i", str(bgm_file)])
+        frame_filter = self._reassembly_frame_filter(
+            source,
+            swap_orientation,
+            border_percent=border_percent,
+            mirror_horizontal=mirror_horizontal,
+            rotate_degrees=rotate_degrees,
+        )
+        speed = max(speed_factor, 0.01)
+        formatted_speed = self._format_filter_number(speed)
+        filters = [
+            f"[0:v]trim=start={self._format_seconds(start_seconds)}:end={self._format_seconds(end_seconds)},"
+            f"setpts=PTS-STARTPTS,setpts=(PTS-STARTPTS)/{formatted_speed},{frame_filter}[outv]"
+        ]
+        if self.has_audio_stream(source):
+            audio_filter = (
+                f"[0:a]atrim=start={self._format_seconds(start_seconds)}:end={self._format_seconds(end_seconds)},"
+                "asetpts=PTS-STARTPTS,"
+                "aresample=async=1:first_pts=0,"
+                "aformat=sample_rates=48000:channel_layouts=stereo"
+            )
+            if self._has_effective_speed_change(speed):
+                audio_filter += f",{self._atempo_filter(speed)}"
+            audio_filter += f",apad,atrim=duration={self._format_seconds(output_duration)},asetpts=PTS-STARTPTS[maina]"
+            filters.append(audio_filter)
+        else:
+            filters.append(
+                "anullsrc=r=48000:cl=stereo,"
+                f"atrim=duration={self._format_seconds(output_duration)},asetpts=PTS-STARTPTS[maina]"
+            )
+        audio_output_label = "maina"
+        if playlist and bgm_volume_percent > 0:
+            bgm_inputs: list[str] = []
+            for bgm_index, _bgm_file in enumerate(playlist):
+                input_index = 1 + bgm_index
+                filters.append(
+                    f"[{input_index}:a]asetpts=PTS-STARTPTS,"
+                    "aresample=async=1:first_pts=0,"
+                    "aformat=sample_rates=48000:channel_layouts=stereo"
+                    f"[bgm{bgm_index}]"
+                )
+                bgm_inputs.append(f"[bgm{bgm_index}]")
+            filters.append("".join(bgm_inputs) + f"concat=n={len(bgm_inputs)}:v=0:a=1[bgmcat]")
+            filters.append(
+                f"[bgmcat]atrim=duration={self._format_seconds(output_duration)},"
+                "asetpts=PTS-STARTPTS,"
+                f"volume={self._format_filter_number(max(0.0, bgm_volume_percent / 100.0))}[bgmmix]"
+            )
+            filters.append("[maina][bgmmix]amix=inputs=2:duration=first:dropout_transition=0[mixeda]")
+            audio_output_label = "mixeda"
+        pitch_filter = self._pitch_shift_filter(audio_pitch_semitones)
+        if pitch_filter:
+            filters.append(f"[{audio_output_label}]{pitch_filter}[outa]")
+        else:
+            filters.append(f"[{audio_output_label}]anull[outa]")
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "[outv]",
+                "-map",
+                "[outa]",
+                *self._wechat_video_output_args(),
+                str(target),
+            ]
+        )
+        return command
+
     def _reassembly_timeline_command(
         self,
         clips: list[VideoReassemblySourceClip],
@@ -538,15 +768,29 @@ class FfmpegProcessor:
         *,
         speed_factor: float,
         swap_orientation: bool,
+        bgm_files: list[Path] | None = None,
+        bgm_volume_percent: float = 0.0,
+        audio_pitch_semitones: float = 0.0,
+        border_percent: float = 0.0,
+        mirror_horizontal: bool = False,
+        rotate_degrees: float = 0.0,
         drop_audio: bool = False,
     ) -> list[str]:
         command = [self.ffmpeg_path, "-y"]
         for clip in clips:
             command.extend(["-i", str(clip.path)])
+        for bgm_file in bgm_files or []:
+            command.extend(["-i", str(bgm_file)])
         filter_complex = self._reassembly_filter_complex(
             clips,
             speed_factor=speed_factor,
             swap_orientation=swap_orientation,
+            bgm_files=bgm_files or [],
+            bgm_volume_percent=bgm_volume_percent,
+            audio_pitch_semitones=audio_pitch_semitones,
+            border_percent=border_percent,
+            mirror_horizontal=mirror_horizontal,
+            rotate_degrees=rotate_degrees,
             drop_audio=drop_audio,
         )
         command.extend(["-filter_complex", filter_complex, "-map", "[outv]"])
@@ -563,13 +807,26 @@ class FfmpegProcessor:
         *,
         speed_factor: float,
         swap_orientation: bool,
+        bgm_files: list[Path],
+        bgm_volume_percent: float,
+        audio_pitch_semitones: float,
+        border_percent: float,
+        mirror_horizontal: bool,
+        rotate_degrees: float,
         drop_audio: bool,
     ) -> str:
         filters: list[str] = []
         concat_inputs: list[str] = []
-        frame_filter = self._reassembly_frame_filter(clips[0].path, swap_orientation)
+        frame_filter = self._reassembly_frame_filter(
+            clips[0].path,
+            swap_orientation,
+            border_percent=border_percent,
+            mirror_horizontal=mirror_horizontal,
+            rotate_degrees=rotate_degrees,
+        )
         speed = max(speed_factor, 0.01)
         formatted_speed = self._format_filter_number(speed)
+        total_output_duration = sum(clip.duration_seconds / speed for clip in clips)
         for input_index, clip in enumerate(clips):
             start = self._format_seconds(clip.start_seconds)
             duration = self._format_seconds(clip.duration_seconds)
@@ -608,10 +865,38 @@ class FfmpegProcessor:
         if drop_audio:
             concat_filter = "".join(concat_inputs)
             concat_filter += f"concat=n={len(clips)}:v=1:a=0[outv]"
+            return ";".join([*filters, concat_filter])
+        concat_filter = "".join(concat_inputs)
+        concat_filter += f"concat=n={len(clips)}:v=1:a=1[outv][maina]"
+        filters.append(concat_filter)
+        audio_output_label = "maina"
+        if bgm_files and bgm_volume_percent > 0:
+            bgm_inputs: list[str] = []
+            for bgm_index, _bgm_file in enumerate(bgm_files):
+                input_index = len(clips) + bgm_index
+                filters.append(
+                    f"[{input_index}:a]asetpts=PTS-STARTPTS,"
+                    "aresample=async=1:first_pts=0,"
+                    "aformat=sample_rates=48000:channel_layouts=stereo"
+                    f"[bgm{bgm_index}]"
+                )
+                bgm_inputs.append(f"[bgm{bgm_index}]")
+            filters.append("".join(bgm_inputs) + f"concat=n={len(bgm_inputs)}:v=0:a=1[bgmcat]")
+            filters.append(
+                f"[bgmcat]atrim=duration={self._format_seconds(total_output_duration)},"
+                "asetpts=PTS-STARTPTS,"
+                f"volume={self._format_filter_number(max(0.0, bgm_volume_percent / 100.0))}[bgmmix]"
+            )
+            filters.append(
+                "[maina][bgmmix]amix=inputs=2:duration=first:dropout_transition=0[mixeda]"
+            )
+            audio_output_label = "mixeda"
+        pitch_filter = self._pitch_shift_filter(audio_pitch_semitones)
+        if pitch_filter:
+            filters.append(f"[{audio_output_label}]{pitch_filter}[outa]")
         else:
-            concat_filter = "".join(concat_inputs)
-            concat_filter += f"concat=n={len(clips)}:v=1:a=1[outv][outa]"
-        return ";".join([*filters, concat_filter])
+            filters.append(f"[{audio_output_label}]anull[outa]")
+        return ";".join(filters)
 
     def _reassembly_segment_command(
         self,
@@ -679,17 +964,45 @@ class FfmpegProcessor:
         self,
         first_source: Path,
         swap_orientation: bool,
+        *,
+        border_percent: float = 0.0,
+        mirror_horizontal: bool = False,
+        rotate_degrees: float = 0.0,
     ) -> str:
         filters: list[str] = []
+        target_width: int | None = None
+        target_height: int | None = None
         dimensions = self.video_dimensions(first_source)
         if dimensions:
             width, height = dimensions
             if swap_orientation:
+                target_width = height
+                target_height = width
                 filters.extend(self._wechat_video_frame_filters(height, width))
             elif self._is_below_wechat_video_minimum(width, height):
-                filters.extend(self._wechat_video_frame_filters(WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT))
+                target_width, target_height = minimum_wechat_video_dimensions(width, height)
+                filters.extend(self._wechat_video_frame_filters(target_width, target_height))
+            else:
+                target_width = width
+                target_height = height
         if filters and filters[-1] == "format=yuv420p":
             filters.pop()
+        if mirror_horizontal:
+            filters.append("hflip")
+        if rotate_degrees:
+            filters.append(
+                f"rotate={self._format_filter_number(rotate_degrees)}*PI/180:fillcolor=black"
+            )
+        if border_percent > 0:
+            inset_ratio = max(0.0, min(0.45, border_percent / 100.0))
+            scale_ratio = max(0.1, 1.0 - inset_ratio * 2.0)
+            filters.append(
+                "scale="
+                f"trunc(iw*{self._format_filter_number(scale_ratio)}/2)*2:"
+                f"trunc(ih*{self._format_filter_number(scale_ratio)}/2)*2"
+            )
+            if target_width and target_height:
+                filters.append(f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black")
         if not filters:
             filters.append("setsar=1")
         filters.extend([f"fps={WECHAT_VIDEO_TARGET_FPS}", "format=yuv420p"])
@@ -741,7 +1054,7 @@ class FfmpegProcessor:
             return None
         width, height = dimensions
         if self._is_below_wechat_video_minimum(width, height):
-            return WECHAT_VIDEO_MIN_WIDTH, WECHAT_VIDEO_MIN_HEIGHT
+            return minimum_wechat_video_dimensions(width, height)
         return width, height
 
     @staticmethod
@@ -821,14 +1134,16 @@ class FfmpegProcessor:
         if not dimensions:
             return True
         width, height = dimensions
-        return width < min_width or height < min_height
+        required_width, required_height = minimum_wechat_video_dimensions(width, height)
+        return width < required_width or height < required_height
 
     def needs_wechat_video_transcode(self, source: Path) -> bool:
         return self.needs_wechat_video_bitrate_transcode(source) or self.needs_wechat_video_resolution_transcode(source)
 
     @staticmethod
     def _is_below_wechat_video_minimum(width: int, height: int) -> bool:
-        return width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT
+        min_width, min_height = minimum_wechat_video_dimensions(width, height)
+        return width < min_width or height < min_height
 
     def video_bitrate_bps(self, source: Path) -> int | None:
         command = [
@@ -886,6 +1201,24 @@ class FfmpegProcessor:
             "v:0",
             "-show_entries",
             "format=duration:stream=duration",
+            "-of",
+            "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+            payload = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+            return None
+        return self._duration_from_probe_payload(payload)
+
+    def media_duration_seconds(self, source: Path) -> float | None:
+        command = [
+            self.ffprobe_path(),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
             "-of",
             "json",
             str(source),
@@ -1049,6 +1382,20 @@ class FfmpegProcessor:
             factor /= 0.5
         parts.append(factor)
         return ",".join(f"atempo={cls._format_filter_number(part)}" for part in parts)
+
+    @classmethod
+    def _pitch_shift_filter(cls, semitones: float) -> str:
+        if -0.001 < semitones < 0.001:
+            return ""
+        pitch_factor = max(0.25, min(4.0, 2 ** (semitones / 12.0)))
+        preserve_tempo = cls._atempo_filter(1.0 / pitch_factor)
+        filters = [
+            f"asetrate=48000*{cls._format_filter_number(pitch_factor)}",
+            "aresample=48000",
+        ]
+        if preserve_tempo:
+            filters.append(preserve_tempo)
+        return ",".join(filters)
 
     @staticmethod
     def _process_output_tail(stdout: str | None, stderr: str | None, max_lines: int = 8, max_chars: int = 1000) -> str:

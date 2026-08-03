@@ -56,9 +56,23 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: launches Jianying/CapCut, maximizes and brings the window forward with PowerShell/User32, uses UI Automation to find the generated draft by title, double-clicks that draft, verifies that the editor UI is ready, then captures only the Jianying/CapCut main window rectangle.
+- Windows: launches Jianying/CapCut, maximizes and brings the window forward with PowerShell/User32, clicks candidate draft-card positions inside the Jianying/CapCut window, verifies the window title when possible, then captures only the Jianying/CapCut main window rectangle.
 
 Pass `--full-screen-capture` only when you intentionally need the entire desktop screenshot.
+
+## Windows open diagnostics
+
+Use this standalone mode on a Windows desktop session when the draft is created but the editor does not open:
+
+```powershell
+node scripts\jianying\create-jianying-project.js `
+  --debug-windows-open `
+  --name "剧名_第99集_剪辑工程" `
+  --output-dir "C:\jy-open-debug" `
+  --jianying-app "C:\Users\Administrator\AppData\Local\JianyingPro\JianyingPro.exe"
+```
+
+It does not create a draft and does not require `--video`. It writes `windows_open_debug.json`, `before-open.png`, and `after-open.png` to `--output-dir`, including the Jianying window rectangle, each clicked coordinate, window titles before/after clicks, and the final screenshot. If `--name` is omitted, it tries to use the newest draft from `--draft-root` / `JIANYING_DRAFT_ROOT`.
 
 ## App overrides
 

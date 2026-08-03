@@ -19,8 +19,14 @@ class VideoReassemblyConfig:
     trim_tail_seconds: float = 1.0
     speed_min_percent: float = 2.0
     speed_max_percent: float = 5.0
-    swap_orientation: bool = True
+    swap_orientation: bool = False
     tail_merge_threshold_seconds: float = 30.0
+    bgm_directory: str | None = None
+    bgm_volume_percent: float = 8.0
+    audio_pitch_semitones: float = 0.0
+    border_percent: float = 0.0
+    mirror_horizontal: bool = False
+    rotate_degrees: float = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -44,6 +50,12 @@ class VideoReassemblyConfig:
             speed_max_percent=max(-50.0, min(50.0, speed_max)),
             swap_orientation=bool(self.swap_orientation),
             tail_merge_threshold_seconds=max(0.0, float(self.tail_merge_threshold_seconds)),
+            bgm_directory=str(self.bgm_directory).strip() or None if self.bgm_directory is not None else None,
+            bgm_volume_percent=max(0.0, min(100.0, float(self.bgm_volume_percent))),
+            audio_pitch_semitones=max(-12.0, min(12.0, float(self.audio_pitch_semitones))),
+            border_percent=max(0.0, min(20.0, float(self.border_percent))),
+            mirror_horizontal=bool(self.mirror_horizontal),
+            rotate_degrees=max(-10.0, min(10.0, float(self.rotate_degrees))),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,6 +69,12 @@ class VideoReassemblyConfig:
             "speedMaxPercent": self.speed_max_percent,
             "swapOrientation": self.swap_orientation,
             "tailMergeThresholdSeconds": self.tail_merge_threshold_seconds,
+            "bgmDirectory": self.bgm_directory,
+            "bgmVolumePercent": self.bgm_volume_percent,
+            "audioPitchSemitones": self.audio_pitch_semitones,
+            "borderPercent": self.border_percent,
+            "mirrorHorizontal": self.mirror_horizontal,
+            "rotateDegrees": self.rotate_degrees,
         }
 
     @classmethod
@@ -74,13 +92,34 @@ class VideoReassemblyConfig:
                 data.get("tailMergeThresholdSeconds"),
                 cls.tail_merge_threshold_seconds,
             ),
+            bgm_directory=str(data.get("bgmDirectory") or "").strip() or None,
+            bgm_volume_percent=float_value(data.get("bgmVolumePercent"), cls.bgm_volume_percent),
+            audio_pitch_semitones=float_value(data.get("audioPitchSemitones"), cls.audio_pitch_semitones),
+            border_percent=float_value(data.get("borderPercent"), cls.border_percent),
+            mirror_horizontal=bool(data.get("mirrorHorizontal", cls.mirror_horizontal)),
+            rotate_degrees=float_value(data.get("rotateDegrees"), cls.rotate_degrees),
         ).normalized()
 
     def summary(self) -> str:
         if not self.enabled:
             return "不启用"
         config = self.normalized()
-        swap_text = "横竖互换黑边填充" if config.swap_orientation else "不横竖互换"
+        swap_text = "强制横竖互换并黑边填充" if config.swap_orientation else "保持原始横竖方向"
+        bgm_text = (
+            f"BGM目录已配置，音量{config.bgm_volume_percent:g}%"
+            if config.bgm_directory
+            else "不加BGM"
+        )
+        audio_fx = []
+        if config.audio_pitch_semitones:
+            audio_fx.append(f"音调{config.audio_pitch_semitones:g}半音")
+        if config.mirror_horizontal:
+            audio_fx.append("水平镜像")
+        if config.rotate_degrees:
+            audio_fx.append(f"旋转{config.rotate_degrees:g}°")
+        if config.border_percent:
+            audio_fx.append(f"黑边{config.border_percent:g}%")
+        fx_text = "；".join(audio_fx) if audio_fx else "不加额外画面/音频扰动"
         speed_text = (
             f"变速{config.speed_min_percent:g}%"
             if config.speed_min_percent == config.speed_max_percent
@@ -91,7 +130,7 @@ class VideoReassemblyConfig:
             "目标50-120集且不等于原下载集数；"
             f"切分{config.segment_min_seconds:g}-{config.segment_max_seconds:g}s；"
             f"去头{config.trim_head_seconds:g}s/尾{config.trim_tail_seconds:g}s；"
-            f"{speed_text}；{swap_text}）"
+            f"{speed_text}；{swap_text}；{bgm_text}；{fx_text}）"
         )
 
 

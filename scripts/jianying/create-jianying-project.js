@@ -82,6 +82,10 @@ Proof/screenshot options:
   --ffmpeg <path>         FFmpeg command/path.
   --ffprobe <path>        FFprobe command/path. Defaults to sibling of --ffmpeg.
 
+Diagnostics:
+  --debug-windows-open    Diagnose Windows draft opening without creating a draft.
+                          Use with --name, --output-dir, --draft-root and/or --jianying-app.
+
 Environment overrides:
   JIANYING_DRAFT_ROOT, JIANYING_APP
 `;
@@ -100,6 +104,7 @@ function parseArgs(argv) {
     bgm: [],
     capture: false,
     closeExisting: false,
+    debugWindowsOpen: false,
     fullScreenCapture: false,
     open: false,
     openDraft: false,
@@ -113,7 +118,7 @@ function parseArgs(argv) {
     }
     if (!arg.startsWith('--')) fail(`Unexpected argument: ${arg}`);
     const key = normalizeKey(arg.slice(2));
-    if (['capture', 'closeExisting', 'fullScreenCapture', 'open', 'openDraft', 'overwrite'].includes(key)) {
+    if (['capture', 'closeExisting', 'debugWindowsOpen', 'fullScreenCapture', 'open', 'openDraft', 'overwrite'].includes(key)) {
       args[key] = true;
       continue;
     }
@@ -1921,6 +1926,299 @@ $bmp.Dispose()
   fail(`Screenshot capture is not implemented for platform: ${process.platform}`);
 }
 
+function latestDraftNameFromRoot(draftRoot) {
+  const rootFile = path.join(draftRoot, 'root_meta_info.json');
+  if (!fs.existsSync(rootFile)) return null;
+  const root = readJson(rootFile);
+  const stores = Array.isArray(root.all_draft_store) ? root.all_draft_store : [];
+  const drafts = stores
+    .filter((item) => item?.draft_name && item.draft_name !== 'AI_DRAMA_TEMPLATE_DRAFT')
+    .sort((left, right) => Number(right.tm_draft_modified || right.tm_draft_create || 0) - Number(left.tm_draft_modified || left.tm_draft_create || 0));
+  return drafts[0]?.draft_name || null;
+}
+
+function parseJsonFromOutput(output) {
+  const text = String(output || '').trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw new Error(`Unable to parse JSON output: ${text.slice(-500)}`);
+  }
+}
+
+function debugWindowsOpen(args) {
+  const outputDir = path.resolve(args.outputDir || path.join(process.cwd(), 'jianying-windows-open-debug'));
+  fs.mkdirSync(outputDir, { recursive: true });
+  const resultPath = path.join(outputDir, 'windows_open_debug.json');
+  const beforeScreenshot = path.join(outputDir, 'before-open.png');
+  const afterScreenshot = path.join(outputDir, 'after-open.png');
+  const draftRoot = path.resolve(args.draftRoot || defaultDraftRoot());
+  const draftName = args.name ? sanitizeName(args.name) : latestDraftNameFromRoot(draftRoot);
+  const appPath = findJianyingApp(args.jianyingApp);
+  const result = {
+    success: false,
+    mode: 'debug-windows-open',
+    platform: process.platform,
+    output_dir: outputDir,
+    result_path: resultPath,
+    before_screenshot: beforeScreenshot,
+    after_screenshot: afterScreenshot,
+    draft_name: draftName,
+    draft_root: draftRoot,
+    jianying_app: appPath,
+    warnings: [],
+  };
+
+  if (process.platform !== 'win32') {
+    result.error = '--debug-windows-open only runs on Windows.';
+    writeJson(resultPath, result);
+    return result;
+  }
+  if (!draftName) {
+    result.error = 'Draft name is required. Pass --name or provide a draft root containing root_meta_info.json.';
+    writeJson(resultPath, result);
+    return result;
+  }
+  if (args.closeExisting) {
+    closeExistingJianying();
+    sleep(1.5);
+  }
+  if (appPath) {
+    openJianying(appPath);
+    sleep(Number(args.homepageDelay ?? DEFAULTS.homepageDelay));
+  } else {
+    result.warnings.push('Jianying app path was not found; diagnosing an already-open window only.');
+  }
+
+  const script = `
+$ErrorActionPreference = 'Stop'
+$draftName = ${psSingle(draftName)}
+$appPath = ${psSingle(appPath || '')}
+$beforeScreenshot = ${psSingle(beforeScreenshot)}
+$afterScreenshot = ${psSingle(afterScreenshot)}
+$result = [ordered]@{
+  success = $false
+  draftName = $draftName
+  appPath = $appPath
+  beforeScreenshot = $beforeScreenshot
+  afterScreenshot = $afterScreenshot
+  startedAt = (Get-Date).ToString('o')
+  processCandidates = @()
+  snapshots = @()
+  clicks = @()
+  opened = $false
+  openedStage = $null
+  error = $null
+}
+try {
+  Add-Type -AssemblyName System.Drawing
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32DebugDraftOpen {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+"@
+  [Win32DebugDraftOpen]::SetProcessDPIAware() | Out-Null
+
+  function Get-CandidateProcesses {
+    $baseName = ''
+    if ($appPath) {
+      try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+    }
+    return @(Get-Process | Where-Object {
+      $_.MainWindowHandle -ne 0 -and (
+        $_.ProcessName -match 'Jianying|CapCut|VideoFusion' -or
+        ($baseName -and $_.ProcessName -eq $baseName)
+      )
+    } | Sort-Object ProcessName, Id)
+  }
+
+  function Get-TargetProcess {
+    $processes = @(Get-CandidateProcesses)
+    $result.processCandidates = @($processes | ForEach-Object {
+      [ordered]@{
+        id = $_.Id
+        processName = $_.ProcessName
+        title = $_.MainWindowTitle
+        handle = $_.MainWindowHandle.ToInt64()
+      }
+    })
+    if (-not $processes.Count) { return $null }
+    if ($appPath) {
+      try {
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath)
+        $exact = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
+        if ($exact) { return $exact }
+      } catch {}
+    }
+    return $processes | Select-Object -First 1
+  }
+
+  function Get-WindowRectForProcess($p) {
+    $rect = New-Object Win32DebugDraftOpen+RECT
+    if (-not [Win32DebugDraftOpen]::GetWindowRect($p.MainWindowHandle, [ref]$rect)) {
+      throw 'Jianying/CapCut window bounds unavailable'
+    }
+    return [ordered]@{
+      left = $rect.Left
+      top = $rect.Top
+      right = $rect.Right
+      bottom = $rect.Bottom
+      width = [Math]::Max(1, $rect.Right - $rect.Left)
+      height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+    }
+  }
+
+  function Add-Snapshot([string]$label) {
+    $p = Get-TargetProcess
+    if (-not $p) {
+      $snapshot = [ordered]@{ label = $label; found = $false }
+      $result.snapshots += $snapshot
+      return $snapshot
+    }
+    [Win32DebugDraftOpen]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
+    [Win32DebugDraftOpen]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 450
+    $rect = Get-WindowRectForProcess $p
+    $snapshot = [ordered]@{
+      label = $label
+      found = $true
+      id = $p.Id
+      processName = $p.ProcessName
+      title = $p.MainWindowTitle
+      handle = $p.MainWindowHandle.ToInt64()
+      rect = $rect
+      titleContainsDraft = [bool]($draftName -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName))
+    }
+    $result.snapshots += $snapshot
+    return $snapshot
+  }
+
+  function Save-WindowScreenshot([string]$path, [string]$label) {
+    $snapshot = Add-Snapshot $label
+    if (-not $snapshot.found) { return $false }
+    $rect = $snapshot.rect
+    $bmp = New-Object System.Drawing.Bitmap $rect.width, $rect.height
+    $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+    $graphics.CopyFromScreen($rect.left, $rect.top, 0, 0, $bmp.Size)
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $graphics.Dispose()
+    $bmp.Dispose()
+    return $true
+  }
+
+  function Click-Point([int]$x, [int]$y, [int]$clickCount) {
+    [Win32DebugDraftOpen]::SetCursorPos($x, $y) | Out-Null
+    for ($i = 0; $i -lt [Math]::Max(1, $clickCount); $i++) {
+      [Win32DebugDraftOpen]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      [Win32DebugDraftOpen]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 160
+    }
+  }
+
+  function Click-WindowRatio([string]$label, [double]$xRatio, [double]$yRatio, [int]$clickCount) {
+    $before = Add-Snapshot "$label-before"
+    if (-not $before.found) { throw 'Jianying/CapCut process window not found' }
+    $rect = $before.rect
+    $x = [int]($rect.left + ($rect.width * $xRatio))
+    $y = [int]($rect.top + ($rect.height * $yRatio))
+    Click-Point $x $y $clickCount
+    Start-Sleep -Milliseconds 900
+    $after = Add-Snapshot "$label-after"
+    $click = [ordered]@{
+      label = $label
+      ratioX = $xRatio
+      ratioY = $yRatio
+      x = $x
+      y = $y
+      clickCount = $clickCount
+      titleBefore = $before.title
+      titleAfter = $after.title
+      opened = [bool]($after.titleContainsDraft)
+    }
+    $result.clicks += $click
+    if ($click.opened) {
+      $result.opened = $true
+      $result.openedStage = $label
+    }
+    return $click.opened
+  }
+
+  $initial = Add-Snapshot 'initial'
+  if (-not $initial.found) { throw 'Jianying/CapCut process window not found' }
+  Save-WindowScreenshot $beforeScreenshot 'before-screenshot' | Out-Null
+
+  $homePoints = @(
+    @(0.052, 0.305),
+    @(0.060, 0.245),
+    @(0.045, 0.360)
+  )
+  for ($i = 0; $i -lt $homePoints.Count; $i++) {
+    $point = $homePoints[$i]
+    Click-WindowRatio ("home-{0}" -f ($i + 1)) ([double]$point[0]) ([double]$point[1]) 1 | Out-Null
+  }
+
+  $draftPoints = @(
+    @(0.135, 0.290),
+    @(0.180, 0.290),
+    @(0.235, 0.290),
+    @(0.160, 0.340),
+    @(0.210, 0.340),
+    @(0.270, 0.340),
+    @(0.340, 0.340),
+    @(0.160, 0.430),
+    @(0.210, 0.430),
+    @(0.270, 0.430),
+    @(0.340, 0.430)
+  )
+  for ($i = 0; $i -lt $draftPoints.Count; $i++) {
+    $point = $draftPoints[$i]
+    if (Click-WindowRatio ("draft-{0}" -f ($i + 1)) ([double]$point[0]) ([double]$point[1]) 2) {
+      break
+    }
+  }
+
+  Save-WindowScreenshot $afterScreenshot 'after-screenshot' | Out-Null
+  $result.finalSnapshot = Add-Snapshot 'final'
+  $result.success = $true
+} catch {
+  $result.error = $_.Exception.Message
+}
+$result.finishedAt = (Get-Date).ToString('o')
+$result | ConvertTo-Json -Depth 12
+`;
+
+  try {
+    const stdout = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120000,
+    });
+    Object.assign(result, parseJsonFromOutput(stdout));
+  } catch (error) {
+    result.error = error.message || 'Windows debug open command failed.';
+    result.stdout = String(error.stdout || '').trim();
+    result.stderr = String(error.stderr || '').trim();
+  }
+  writeJson(resultPath, result);
+  return result;
+}
+
 function createProject(args) {
   const ffmpegBin = args.ffmpeg || 'ffmpeg';
   const ffprobeBin = args.ffprobe || ffprobePathForFfmpeg(ffmpegBin);
@@ -2315,6 +2613,11 @@ function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
     process.stdout.write(HELP.trimStart());
+    return;
+  }
+  if (args.debugWindowsOpen) {
+    const result = debugWindowsOpen(args);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
   if (!args.video) fail('--video is required');

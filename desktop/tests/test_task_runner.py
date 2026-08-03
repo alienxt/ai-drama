@@ -90,8 +90,8 @@ class FakeProcessor:
         self.dimensions = {}
         self.durations = {}
 
-    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
-        self.calls.append((source, target, cover_path))
+    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None, **kwargs) -> Path:
+        self.calls.append((source, target, cover_path, kwargs))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.name)
         self.dimensions[target.name] = (720, 1280)
@@ -124,9 +124,30 @@ class FakeProcessor:
         *,
         speed_factor: float = 1.0,
         swap_orientation: bool = False,
+        bgm_files=None,
+        bgm_volume_percent: float = 0.0,
+        audio_pitch_semitones: float = 0.0,
+        border_percent: float = 0.0,
+        mirror_horizontal: bool = False,
+        rotate_degrees: float = 0.0,
         cover_path: Path | None = None,
     ) -> list[Path]:
-        self.reassemble_calls.append((clips, segments, timeline, speed_factor, swap_orientation, cover_path))
+        self.reassemble_calls.append(
+            {
+                "clips": clips,
+                "segments": segments,
+                "timeline": timeline,
+                "speed_factor": speed_factor,
+                "swap_orientation": swap_orientation,
+                "bgm_files": list(bgm_files or []),
+                "bgm_volume_percent": bgm_volume_percent,
+                "audio_pitch_semitones": audio_pitch_semitones,
+                "border_percent": border_percent,
+                "mirror_horizontal": mirror_horizontal,
+                "rotate_degrees": rotate_degrees,
+                "cover_path": cover_path,
+            }
+        )
         timeline.parent.mkdir(parents=True, exist_ok=True)
         timeline.write_bytes(b"timeline")
         for segment in segments:
@@ -157,7 +178,7 @@ class LowBitrateProcessor(FakeProcessor):
 
 
 class FailingTranscodeProcessor(LowBitrateProcessor):
-    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None) -> Path:
+    def transcode_for_wechat_video(self, source: Path, target: Path, cover_path: Path | None = None, **kwargs) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("partial")
         raise RuntimeError("Conversion failed!")
@@ -892,6 +913,7 @@ def test_publish_once_transcodes_low_bitrate_video_before_upload(tmp_path, monke
             drama_download_dir(tmp_path) / "001.mp4",
             processed_file,
             None,
+            {},
         )
     ]
     assert publisher.metadata["episodes"][0]["file"] == processed_file
@@ -1398,7 +1420,9 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     )
 
     assert len(reassembled) == 50
-    clips, segments, timeline, speed_factor, swap_orientation, cover_path = processor.reassemble_calls[0]
+    reassemble_call = processor.reassemble_calls[0]
+    clips = reassemble_call["clips"]
+    segments = reassemble_call["segments"]
     assert [clip.path for clip in clips] == [first, second]
     assert [clip.start_seconds for clip in clips] == [1.0, 1.0]
     assert [clip.duration_seconds for clip in clips] == [60.0, 60.0]
@@ -1406,21 +1430,72 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert sum(segment.duration_seconds for segment in segments) == pytest.approx(120.0 / 1.02)
     assert all(segment.duration_seconds > 0 for segment in segments)
     final_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
-    assert timeline == final_dir / ".full.mp4"
-    assert speed_factor == pytest.approx(1.02)
-    assert swap_orientation is False
-    assert cover_path is None
+    assert reassemble_call["timeline"] == final_dir / ".full.mp4"
+    assert reassemble_call["speed_factor"] == pytest.approx(1.02)
+    assert reassemble_call["swap_orientation"] is False
+    assert reassemble_call["cover_path"] is None
     assert reassembled[0].file == final_dir / "神医归来-第1集.mp4"
     assert reassembled[0].source_episode_indexes == (1,)
     assert reassembled[-1].source_episode_indexes == (2,)
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v7"
+    assert manifest["reassemblyVersion"] == "video-reassembly-v9"
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
     assert manifest["files"][-1]["episode"]["sourceEpisodeRange"] == "2"
+
+
+def test_reassembly_config_passes_video_effects_and_bgm_files(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"video-1")
+    bgm_dir = tmp_path / "bgm"
+    bgm_dir.mkdir()
+    first_bgm = bgm_dir / "001.mp3"
+    second_bgm = bgm_dir / "002.wav"
+    first_bgm.write_bytes(b"bgm-1")
+    second_bgm.write_bytes(b"bgm-2")
+    processor.durations = {"001.mp4": 62.0}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            segment_min_seconds=60.0,
+            segment_max_seconds=60.0,
+            trim_head_seconds=1.0,
+            trim_tail_seconds=1.0,
+            speed_min_percent=0.0,
+            speed_max_percent=0.0,
+            bgm_directory=str(bgm_dir),
+            bgm_volume_percent=8.0,
+            audio_pitch_semitones=1.4,
+            border_percent=1.2,
+            mirror_horizontal=True,
+            rotate_degrees=0.4,
+        ),
+    )
+
+    runner._prepare_source_items_for_platform(
+        [EpisodeMediaFile({"episodeNo": 1}, 1, source)],
+        "task-1",
+        "神医归来",
+        "WECHAT_VIDEO",
+    )
+
+    reassemble_call = processor.reassemble_calls[0]
+    assert reassemble_call["bgm_files"] == [first_bgm, second_bgm]
+    assert reassemble_call["bgm_volume_percent"] == pytest.approx(8.0)
+    assert reassemble_call["audio_pitch_semitones"] == pytest.approx(1.4)
+    assert reassemble_call["border_percent"] == pytest.approx(1.2)
+    assert reassemble_call["mirror_horizontal"] is True
+    assert reassemble_call["rotate_degrees"] == pytest.approx(0.4)
 
 
 def test_reassembly_drops_unreadable_tail_segments(tmp_path):
@@ -1463,7 +1538,7 @@ def test_reassembly_drops_unreadable_tail_segments(tmp_path):
 
     final_dir = tmp_path / "dramas" / "processed" / "drama-1" / "reassembled"
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert len(processor.reassemble_calls[0][1]) == 52
+    assert len(processor.reassemble_calls[0]["segments"]) == 52
     assert len(reassembled) == 50
     assert manifest["episodeCount"] == 50
     assert [entry["file"] for entry in manifest["files"]][-1] == "神医归来-第50集.mp4"
@@ -1580,6 +1655,57 @@ def test_final_upload_video_still_transcodes_low_resolution_for_wechat(tmp_path)
     assert processor.calls
     assert processor.calls[0][0] == source
     assert processor.calls[0][2] is None
+    assert upload_items[0].file == processor.calls[0][1]
+    assert processor.calls[0][3] == {}
+
+
+def test_non_reassembly_processing_applies_video_generation_config(tmp_path):
+    processor = FakeProcessor()
+    source_dir = tmp_path / "dramas" / "downloads" / "drama-1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "001.mp4"
+    source.write_bytes(b"video-1")
+    bgm_dir = tmp_path / "bgm"
+    bgm_dir.mkdir()
+    bgm = bgm_dir / "001.mp3"
+    bgm.write_bytes(b"bgm-1")
+    processor.durations = {"001.mp4": 62.0}
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=processor,
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(
+            method="none",
+            trim_head_seconds=1.0,
+            trim_tail_seconds=0.5,
+            speed_min_percent=2.5,
+            speed_max_percent=2.5,
+            swap_orientation=True,
+            bgm_directory=str(bgm_dir),
+            bgm_volume_percent=8.0,
+            audio_pitch_semitones=1.4,
+            border_percent=1.2,
+            mirror_horizontal=True,
+            rotate_degrees=0.4,
+        ),
+    )
+    item = EpisodeMediaFile({"episodeNo": 1}, 1, source)
+
+    upload_items = runner._prepare_media_files_for_upload([item], "task-1", "神医归来", 1, "WECHAT_VIDEO")
+
+    kwargs = processor.calls[0][3]
+    assert kwargs["trim_head_seconds"] == pytest.approx(1.0)
+    assert kwargs["trim_tail_seconds"] == pytest.approx(0.5)
+    assert kwargs["speed_factor"] == pytest.approx(1.025)
+    assert kwargs["swap_orientation"] is True
+    assert kwargs["bgm_files"] == [bgm]
+    assert kwargs["bgm_volume_percent"] == pytest.approx(8.0)
+    assert kwargs["audio_pitch_semitones"] == pytest.approx(1.4)
+    assert kwargs["border_percent"] == pytest.approx(1.2)
+    assert kwargs["mirror_horizontal"] is True
+    assert kwargs["rotate_degrees"] == pytest.approx(0.4)
     assert upload_items[0].file == processor.calls[0][1]
 
 
@@ -1806,7 +1932,7 @@ def test_reassembly_outputs_final_upload_files_without_cover_frame(tmp_path):
     assert len(upload_items) == 50
     assert upload_items[0].file.parent == final_dir
     assert upload_items[0].episode["coverFrameApplied"] is False
-    assert processor.reassemble_calls[0][-1] is None
+    assert processor.reassemble_calls[0]["cover_path"] is None
     assert processor.calls == []
 
 
@@ -1940,7 +2066,7 @@ def test_publish_once_transcodes_low_resolution_video(tmp_path, monkeypatch):
     source_1 = drama_download_dir(tmp_path) / "001.mp4"
     source_2 = drama_download_dir(tmp_path) / "002.mp4"
     processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
-    assert processor.calls == [(source_1, processed_1, None)]
+    assert processor.calls == [(source_1, processed_1, None, {})]
     assert publisher.files == [processed_1, source_2]
     marker = processed_1.with_name("001.mp4.aidrama.json")
     signature = json.loads(marker.read_text(encoding="utf-8"))
@@ -1984,6 +2110,7 @@ def test_publish_once_does_not_transcode_only_to_add_cover_frame(tmp_path, monke
             drama_download_dir(tmp_path) / "001.mp4",
             processed_1,
             None,
+            {},
         )
     ]
     marker = processed_1.with_name("001.mp4.aidrama.json")

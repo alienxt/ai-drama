@@ -46,6 +46,7 @@ from aidrama_desktop.video.ffmpeg import (
     WECHAT_VIDEO_MIN_WIDTH,
     WECHAT_VIDEO_TARGET_BITRATE,
     WECHAT_VIDEO_TRANSCODE_VERSION,
+    minimum_wechat_video_dimensions,
 )
 from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
@@ -66,10 +67,11 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v7"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v9"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
+VIDEO_REASSEMBLY_BGM_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"}
 TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
 CONTRACT_MATERIALS_MANIFEST_FILENAME = ".contract-materials.json"
@@ -1286,7 +1288,14 @@ class TaskRunner:
             raise RuntimeError("重组分集失败：没有可用的视频时长，请确认 FFmpeg/FFprobe 可正常读取原片。")
 
         cover_file: Path | None = None
-        base_signature = self._video_reassembly_base_signature(source_clips, config, cover_file, len(media_items))
+        bgm_files = self._video_reassembly_bgm_files(config, task_id, drama_title)
+        base_signature = self._video_reassembly_base_signature(
+            source_clips,
+            config,
+            cover_file,
+            len(media_items),
+            bgm_files,
+        )
         rng = self._video_reassembly_random(base_signature)
         speed_percent = rng.uniform(config.speed_min_percent, config.speed_max_percent)
         speed_factor = max(0.01, 1.0 + speed_percent / 100.0)
@@ -1312,7 +1321,9 @@ class TaskRunner:
                 f"重组分集：{drama_title}（目标 {VIDEO_REASSEMBLY_MIN_EPISODE_COUNT}-{VIDEO_REASSEMBLY_MAX_EPISODE_COUNT} 集，"
                 f"本次 {len(segments)} 集；参考切分 {config.segment_min_seconds:g}-{config.segment_max_seconds:g}s，"
                 f"去头 {config.trim_head_seconds:g}s/去尾 {config.trim_tail_seconds:g}s，"
-                f"变速 {speed_percent:.2f}%）",
+                f"变速 {speed_percent:.2f}%；"
+                f"BGM {len(bgm_files)} 首；音量 {config.bgm_volume_percent:g}%；"
+                f"音调 {config.audio_pitch_semitones:g} 半音；黑边 {config.border_percent:g}%）",
                 task_id,
             )
             try:
@@ -1322,6 +1333,12 @@ class TaskRunner:
                     timeline,
                     speed_factor=speed_factor,
                     swap_orientation=config.swap_orientation,
+                    bgm_files=bgm_files,
+                    bgm_volume_percent=config.bgm_volume_percent,
+                    audio_pitch_semitones=config.audio_pitch_semitones,
+                    border_percent=config.border_percent,
+                    mirror_horizontal=config.mirror_horizontal,
+                    rotate_degrees=config.rotate_degrees,
                     cover_path=None,
                 )
                 segments = self._valid_reassembled_segments_or_raise(segments, task_id, drama_title)
@@ -1380,6 +1397,7 @@ class TaskRunner:
         config: VideoReassemblyConfig,
         cover_file: Path | None,
         original_episode_count: int,
+        bgm_files: list[Path],
     ) -> dict[str, Any]:
         sources = []
         for item, clip in source_clips:
@@ -1403,10 +1421,21 @@ class TaskRunner:
                 "size": cover_stat.st_size,
                 "mtimeNs": cover_stat.st_mtime_ns,
             }
+        bgm = []
+        for file in bgm_files:
+            stat = file.stat()
+            bgm.append(
+                {
+                    "path": str(file),
+                    "size": stat.st_size,
+                    "mtimeNs": stat.st_mtime_ns,
+                }
+            )
         return {
             "version": VIDEO_REASSEMBLY_VERSION,
             "config": config.to_dict(),
             "cover": cover,
+            "bgm": bgm,
             "episodeCountRule": {
                 "min": VIDEO_REASSEMBLY_MIN_EPISODE_COUNT,
                 "max": VIDEO_REASSEMBLY_MAX_EPISODE_COUNT,
@@ -1426,6 +1455,63 @@ class TaskRunner:
     def _video_reassembly_target_dir(self, media_items: list[EpisodeMediaFile]) -> Path:
         source_root = self._processed_media_target(media_items[0].file).parent
         return source_root / VIDEO_REASSEMBLY_DIRNAME
+
+    def _video_reassembly_bgm_files(
+        self,
+        config: VideoReassemblyConfig,
+        task_id: str,
+        drama_title: str,
+    ) -> list[Path]:
+        bgm_directory = str(config.bgm_directory or "").strip()
+        if not bgm_directory:
+            return []
+        bgm_root = Path(bgm_directory).expanduser()
+        if not bgm_root.exists() or not bgm_root.is_dir():
+            self._notify(f"重组分集未使用 BGM：{drama_title}（目录不存在：{bgm_root}）", task_id)
+            return []
+        files = [
+            path
+            for path in sorted(bgm_root.iterdir())
+            if path.is_file() and path.suffix.lower() in VIDEO_REASSEMBLY_BGM_EXTENSIONS
+        ]
+        if not files:
+            self._notify(f"重组分集未使用 BGM：{drama_title}（目录内没有可用音频）", task_id)
+        return files
+
+    @staticmethod
+    def _non_reassembly_processing_required(
+        config: VideoReassemblyConfig,
+        bgm_files: list[Path],
+    ) -> bool:
+        return any(
+            [
+                config.trim_head_seconds > 0,
+                config.trim_tail_seconds > 0,
+                abs(config.speed_min_percent) >= 0.001,
+                abs(config.speed_max_percent) >= 0.001,
+                config.swap_orientation,
+                bool(bgm_files) and config.bgm_volume_percent > 0,
+                abs(config.audio_pitch_semitones) >= 0.001,
+                config.border_percent > 0,
+                config.mirror_horizontal,
+                abs(config.rotate_degrees) >= 0.001,
+            ]
+        )
+
+    @staticmethod
+    def _single_video_speed_factor(config: VideoReassemblyConfig, source_file: Path) -> float:
+        min_percent = config.speed_min_percent
+        max_percent = config.speed_max_percent
+        if abs(min_percent - max_percent) < 0.0001:
+            return max(0.01, 1.0 + min_percent / 100.0)
+        try:
+            stat = source_file.stat()
+            seed = f"{source_file.name}:{stat.st_size}:{stat.st_mtime_ns}:{min_percent}:{max_percent}"
+        except OSError:
+            seed = f"{source_file}:{min_percent}:{max_percent}"
+        rng = random.Random(hashlib.sha256(seed.encode("utf-8")).hexdigest())
+        speed_percent = rng.uniform(min_percent, max_percent)
+        return max(0.01, 1.0 + speed_percent / 100.0)
 
     @staticmethod
     def _video_reassembly_random(signature: dict[str, Any]) -> random.Random:
@@ -1729,6 +1815,8 @@ class TaskRunner:
         single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
         if not callable(single_transcode):
             return source_items
+        config = (self.video_reassembly_config or VideoReassemblyConfig(method="none")).normalized()
+        bgm_files = self._video_reassembly_bgm_files(config, task_id, drama_title)
         cover_file: Path | None = None
         upload_items: list[EpisodeMediaFile] = []
         processed_count = 0
@@ -1780,14 +1868,24 @@ class TaskRunner:
                 if final_upload_video
                 else self._needs_tiktok_upload_transcode(source_file) if platform == "TIKTOK" else False
             )
+            custom_processing_required = (
+                not final_upload_video
+                and self._non_reassembly_processing_required(config, bgm_files)
+            )
             source_needs_transcode = source_needs_transcode or source_needs_tiktok_upload_transcode
+            source_needs_transcode = source_needs_transcode or custom_processing_required
             should_add_cover_frame = False
             if not source_needs_transcode and not should_add_cover_frame:
                 upload_items.append(item)
                 continue
             processed_count += 1
             target = self._processed_media_target(source_file)
-            signature = self._processed_media_signature(source_file, cover_file)
+            signature = self._processed_media_signature(
+                source_file,
+                cover_file,
+                processing_config=config if custom_processing_required else None,
+                bgm_files=bgm_files if custom_processing_required else None,
+            )
             target_needs_transcode = self._needs_wechat_video_transcode(target)
             target_item = EpisodeMediaFile(item.episode, item.episode_index, target, item.source_episode_indexes)
             if (
@@ -1807,10 +1905,26 @@ class TaskRunner:
                 action_parts.append("规范分辨率")
             if source_needs_tiktok_upload_transcode:
                 action_parts.append("满足TK格式和大小")
+            if custom_processing_required:
+                action_parts.append("应用视频生成配置")
             action = "、".join(action_parts) or "统一转码"
             self._notify(f"转码：{drama_title} 第 {episode_no} 集（{action}）", task_id)
             try:
-                processed_file = single_transcode(source_file, target, cover_path=None)
+                processed_file = single_transcode(
+                    source_file,
+                    target,
+                    cover_path=None,
+                    trim_head_seconds=config.trim_head_seconds if custom_processing_required else 0.0,
+                    trim_tail_seconds=config.trim_tail_seconds if custom_processing_required else 0.0,
+                    speed_factor=self._single_video_speed_factor(config, source_file) if custom_processing_required else 1.0,
+                    swap_orientation=config.swap_orientation if custom_processing_required else False,
+                    bgm_files=bgm_files if custom_processing_required else None,
+                    bgm_volume_percent=config.bgm_volume_percent if custom_processing_required else 0.0,
+                    audio_pitch_semitones=config.audio_pitch_semitones if custom_processing_required else 0.0,
+                    border_percent=config.border_percent if custom_processing_required else 0.0,
+                    mirror_horizontal=config.mirror_horizontal if custom_processing_required else False,
+                    rotate_degrees=config.rotate_degrees if custom_processing_required else 0.0,
+                )
                 self._write_processed_media_signature(processed_file, signature)
                 processed_item = EpisodeMediaFile(
                     item.episode,
@@ -1909,7 +2023,8 @@ class TaskRunner:
         if not dimensions:
             return True
         width, height = dimensions
-        return width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT
+        min_width, min_height = minimum_wechat_video_dimensions(width, height)
+        return width < min_width or height < min_height
 
     @staticmethod
     def _covered_source_skipped_count(original_episode_count: int, source_items: list[EpisodeMediaFile]) -> int:
@@ -1987,8 +2102,9 @@ class TaskRunner:
         if not dimensions:
             return f"无法读取视频分辨率，文件可能损坏或不是有效视频：{path.name}（{self._format_file_size(size)}）"
         width, height = dimensions
-        if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
-            return f"分辨率 {width}x{height}，低于视频号要求的 {WECHAT_VIDEO_MIN_WIDTH}x{WECHAT_VIDEO_MIN_HEIGHT}：{path.name}"
+        min_width, min_height = minimum_wechat_video_dimensions(width, height)
+        if width < min_width or height < min_height:
+            return f"分辨率 {width}x{height}，低于视频号要求的 {min_width}x{min_height}：{path.name}"
         bitrate_bps = self._video_bitrate_bps(path)
         if bitrate_bps is None:
             return f"无法读取视频码率，需重新转码后再上传：{path.name}（{self._format_file_size(size)}）"
@@ -2020,8 +2136,9 @@ class TaskRunner:
         dimensions = self._video_dimensions(path)
         if dimensions:
             width, height = dimensions
-            if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
-                return f"分辨率 {width}x{height}，低于 TK 建议的 {WECHAT_VIDEO_MIN_WIDTH}x{WECHAT_VIDEO_MIN_HEIGHT}"
+            min_width, min_height = minimum_wechat_video_dimensions(width, height)
+            if width < min_width or height < min_height:
+                return f"分辨率 {width}x{height}，低于 TK 建议的 {min_width}x{min_height}"
         return None
 
     def _needs_tiktok_upload_transcode(self, source_file: Path) -> bool:
@@ -2035,7 +2152,8 @@ class TaskRunner:
         dimensions = self._video_dimensions(source_file)
         if dimensions:
             width, height = dimensions
-            if width < WECHAT_VIDEO_MIN_WIDTH or height < WECHAT_VIDEO_MIN_HEIGHT:
+            min_width, min_height = minimum_wechat_video_dimensions(width, height)
+            if width < min_width or height < min_height:
                 return True
         return False
 
@@ -2270,7 +2388,13 @@ class TaskRunner:
         return path if path.exists() and path.is_file() else None
 
     @staticmethod
-    def _processed_media_signature(source_file: Path, cover_file: Path | None) -> dict[str, Any]:
+    def _processed_media_signature(
+        source_file: Path,
+        cover_file: Path | None,
+        *,
+        processing_config: VideoReassemblyConfig | None = None,
+        bgm_files: list[Path] | None = None,
+    ) -> dict[str, Any]:
         source_stat = source_file.stat()
         signature: dict[str, Any] = {
             "version": WECHAT_VIDEO_TRANSCODE_VERSION,
@@ -2280,6 +2404,8 @@ class TaskRunner:
             "sourceSize": source_stat.st_size,
             "sourceMtimeNs": source_stat.st_mtime_ns,
             "cover": None,
+            "processingConfig": processing_config.to_dict() if processing_config else None,
+            "bgmFiles": [],
         }
         if cover_file:
             cover_stat = cover_file.stat()
@@ -2288,6 +2414,18 @@ class TaskRunner:
                     "cover": str(cover_file),
                     "coverSize": cover_stat.st_size,
                     "coverMtimeNs": cover_stat.st_mtime_ns,
+                }
+            )
+        for bgm_file in bgm_files or []:
+            try:
+                bgm_stat = bgm_file.stat()
+            except OSError:
+                continue
+            signature["bgmFiles"].append(
+                {
+                    "path": str(bgm_file),
+                    "size": bgm_stat.st_size,
+                    "mtimeNs": bgm_stat.st_mtime_ns,
                 }
             )
         return signature

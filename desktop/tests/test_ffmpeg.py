@@ -139,6 +139,24 @@ def test_ffmpeg_processor_keeps_compliant_wechat_video_resolution(monkeypatch, t
     assert processor.needs_wechat_video_resolution_transcode(source) is False
 
 
+def test_ffmpeg_processor_keeps_compliant_landscape_wechat_video_resolution(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"streams": [{"width": 1280, "height": 720}]}),
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.needs_wechat_video_resolution_transcode(source) is False
+
+
 def test_ffmpeg_processor_treats_unknown_resolution_as_needing_transcode(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     source.write_text("not-a-video")
@@ -268,6 +286,36 @@ def test_ffmpeg_processor_transcodes_low_resolution_to_wechat_video_minimum(monk
     assert "scale=720:1280:force_original_aspect_ratio=decrease" in video_filter
     assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" in video_filter
     assert "setsar=1,format=yuv420p" in video_filter
+    assert ffmpeg_command[-1] == str(target)
+
+
+def test_ffmpeg_processor_transcodes_low_resolution_landscape_to_landscape_minimum(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 960, "height": 540}]}),
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.transcode_for_wechat_video(source, target) == target
+
+    ffmpeg_command = commands[-1]
+    assert "-vf" in ffmpeg_command
+    video_filter = ffmpeg_command[ffmpeg_command.index("-vf") + 1]
+    assert "scale=1280:720:force_original_aspect_ratio=decrease" in video_filter
+    assert "pad=1280:720:(ow-iw)/2:(oh-ih)/2" in video_filter
     assert ffmpeg_command[-1] == str(target)
 
 

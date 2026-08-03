@@ -1086,8 +1086,8 @@ class DesktopWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addWidget(self._video_reassembly_settings_panel())
         layout.addWidget(self._tool_path_settings_panel())
+        layout.addWidget(self._video_reassembly_settings_panel())
         panel, panel_layout = self._panel("运行配置")
         update_row = QHBoxLayout()
         update_hint = QLabel(f"当前版本：{__version__}")
@@ -1207,7 +1207,7 @@ class DesktopWindow(QMainWindow):
         return row
 
     def _video_reassembly_settings_panel(self) -> QFrame:
-        panel, panel_layout = self._panel("去重配置")
+        panel, panel_layout = self._panel("视频生成配置")
         if not hasattr(self, "video_reassembly_store"):
             self.video_reassembly_store = VideoReassemblyConfigStore(
                 self.settings.config_dir / "video-processing.json",
@@ -1219,17 +1219,10 @@ class DesktopWindow(QMainWindow):
         self.video_reassembly_summary_label.setObjectName("mutedText")
         panel_layout.addWidget(self.video_reassembly_summary_label)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignLeft)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(10)
-
         self.video_reassembly_method_input = QComboBox()
         self.video_reassembly_method_input.addItem("重组分集", VIDEO_REASSEMBLY_METHOD_REASSEMBLE)
         self.video_reassembly_method_input.addItem("不启用", VIDEO_REASSEMBLY_METHOD_NONE)
         self._set_combo_current_data(self.video_reassembly_method_input, config.method)
-        form.addRow("去重方式", self.video_reassembly_method_input)
 
         self.reassembly_min_seconds_input = self._seconds_spin_box(1.0, 3600.0, config.segment_min_seconds)
         self.reassembly_max_seconds_input = self._seconds_spin_box(1.0, 3600.0, config.segment_max_seconds)
@@ -1237,15 +1230,22 @@ class DesktopWindow(QMainWindow):
         self.reassembly_trim_tail_input = self._seconds_spin_box(0.0, 60.0, config.trim_tail_seconds)
         self.reassembly_speed_min_input = self._percent_spin_box(config.speed_min_percent)
         self.reassembly_speed_max_input = self._percent_spin_box(config.speed_max_percent)
-        self.reassembly_swap_input = QCheckBox("横竖互换（黑边填充）")
+        self.reassembly_swap_input = QCheckBox("强制横竖互换（会改变输出方向）")
         self.reassembly_swap_input.setChecked(config.swap_orientation)
+        self.reassembly_bgm_dir_input = QLineEdit(str(config.bgm_directory or ""))
+        self.reassembly_bgm_dir_input.setPlaceholderText("例如：D:/短剧/音乐 或 /Users/mac/Music/drama-bgm")
+        self.reassembly_bgm_volume_input = self._percent_spin_box(config.bgm_volume_percent, minimum=0.0, maximum=100.0)
+        self.reassembly_pitch_input = self._number_spin_box(-12.0, 12.0, config.audio_pitch_semitones, suffix=" 个半音")
+        self.reassembly_border_input = self._percent_spin_box(config.border_percent, minimum=0.0, maximum=20.0)
+        self.reassembly_mirror_input = QCheckBox("水平镜像翻转")
+        self.reassembly_mirror_input.setChecked(config.mirror_horizontal)
+        self.reassembly_rotate_input = self._number_spin_box(-10.0, 10.0, config.rotate_degrees, suffix=" °")
 
         range_row = QHBoxLayout()
         range_row.addWidget(self.reassembly_min_seconds_input)
         range_row.addWidget(QLabel("至"))
         range_row.addWidget(self.reassembly_max_seconds_input)
         range_row.addStretch(1)
-        form.addRow("切分时长", range_row)
 
         trim_row = QHBoxLayout()
         trim_row.addWidget(QLabel("片头"))
@@ -1254,20 +1254,57 @@ class DesktopWindow(QMainWindow):
         trim_row.addWidget(QLabel("片尾"))
         trim_row.addWidget(self.reassembly_trim_tail_input)
         trim_row.addStretch(1)
-        form.addRow("去头去尾", trim_row)
 
         speed_row = QHBoxLayout()
         speed_row.addWidget(self.reassembly_speed_min_input)
         speed_row.addWidget(QLabel("至"))
         speed_row.addWidget(self.reassembly_speed_max_input)
         speed_row.addStretch(1)
-        form.addRow("变速区间", speed_row)
-        form.addRow("", self.reassembly_swap_input)
 
-        panel_layout.addLayout(form)
+        left_form = QFormLayout()
+        left_form.setLabelAlignment(Qt.AlignLeft)
+        left_form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        left_form.setHorizontalSpacing(18)
+        left_form.setVerticalSpacing(10)
+        left_form.addRow("生成方式", self.video_reassembly_method_input)
+        left_form.addRow("切分时长", range_row)
+        left_form.addRow("去头去尾", trim_row)
+        left_form.addRow("变速区间", speed_row)
+
+        right_form = QFormLayout()
+        right_form.setLabelAlignment(Qt.AlignLeft)
+        right_form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        right_form.setHorizontalSpacing(18)
+        right_form.setVerticalSpacing(10)
+        right_form.addRow("背景音乐目录", self._path_input_row(self.reassembly_bgm_dir_input, self.choose_reassembly_bgm_dir))
+        right_form.addRow("背景音乐音量", self.reassembly_bgm_volume_input)
+        right_form.addRow("音调偏移", self.reassembly_pitch_input)
+        right_form.addRow("四周黑边", self.reassembly_border_input)
+        right_form.addRow("轻微旋转", self.reassembly_rotate_input)
+
+        checkbox_column = QVBoxLayout()
+        checkbox_column.setSpacing(8)
+        checkbox_column.addWidget(self.reassembly_swap_input)
+        checkbox_column.addWidget(self.reassembly_mirror_input)
+        checkbox_column.addStretch(1)
+        right_form.addRow("镜像翻转", checkbox_column)
+
+        columns = QGridLayout()
+        columns.setHorizontalSpacing(28)
+        columns.setVerticalSpacing(0)
+        left_widget = QWidget()
+        left_widget.setLayout(left_form)
+        right_widget = QWidget()
+        right_widget.setLayout(right_form)
+        columns.addWidget(left_widget, 0, 0)
+        columns.addWidget(right_widget, 0, 1)
+        columns.setColumnStretch(0, 1)
+        columns.setColumnStretch(1, 1)
+
+        panel_layout.addLayout(columns)
         hint = QLabel(
             "全剧按集序接成一条时间线，在切分区间内滚动切出新集；"
-            "剩余不足 30 秒会并入上一集。横竖互换默认启用并使用黑边填充。"
+            "剩余不足 30 秒会并入上一集。默认保持原始横竖方向；只有勾选“强制横竖互换”时才会把横屏改成竖版或反过来。"
         )
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)
@@ -1290,12 +1327,21 @@ class DesktopWindow(QMainWindow):
         spin.setValue(value)
         return spin
 
-    def _percent_spin_box(self, value: float) -> QDoubleSpinBox:
+    def _percent_spin_box(self, value: float, *, minimum: float = -50.0, maximum: float = 50.0) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
-        spin.setRange(-50.0, 50.0)
+        spin.setRange(minimum, maximum)
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
         spin.setSuffix(" %")
+        spin.setValue(value)
+        return spin
+
+    def _number_spin_box(self, minimum: float, maximum: float, value: float, *, suffix: str = "") -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(1)
+        spin.setSingleStep(0.1)
+        spin.setSuffix(suffix)
         spin.setValue(value)
         return spin
 
@@ -1315,12 +1361,18 @@ class DesktopWindow(QMainWindow):
             speed_min_percent=self.reassembly_speed_min_input.value(),
             speed_max_percent=self.reassembly_speed_max_input.value(),
             swap_orientation=self.reassembly_swap_input.isChecked(),
+            bgm_directory=self.reassembly_bgm_dir_input.text().strip() or None,
+            bgm_volume_percent=self.reassembly_bgm_volume_input.value(),
+            audio_pitch_semitones=self.reassembly_pitch_input.value(),
+            border_percent=self.reassembly_border_input.value(),
+            mirror_horizontal=self.reassembly_mirror_input.isChecked(),
+            rotate_degrees=self.reassembly_rotate_input.value(),
         ).normalized()
         self.video_reassembly_store.save(config)
         self.video_reassembly_config = config
         self.video_reassembly_summary_label.setText(f"当前方案：{config.summary()}")
-        self.append_log(f"去重配置已保存：{config.summary()}")
-        QMessageBox.information(self, "去重配置", "去重配置已保存。")
+        self.append_log(f"视频生成配置已保存：{config.summary()}")
+        QMessageBox.information(self, "视频生成配置", "视频生成配置已保存。")
 
     def choose_whisper_path(self) -> None:
         self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
@@ -1336,6 +1388,9 @@ class DesktopWindow(QMainWindow):
 
     def choose_jianying_music_dir(self) -> None:
         self._choose_directory_path(self.jianying_music_dir_input, "选择剪映音乐目录")
+
+    def choose_reassembly_bgm_dir(self) -> None:
+        self._choose_directory_path(self.reassembly_bgm_dir_input, "选择背景音乐目录")
 
     def _choose_file_path(self, input_widget: QLineEdit, title: str) -> None:
         start_dir = str(Path(input_widget.text()).expanduser().parent) if input_widget.text() else ""
