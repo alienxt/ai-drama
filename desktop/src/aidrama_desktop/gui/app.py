@@ -3992,6 +3992,7 @@ class DesktopWindow(QMainWindow):
         return (
             DesktopWindow.is_daily_publish_limit_error(message)
             or DesktopWindow.is_disk_space_error(message)
+            or DesktopWindow.is_jianying_error(message)
         )
 
     @staticmethod
@@ -4008,6 +4009,10 @@ class DesktopWindow(QMainWindow):
     def is_disk_space_error(message: str) -> bool:
         normalized = message.lower()
         return "no space left on device" in normalized or "磁盘空间不足" in message
+
+    @staticmethod
+    def is_jianying_error(message: str) -> bool:
+        return "剪映" in message
 
     def set_task_error_message(self, message: str) -> None:
         if hasattr(self, "task_error_label"):
