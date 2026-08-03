@@ -27,6 +27,8 @@ WECHAT_VIDEO_TARGET_FPS = 30
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
 WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v9"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
+FFMPEG_FILTER_SCRIPT_MIN_CHARS = 8_000
+WINDOWS_COMMAND_LINE_SAFE_CHARS = 24_000
 DRAMA_STRATEGY1_TRIM_HEAD_SECONDS = 1.0
 DRAMA_STRATEGY1_TRIM_TAIL_SECONDS = 1.0
 DRAMA_STRATEGY1_MIN_SEGMENT_SECONDS = 50
@@ -75,6 +77,13 @@ class VideoReassemblySegment:
     start_seconds: float
     duration_seconds: float
     target: Path
+
+
+@dataclass(frozen=True)
+class _PreparedFfmpegCommand:
+    command: list[str]
+    filter_script_path: Path | None = None
+    filter_script_content: str | None = None
 
 
 @dataclass
@@ -304,10 +313,17 @@ class FfmpegProcessor:
         return [segment.target for segment in segments]
 
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
+        prepared_command = self._prepare_ffmpeg_command(command, target)
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+            subprocess.run(
+                prepared_command.command,
+                check=True,
+                capture_output=True,
+                text=True,
+                **hidden_subprocess_kwargs(),
+            )
         except FileNotFoundError as exception:
-            fallback_command = self._ffmpeg_fallback_command(command)
+            fallback_command = self._ffmpeg_fallback_command(prepared_command.command)
             if fallback_command:
                 try:
                     subprocess.run(
@@ -330,27 +346,41 @@ class FfmpegProcessor:
                             fallback_exception.stdout,
                             fallback_exception.stderr,
                             target,
+                            filter_script_path=prepared_command.filter_script_path,
+                            filter_script_content=prepared_command.filter_script_content,
                         )
                     ) from fallback_exception
                 except OSError as fallback_exception:
                     self._cleanup_failed_target(target)
                     raise FfmpegError(f"FFmpeg 无法启动：{fallback_exception}") from fallback_exception
             self._cleanup_failed_target(target)
-            raise FfmpegError(self._format_ffmpeg_missing_message(command, exception, fallback_command)) from exception
+            raise FfmpegError(
+                self._format_ffmpeg_missing_message(
+                    prepared_command.command,
+                    exception,
+                    fallback_command,
+                    filter_script_path=prepared_command.filter_script_path,
+                    filter_script_content=prepared_command.filter_script_content,
+                )
+            ) from exception
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(
                 self._format_ffmpeg_failure_message(
-                    command,
+                    prepared_command.command,
                     exception.returncode,
                     exception.stdout,
                     exception.stderr,
                     target,
+                    filter_script_path=prepared_command.filter_script_path,
+                    filter_script_content=prepared_command.filter_script_content,
                 )
             ) from exception
         except OSError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(f"FFmpeg 无法启动：{exception}") from exception
+        finally:
+            self._cleanup_filter_script(prepared_command.filter_script_path)
         return target
 
     def _stage_reassembly_clips(
@@ -1310,17 +1340,65 @@ class FfmpegProcessor:
             return None
         return [fallback_path, *command[1:]]
 
+    def _prepare_ffmpeg_command(self, command: list[str], target: Path) -> _PreparedFfmpegCommand:
+        if "-filter_complex" not in command:
+            return _PreparedFfmpegCommand(command)
+        filter_index = command.index("-filter_complex")
+        if filter_index + 1 >= len(command):
+            return _PreparedFfmpegCommand(command)
+        filter_complex = command[filter_index + 1]
+        if not self._should_use_filter_complex_script(command, filter_complex):
+            return _PreparedFfmpegCommand(command)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=target.parent,
+            prefix=f".{target.stem or 'ffmpeg'}-",
+            suffix=".filter_complex.txt",
+        ) as script_file:
+            script_file.write(filter_complex)
+            script_path = Path(script_file.name)
+        prepared = [*command[:filter_index], "-filter_complex_script", str(script_path), *command[filter_index + 2 :]]
+        return _PreparedFfmpegCommand(prepared, script_path, filter_complex)
+
+    @staticmethod
+    def _should_use_filter_complex_script(command: list[str], filter_complex: str) -> bool:
+        return (
+            len(filter_complex) >= FFMPEG_FILTER_SCRIPT_MIN_CHARS
+            or len(FfmpegProcessor._command_text(command)) >= WINDOWS_COMMAND_LINE_SAFE_CHARS
+        )
+
+    @staticmethod
+    def _cleanup_filter_script(script_path: Path | None) -> None:
+        if not script_path:
+            return
+        try:
+            script_path.unlink()
+        except OSError:
+            pass
+
     @classmethod
     def _format_ffmpeg_missing_message(
         cls,
         command: list[str],
         exception: FileNotFoundError,
         fallback_command: list[str] | None = None,
+        *,
+        filter_script_path: Path | None = None,
+        filter_script_content: str | None = None,
     ) -> str:
         configured_path = normalize_executable_path(command[0] if command else "")
         resolved_path = find_existing_ffmpeg_path(configured_path, require_ffprobe=False) if configured_path else None
         binary_path = resolved_path or configured_path
-        sections = [f"找不到 FFmpeg 可执行文件：{configured_path or 'ffmpeg'}。"]
+        if getattr(exception, "winerror", None) == 206 or "WinError 206" in str(exception):
+            sections = [
+                "FFmpeg 启动失败：Windows 命令行过长（WinError 206）。"
+                "本版本会把超长 filter_complex 写入临时脚本执行；如果仍出现此错误，请查看下方实际命令。"
+            ]
+        else:
+            sections = [f"找不到 FFmpeg 可执行文件：{configured_path or 'ffmpeg'}。"]
         if binary_path and cls._looks_like_executable_path(binary_path):
             ffmpeg_exists = Path(binary_path).is_file()
             ffprobe_path = ffprobe_path_for_ffmpeg(binary_path)
@@ -1338,6 +1416,10 @@ class FfmpegProcessor:
             sections.append(f"兜底尝试：{fallback_command[0]}")
         else:
             sections.append("已尝试 PATH 和常见安装目录兜底，仍未找到可用的 FFmpeg/FFprobe。")
+        if filter_script_path:
+            sections.append(f"FFmpeg filter_complex_script：{filter_script_path}")
+        if filter_script_content:
+            sections.extend(["FFmpeg filter_complex 内容：", filter_script_content])
         return "\n".join(sections)
 
     @staticmethod
@@ -1472,17 +1554,28 @@ class FfmpegProcessor:
         stdout: str | None,
         stderr: str | None,
         target: Path,
+        *,
+        filter_script_path: Path | None = None,
+        filter_script_content: str | None = None,
     ) -> str:
         detail = cls._process_output_tail(stdout, stderr)
         sections = [
             f"FFmpeg 转码退出码 {cls._format_process_returncode(returncode)}：{detail}",
             f"目标文件：{target}",
             f"FFmpeg 命令：{cls._command_text(command)}",
+        ]
+        if filter_script_path:
+            sections.append(f"FFmpeg filter_complex_script：{filter_script_path}")
+        if filter_script_content:
+            sections.extend(["FFmpeg filter_complex 内容：", filter_script_content])
+        sections.extend(
+            [
             "FFmpeg stderr：",
             (stderr or "").strip() or "（空）",
             "FFmpeg stdout：",
             (stdout or "").strip() or "（空）",
-        ]
+            ]
+        )
         return "\n".join(sections)
 
     @staticmethod

@@ -715,6 +715,118 @@ def test_ffmpeg_processor_reassembly_effects_reset_sar_before_concat(monkeypatch
     ) in filter_complex
 
 
+def test_ffmpeg_processor_uses_filter_complex_script_for_long_reassembly(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    timeline_commands = []
+    script_paths = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        if Path(command[-1]).name == "timeline.mp4":
+            timeline_commands.append(command)
+            script_path = Path(command[command.index("-filter_complex_script") + 1])
+            script_paths.append(script_path)
+            assert script_path.exists()
+            assert "concat=n=2:v=1:a=1[outv][maina]" in script_path.read_text(encoding="utf-8")
+            Path(command[-1]).write_text("timeline")
+        else:
+            Path(command[-1]).write_text("segment")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.video.ffmpeg.FFMPEG_FILTER_SCRIPT_MIN_CHARS", 20)
+
+    processor = FfmpegProcessor("ffmpeg")
+    processor.reassemble_videos(
+        [
+            VideoReassemblySourceClip(source_1, 1.0, 60.0),
+            VideoReassemblySourceClip(source_2, 1.0, 60.0),
+        ],
+        [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+        timeline,
+    )
+
+    assert timeline_commands
+    assert "-filter_complex" not in timeline_commands[0]
+    assert "-filter_complex_script" in timeline_commands[0]
+    assert all(not path.exists() for path in script_paths)
+
+
+def test_ffmpeg_processor_logs_filter_complex_script_content_on_failure(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        raise subprocess.CalledProcessError(
+            1,
+            command,
+            output="",
+            stderr="Conversion failed!",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.video.ffmpeg.FFMPEG_FILTER_SCRIPT_MIN_CHARS", 20)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    with pytest.raises(FfmpegError) as error:
+        processor.reassemble_videos(
+            [VideoReassemblySourceClip(source, 1.0, 60.0)],
+            [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+            timeline,
+        )
+
+    message = str(error.value)
+    assert "FFmpeg filter_complex_script：" in message
+    assert "FFmpeg filter_complex 内容：" in message
+    assert "concat=n=1:v=1:a=1[outv][maina]" in message
+    assert "Conversion failed!" in message
+
+
+def test_ffmpeg_processor_labels_windows_long_command_error(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        error = FileNotFoundError("[WinError 206] 文件名或扩展名太长。")
+        error.winerror = 206
+        raise error
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.video.ffmpeg.FFMPEG_FILTER_SCRIPT_MIN_CHARS", 20)
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    with pytest.raises(FfmpegError) as error:
+        processor.reassemble_videos(
+            [VideoReassemblySourceClip(source, 1.0, 60.0)],
+            [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+            timeline,
+        )
+
+    message = str(error.value)
+    assert "FFmpeg 启动失败：Windows 命令行过长（WinError 206）" in message
+    assert "找不到 FFmpeg 可执行文件" not in message
+    assert "FFmpeg filter_complex_script：" in message
+    assert "FFmpeg filter_complex 内容：" in message
+
+
 def test_ffmpeg_processor_reassembly_segments_include_cover_frame(monkeypatch, tmp_path):
     source = tmp_path / "001.mp4"
     cover = tmp_path / "fengmian.jpg"
