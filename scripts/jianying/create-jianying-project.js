@@ -1648,6 +1648,7 @@ function Test-EditorReady {
   try {
     $p = Get-TargetProcess
     if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
+    if ($p -and $p.MainWindowTitle -match 'JianyingPro|CapCut|VideoFusion') { return $true }
   } catch {}
   return $false
 }
@@ -2150,6 +2151,7 @@ public class Win32DebugDraftOpen {
     Click-Point $x $y $clickCount
     Start-Sleep -Milliseconds 900
     $after = Add-Snapshot "$label-after"
+    $opened = [bool]($after.titleContainsDraft -or ($after.title -match 'JianyingPro|CapCut|VideoFusion' -and $after.title -ne $before.title))
     $click = [ordered]@{
       label = $label
       ratioX = $xRatio
@@ -2159,7 +2161,7 @@ public class Win32DebugDraftOpen {
       clickCount = $clickCount
       titleBefore = $before.title
       titleAfter = $after.title
-      opened = [bool]($after.titleContainsDraft)
+      opened = $opened
     }
     $result.clicks += $click
     if ($click.opened) {
