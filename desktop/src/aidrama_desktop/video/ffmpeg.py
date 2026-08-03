@@ -322,11 +322,14 @@ class FfmpegProcessor:
                     pass
                 except subprocess.CalledProcessError as fallback_exception:
                     self._cleanup_failed_target(target)
-                    detail = self._process_output_tail(fallback_exception.stdout, fallback_exception.stderr)
-                    if detail == "没有返回错误详情":
-                        detail = f"{detail}；目标文件：{target}；命令摘要：{self._command_summary(fallback_command)}"
                     raise FfmpegError(
-                        f"FFmpeg 转码退出码 {self._format_process_returncode(fallback_exception.returncode)}：{detail}"
+                        self._format_ffmpeg_failure_message(
+                            fallback_command,
+                            fallback_exception.returncode,
+                            fallback_exception.stdout,
+                            fallback_exception.stderr,
+                            target,
+                        )
                     ) from fallback_exception
                 except OSError as fallback_exception:
                     self._cleanup_failed_target(target)
@@ -338,10 +341,15 @@ class FfmpegProcessor:
             ) from exception
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
-            detail = self._process_output_tail(exception.stdout, exception.stderr)
-            if detail == "没有返回错误详情":
-                detail = f"{detail}；目标文件：{target}；命令摘要：{self._command_summary(command)}"
-            raise FfmpegError(f"FFmpeg 转码退出码 {self._format_process_returncode(exception.returncode)}：{detail}") from exception
+            raise FfmpegError(
+                self._format_ffmpeg_failure_message(
+                    command,
+                    exception.returncode,
+                    exception.stdout,
+                    exception.stderr,
+                    target,
+                )
+            ) from exception
         except OSError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(f"FFmpeg 无法启动：{exception}") from exception
@@ -1003,7 +1011,7 @@ class FfmpegProcessor:
             )
             if target_width and target_height:
                 filters.append(f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black")
-        if not filters:
+        if not filters or filters[-1] != "setsar=1":
             filters.append("setsar=1")
         filters.extend([f"fps={WECHAT_VIDEO_TARGET_FPS}", "format=yuv420p"])
         return ",".join(filters)
@@ -1419,6 +1427,31 @@ class FfmpegProcessor:
         if len(text) <= max_chars:
             return text
         return f"{text[: max_chars - 3]}..."
+
+    @staticmethod
+    def _command_text(command: list[str]) -> str:
+        return " ".join(shlex.quote(part) for part in command)
+
+    @classmethod
+    def _format_ffmpeg_failure_message(
+        cls,
+        command: list[str],
+        returncode: int,
+        stdout: str | None,
+        stderr: str | None,
+        target: Path,
+    ) -> str:
+        detail = cls._process_output_tail(stdout, stderr)
+        sections = [
+            f"FFmpeg 转码退出码 {cls._format_process_returncode(returncode)}：{detail}",
+            f"目标文件：{target}",
+            f"FFmpeg 命令：{cls._command_text(command)}",
+            "FFmpeg stderr：",
+            (stderr or "").strip() or "（空）",
+            "FFmpeg stdout：",
+            (stdout or "").strip() or "（空）",
+        ]
+        return "\n".join(sections)
 
     @staticmethod
     def _is_reassembly_audio_decode_error(exception: Exception) -> bool:

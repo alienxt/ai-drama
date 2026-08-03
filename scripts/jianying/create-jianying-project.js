@@ -1493,6 +1493,8 @@ function winOpenDraftByTitle(appPath, draftName) {
   if (!draftName) fail('Draft name is required for Windows draft opening.');
   const script = `
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
@@ -1743,26 +1745,29 @@ function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=window-click-fallback'
   [void](Get-RootElement)
   $homePoints = @(
-    @(0.052, 0.305),
-    @(0.060, 0.245),
-    @(0.045, 0.360)
+    @(0.033, 0.182),
+    @(0.055, 0.182),
+    @(0.040, 0.176)
   )
   foreach ($point in $homePoints) {
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 1
     Start-Sleep -Milliseconds 700
   }
+  Start-Sleep -Milliseconds 3500
   $draftPoints = @(
-    @(0.135, 0.290),
-    @(0.180, 0.290),
-    @(0.235, 0.290),
-    @(0.160, 0.340),
-    @(0.210, 0.340),
-    @(0.270, 0.340),
-    @(0.340, 0.340),
-    @(0.160, 0.430),
-    @(0.210, 0.430),
-    @(0.270, 0.430),
-    @(0.340, 0.430)
+    @(0.153, 0.382),
+    @(0.217, 0.382),
+    @(0.281, 0.382),
+    @(0.345, 0.382),
+    @(0.153, 0.331),
+    @(0.217, 0.331),
+    @(0.281, 0.331),
+    @(0.345, 0.331),
+    @(0.409, 0.331),
+    @(0.153, 0.402),
+    @(0.217, 0.402),
+    @(0.281, 0.402),
+    @(0.345, 0.402)
   )
   foreach ($point in $draftPoints) {
     Write-Output ("stage=window-click-draft {0},{1}" -f $point[0], $point[1])
@@ -1975,13 +1980,16 @@ function debugWindowsOpen(args) {
     warnings: [],
   };
 
-  if (process.platform !== 'win32') {
-    result.error = '--debug-windows-open only runs on Windows.';
+  if (!draftName) {
+    result.error = 'Draft name is required. Pass --name or provide a draft root containing root_meta_info.json.';
     writeJson(resultPath, result);
     return result;
   }
-  if (!draftName) {
-    result.error = 'Draft name is required. Pass --name or provide a draft root containing root_meta_info.json.';
+  if (draftName === '草稿名_剪辑工程') {
+    result.warnings.push('The draft name is still the example value. Pass the real draft name or omit --name to use the newest draft from draft root.');
+  }
+  if (process.platform !== 'win32') {
+    result.error = '--debug-windows-open only runs on Windows.';
     writeJson(resultPath, result);
     return result;
   }
@@ -1998,6 +2006,8 @@ function debugWindowsOpen(args) {
 
   const script = `
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $draftName = ${psSingle(draftName)}
 $appPath = ${psSingle(appPath || '')}
 $beforeScreenshot = ${psSingle(beforeScreenshot)}
@@ -2164,27 +2174,30 @@ public class Win32DebugDraftOpen {
   Save-WindowScreenshot $beforeScreenshot 'before-screenshot' | Out-Null
 
   $homePoints = @(
-    @(0.052, 0.305),
-    @(0.060, 0.245),
-    @(0.045, 0.360)
+    @(0.033, 0.182),
+    @(0.055, 0.182),
+    @(0.040, 0.176)
   )
   for ($i = 0; $i -lt $homePoints.Count; $i++) {
     $point = $homePoints[$i]
     Click-WindowRatio ("home-{0}" -f ($i + 1)) ([double]$point[0]) ([double]$point[1]) 1 | Out-Null
   }
+  Start-Sleep -Milliseconds 3500
 
   $draftPoints = @(
-    @(0.135, 0.290),
-    @(0.180, 0.290),
-    @(0.235, 0.290),
-    @(0.160, 0.340),
-    @(0.210, 0.340),
-    @(0.270, 0.340),
-    @(0.340, 0.340),
-    @(0.160, 0.430),
-    @(0.210, 0.430),
-    @(0.270, 0.430),
-    @(0.340, 0.430)
+    @(0.153, 0.382),
+    @(0.217, 0.382),
+    @(0.281, 0.382),
+    @(0.345, 0.382),
+    @(0.153, 0.331),
+    @(0.217, 0.331),
+    @(0.281, 0.331),
+    @(0.345, 0.331),
+    @(0.409, 0.331),
+    @(0.153, 0.402),
+    @(0.217, 0.402),
+    @(0.281, 0.402),
+    @(0.345, 0.402)
   )
   for ($i = 0; $i -lt $draftPoints.Count; $i++) {
     $point = $draftPoints[$i]

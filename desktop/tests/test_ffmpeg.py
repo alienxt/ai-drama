@@ -568,7 +568,8 @@ def test_ffmpeg_processor_reassembles_videos_with_trim_speed_and_segments(monkey
     assert "aresample=async=1:first_pts=0" in filter_complex
     assert "aformat=sample_rates=48000:channel_layouts=stereo,atempo=1.02" in filter_complex
     assert "apad,atrim=duration=58.824,asetpts=PTS-STARTPTS[a0]" in filter_complex
-    assert "concat=n=2:v=1:a=1[outv][outa]" in filter_complex
+    assert "concat=n=2:v=1:a=1[outv][maina]" in filter_complex
+    assert "[maina]anull[outa]" in filter_complex
     assert timeline_command[timeline_command.index("-map") + 1] == "[outv]"
     assert timeline_command[timeline_command.index("-map", timeline_command.index("-map") + 1) + 1] == "[outa]"
     assert commands[1][commands[1].index("-ss") + 1] == "0"
@@ -671,6 +672,49 @@ def test_ffmpeg_processor_reassembly_swaps_orientation_with_black_padding(monkey
     ) in filter_complex
 
 
+def test_ffmpeg_processor_reassembly_effects_reset_sar_before_concat(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+    commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe" and "stream=width,height" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 1280, "height": 720}]}),
+            )
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": [{"index": 0}]}))
+        commands.append(command)
+        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(command[-1]).write_text("video")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+    processor.reassemble_videos(
+        [VideoReassemblySourceClip(source, 1.0, 60.0)],
+        [VideoReassemblySegment(1, 0.0, 60.0, segment)],
+        timeline,
+        speed_factor=1.0,
+        border_percent=1.0,
+        rotate_degrees=0.4,
+    )
+
+    timeline_command = commands[0]
+    filter_complex = timeline_command[timeline_command.index("-filter_complex") + 1]
+    assert (
+        "rotate=0.4*PI/180:fillcolor=black,"
+        "scale=trunc(iw*0.98/2)*2:trunc(ih*0.98/2)*2,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,fps=30,format=yuv420p"
+    ) in filter_complex
+
+
 def test_ffmpeg_processor_reassembly_segments_include_cover_frame(monkeypatch, tmp_path):
     source = tmp_path / "001.mp4"
     cover = tmp_path / "fengmian.jpg"
@@ -736,8 +780,13 @@ def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     with pytest.raises(FfmpegError) as error:
         processor.transcode_for_wechat_video(source, target)
 
-    assert "FFmpeg 转码退出码 1" in str(error.value)
-    assert "Conversion failed!" in str(error.value)
+    message = str(error.value)
+    assert "FFmpeg 转码退出码 1" in message
+    assert "Conversion failed!" in message
+    assert "FFmpeg 命令：" in message
+    assert "FFmpeg stderr：" in message
+    assert "Invalid data found when processing input" in message
+    assert "FFmpeg stdout：" in message
     assert not target.exists()
 
 
@@ -761,5 +810,7 @@ def test_ffmpeg_processor_reports_windows_signed_returncode_without_stderr(monke
     assert "FFmpeg 转码退出码 -22（Windows 原始码 4294967274）" in message
     assert "没有返回错误详情" in message
     assert "目标文件：" in message
-    assert "命令摘要：" in message
+    assert "FFmpeg 命令：" in message
+    assert "FFmpeg stderr：" in message
+    assert "（空）" in message
     assert not target.exists()
