@@ -1535,47 +1535,50 @@ function Get-ElementName($element) {
   try { return [string]$element.Current.Name } catch { return '' }
 }
 
-function Find-ExactNamedElement($root, [string[]]$names) {
-  foreach ($candidate in $names) {
-    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-    $condition = [System.Windows.Automation.PropertyCondition]::new(
-      [System.Windows.Automation.AutomationElement]::NameProperty,
-      $candidate
-    )
-    $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($element) { return $element }
-  }
-  return $null
-}
-
-function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [int]$maxNodes) {
+function Find-BoundedNamedElement($root, [string[]]$names, [bool]$allowContains, [int]$timeoutMs, [int]$maxNodes) {
   $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
-  $queue = New-Object System.Collections.Queue
-  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-  $child = $walker.GetFirstChild($root)
-  while ($child) {
-    $queue.Enqueue($child)
-    $child = $walker.GetNextSibling($child)
-  }
-  $visited = 0
-  while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
-    $element = $queue.Dequeue()
-    $visited += 1
-    $name = Get-ElementName $element
-    if (-not [string]::IsNullOrWhiteSpace($name)) {
-      foreach ($candidate in $names) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $name.Contains($candidate)) {
-          return $element
-        }
-      }
-    }
-    $child = $walker.GetFirstChild($element)
-    while ($child -and $visited + $queue.Count -lt $maxNodes) {
+  $walkers = @(
+    [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+    [System.Windows.Automation.TreeWalker]::RawViewWalker
+  )
+  foreach ($walker in $walkers) {
+    $queue = New-Object System.Collections.Queue
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
       $queue.Enqueue($child)
       $child = $walker.GetNextSibling($child)
     }
+    $visited = 0
+    while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
+      $element = $queue.Dequeue()
+      $visited += 1
+      $name = Get-ElementName $element
+      if (-not [string]::IsNullOrWhiteSpace($name)) {
+        foreach ($candidate in $names) {
+          if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+          if ($name -eq $candidate) { return $element }
+          if ($allowContains -and $name.Contains($candidate)) {
+            $containsMatch = $element
+          }
+        }
+      }
+      $child = $walker.GetFirstChild($element)
+      while ($child -and $visited + $queue.Count -lt $maxNodes) {
+        $queue.Enqueue($child)
+        $child = $walker.GetNextSibling($child)
+      }
+    }
   }
+  if ($containsMatch) { return $containsMatch }
   return $null
+}
+
+function Find-ExactNamedElement($root, [string[]]$names) {
+  return Find-BoundedNamedElement $root $names $false 3500 1200
+}
+
+function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [int]$maxNodes) {
+  return Find-BoundedNamedElement $root $names $true $timeoutMs $maxNodes
 }
 
 function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
@@ -1734,15 +1737,16 @@ Write-Output "opened-by-title"
       timeout: 70000,
     }).trim();
   } catch (error) {
-    const detail = [error.stdout, error.stderr]
-      .map((value) => String(value || '').trim())
-      .filter(Boolean)
-      .join('\n')
-      .trim();
     const timedOut = error.killed || error.signal || /timed out|timeout|ETIMEDOUT/i.test(String(error.message || ''));
-    fail(detail || (timedOut
-      ? 'Windows Jianying draft opening timed out while searching/clicking UI controls.'
-      : error.message || 'Windows Jianying draft opening failed.'));
+    const stdout = String(error.stdout || '').trim();
+    const stderr = String(error.stderr || '').trim();
+    const message = String(error.message || '').trim();
+    const details = [];
+    if (timedOut) details.push('Windows Jianying draft opening timed out while searching/clicking UI controls.');
+    if (stderr) details.push(`PowerShell error:\n${stderr}`);
+    if (stdout) details.push(`PowerShell progress:\n${stdout}`);
+    if (!timedOut && message) details.push(message);
+    fail(details.join('\n') || 'Windows Jianying draft opening failed.');
   }
 }
 
