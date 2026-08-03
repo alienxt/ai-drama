@@ -593,7 +593,9 @@ function createBuiltInSeedDraft(draftDir) {
     fs.mkdirSync(dir, { recursive: true });
   }
   const timestampUs = nowUs();
-  writeJson(path.join(draftDir, 'draft_info.json'), makeBuiltInSeedDraftInfo(timestampUs));
+  const seedDraftInfo = makeBuiltInSeedDraftInfo(timestampUs);
+  writeJson(path.join(draftDir, 'draft_info.json'), seedDraftInfo);
+  writeJson(path.join(draftDir, 'draft_content.json'), seedDraftInfo);
   writeJson(path.join(draftDir, 'draft_meta_info.json'), {
     draft_cover: 'draft_cover.jpg',
     draft_fold_path: draftDir,
@@ -2083,6 +2085,10 @@ function Test-EditorReady {
     $p = Get-TargetProcess
     if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
     if ($p -and $p.MainWindowTitle -match 'JianyingPro|CapCut|VideoFusion') { return $true }
+    if ($p) {
+      $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+      if ($root -and (Test-Editor $root)) { return $true }
+    }
   } catch {}
   return $false
 }
@@ -2179,16 +2185,19 @@ function Wait-ForEditor([int]$seconds = 12) {
 function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=window-click-fallback'
   [void](Get-RootElement)
+  if (Wait-ForEditor 1) { return $true }
   $homePoints = @(
     @(0.033, 0.182),
     @(0.055, 0.182),
     @(0.040, 0.176)
   )
   foreach ($point in $homePoints) {
+    if (Wait-ForEditor 1) { return $true }
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 1
     Start-Sleep -Milliseconds 700
   }
   Start-Sleep -Milliseconds 3500
+  if (Wait-ForEditor 2) { return $true }
   $draftPoints = @(
     @(0.153, 0.382),
     @(0.217, 0.382),
@@ -2205,10 +2214,11 @@ function Try-OpenNewestDraftByWindowClick {
     @(0.345, 0.402)
   )
   foreach ($point in $draftPoints) {
+    if (Wait-ForEditor 1) { return $true }
     Write-Output ("stage=window-click-draft {0},{1}" -f $point[0], $point[1])
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
-    Start-Sleep -Milliseconds 1200
-    if (Wait-ForEditor 2) { return $true }
+    Start-Sleep -Milliseconds 1600
+    if (Wait-ForEditor 6) { return $true }
   }
   return $false
 }
@@ -2346,7 +2356,7 @@ public class Win32Capture {
 [Win32Capture]::SetProcessDPIAware() | Out-Null
 $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -match "Jianying|CapCut|VideoFusion" } | Select-Object -First 1
 if (-not $p) { throw "Jianying/CapCut window not found" }
-[Win32Capture]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
+[Win32Capture]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
 [Win32Capture]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 Start-Sleep -Milliseconds 300
 $r = New-Object Win32Capture+RECT
@@ -2713,7 +2723,8 @@ function createProject(args) {
   const captions = parseSrt(srt, videoInfo.durationUs);
   const useSeparateDialogueAudio = videoInfo.hasAudio && captions.length > 0;
   const draftInfoFile = path.join(draftDir, 'draft_info.json');
-  const draft = readJson(draftInfoFile);
+  const draftContentFile = path.join(draftDir, 'draft_content.json');
+  const draft = readJson(fs.existsSync(draftInfoFile) ? draftInfoFile : draftContentFile);
   const baseVideo = clone(draft.materials?.videos?.[0]);
   const baseSegment = clone(draft.tracks?.find((track) => track.type === 'video')?.segments?.[0]);
   if (!baseVideo || !baseSegment) fail('Template draft needs at least one video material and one video segment');
@@ -2945,6 +2956,7 @@ function createProject(args) {
   const missingRefs = validateRefs(draft);
   if (missingRefs.length) fail(`Draft has missing material refs: ${missingRefs.join(', ')}`);
   writeJson(draftInfoFile, draft);
+  writeJson(draftContentFile, draft);
 
   updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs);
   updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs);
