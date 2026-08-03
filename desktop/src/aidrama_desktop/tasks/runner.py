@@ -79,11 +79,15 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v12-clean-window"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v13-source-guard"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_MUSIC_DIR_ENV_KEY = "AIDRAMA_JIANYING_MUSIC_DIR"
 JIANYING_PROJECT_MUSIC_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 JIANYING_PROJECT_SUBTITLE_DIRNAME = "subtitles"
+JIANYING_PROJECT_SOURCE_TITLE_RE = re.compile(
+    r"^(.+?)(?:[-_\s]*策略1)?[-_\s]*第\d+(?:[-_~到至]\d+)?集",
+    re.IGNORECASE,
+)
 MATERIAL_METADATA_STRING_KEYS = ("jianyingProjectCaptureVersion",)
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
@@ -395,6 +399,7 @@ class TaskRunner:
             task_id,
             drama_title,
             platform=platform,
+            download_plan=effective_download_plan,
         )
         contract_metadata = self._append_jianying_to_contract_metadata(contract_metadata, jianying_metadata)
         self._progress(task_id, "UPLOADING", 75)
@@ -720,6 +725,7 @@ class TaskRunner:
         drama_title: str,
         *,
         platform: str,
+        download_plan: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         if not JIANYING_PROJECT_MATERIALS_ENABLED:
             return {}
@@ -750,6 +756,7 @@ class TaskRunner:
         self._notify(f"生成剪映工程图：{drama_title}（随机 {len(selected_items)} 集）", task_id)
         for position, item in enumerate(selected_items, start=1):
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
+            self._validate_jianying_project_source_item(item, download_plan or {}, drama_title, task_id)
             episode_label = self._jianying_project_episode_label(item)
             episode_name = safe_contract_filename(f"{position:02d}-{episode_label}")
             episode_output_dir = output_dir / episode_name
@@ -835,6 +842,30 @@ class TaskRunner:
         if source_range:
             return f"第{source_range}集"
         return f"第{episode_number(item.episode, item.episode_index)}集"
+
+    def _validate_jianying_project_source_item(
+        self,
+        item: EpisodeMediaFile,
+        download_plan: dict[str, Any],
+        drama_title: str,
+        task_id: str,
+    ) -> None:
+        source_title = jianying_source_title_from_filename(item.file.name)
+        if not source_title:
+            return
+        source_key = normalized_jianying_title_key(source_title)
+        expected_keys = jianying_expected_title_keys(download_plan, drama_title)
+        if not source_key or not expected_keys:
+            return
+        if any(jianying_title_keys_match(source_key, expected_key) for expected_key in expected_keys):
+            return
+        episode_no = episode_number(item.episode, item.episode_index)
+        message = (
+            f"剪映工程素材疑似串剧：当前剧名是“{drama_title}”，"
+            f"但第 {episode_no} 集视频文件像是“{source_title}”：{item.file}"
+        )
+        self._notify(f"剪映工程素材校验失败：{drama_title} {message}", task_id)
+        raise RuntimeError(message)
 
     @staticmethod
     def _jianying_project_srt_for_item(item: EpisodeMediaFile) -> Path | None:
@@ -3400,6 +3431,50 @@ def safe_episode_drama_name(value: object) -> str:
     clean = INVALID_FILENAME_CHARS_RE.sub("", str(value or "").strip())
     clean = re.sub(r"\s+", "", clean).strip(FILENAME_EDGE_CHARS)
     return clean or "短剧"
+
+
+def jianying_source_title_from_filename(filename: object) -> str | None:
+    stem = Path(str(filename or "")).stem.strip()
+    match = JIANYING_PROJECT_SOURCE_TITLE_RE.match(stem)
+    if not match:
+        return None
+    title = re.sub(r"[-_\s]+$", "", match.group(1)).strip()
+    return title or None
+
+
+def normalized_jianying_title_key(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    clean = INVALID_FILENAME_CHARS_RE.sub("", raw)
+    clean = re.sub(r"\s+", "", clean).strip(FILENAME_EDGE_CHARS).casefold()
+    if not clean:
+        return ""
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", clean)
+
+
+def jianying_expected_title_keys(download_plan: dict[str, Any], drama_title: str) -> set[str]:
+    aliases = [
+        drama_title,
+        download_plan.get("title"),
+        download_plan.get("aiTitle"),
+        download_plan.get("publishTitle"),
+        download_plan.get("name"),
+        download_plan.get("dramaId"),
+    ]
+    return {
+        key
+        for value in aliases
+        if (key := normalized_jianying_title_key(value))
+    }
+
+
+def jianying_title_keys_match(source_key: str, expected_key: str) -> bool:
+    if source_key == expected_key:
+        return True
+    if min(len(source_key), len(expected_key)) < 4:
+        return False
+    return source_key in expected_key or expected_key in source_key
 
 
 def drama_directory_name(download_plan: dict[str, Any]) -> str:

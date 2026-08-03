@@ -366,9 +366,15 @@ function speedForClip(index, rng) {
   return rng() > 0.84 ? pick(rng, [0.9, 1.1, 1.2]) : 1.0;
 }
 
-function splitVideo({ source, outputDir, ranges, ffmpegBin }) {
+function mediaBaseNameForDraft(draftName, source) {
+  const draftBase = sanitizeName(String(draftName || '').replace(/[_-]?剪辑工程$/u, ''));
+  if (draftBase) return draftBase;
+  return sanitizeName(path.basename(source, path.extname(source))) || 'clip';
+}
+
+function splitVideo({ source, outputDir, ranges, ffmpegBin, nameBase }) {
   const ext = path.extname(source) || '.mp4';
-  const baseName = sanitizeName(path.basename(source, ext));
+  const baseName = sanitizeName(nameBase || path.basename(source, ext)) || 'clip';
   return ranges.map((range, index) => {
     const fileName = `${baseName}-part${String(index + 1).padStart(2, '0')}${ext}`;
     const output = path.join(outputDir, fileName);
@@ -385,8 +391,8 @@ function splitVideo({ source, outputDir, ranges, ffmpegBin }) {
   });
 }
 
-function extractDialogueAudio({ source, outputDir, ffmpegBin }) {
-  const baseName = sanitizeName(path.basename(source, path.extname(source)));
+function extractDialogueAudio({ source, outputDir, ffmpegBin, nameBase }) {
+  const baseName = sanitizeName(nameBase || path.basename(source, path.extname(source))) || 'clip';
   const fileName = `${baseName}-原声对白.wav`;
   const output = path.join(outputDir, fileName);
   execFileSync(ffmpegBin, [
@@ -918,6 +924,60 @@ function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
     { type: 2, value: [] },
   ];
   writeJson(file, store);
+}
+
+function collectDraftResourceReferenceProblems(draftDir) {
+  const files = [
+    'draft_info.json',
+    'draft_meta_info.json',
+    'draft_virtual_store.json',
+  ];
+  const problems = [];
+  const seen = new Set();
+
+  function addProblem(fileName, location, kind, resourceName) {
+    const resourcePath = path.join(draftDir, 'Resources', kind, resourceName);
+    if (fs.existsSync(resourcePath)) return;
+    const key = `${fileName}|${location}|${kind}|${resourceName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    problems.push({
+      file: fileName,
+      location,
+      resource: `Resources/${kind}/${resourceName}`,
+    });
+  }
+
+  function inspectString(value, fileName, location) {
+    const normalized = String(value).replace(/\\/g, '/');
+    const matcher = /Resources\/(media|audio)\//g;
+    let match;
+    while ((match = matcher.exec(normalized)) !== null) {
+      const kind = match[1];
+      const rest = normalized.slice(match.index + match[0].length).split(/[?#]/u)[0];
+      const resourceName = path.basename(rest);
+      if (resourceName) addProblem(fileName, location, kind, resourceName);
+    }
+  }
+
+  function walk(value, fileName, location) {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => walk(item, fileName, `${location}[${index}]`));
+      return;
+    }
+    if (value && typeof value === 'object') {
+      Object.entries(value).forEach(([key, item]) => walk(item, fileName, location ? `${location}.${key}` : key));
+      return;
+    }
+    if (typeof value === 'string') inspectString(value, fileName, location);
+  }
+
+  for (const fileName of files) {
+    const file = path.join(draftDir, fileName);
+    if (!fs.existsSync(file)) continue;
+    walk(readJson(file), fileName, '');
+  }
+  return problems;
 }
 
 function collectMaterialIds(materials) {
@@ -2263,6 +2323,7 @@ function createProject(args) {
   const draftId = uuid();
   const videoInfo = mediaInfo(video, ffprobeBin);
   if (!videoInfo.width || !videoInfo.height || !videoInfo.durationUs) fail(`Video has no readable video stream: ${video}`);
+  const materialBaseName = mediaBaseNameForDraft(draftName, video);
   const rng = createRng(`${draftName}|${video}|${videoInfo.durationUs}|${videoInfo.width}x${videoInfo.height}`);
   const captions = parseSrt(srt, videoInfo.durationUs);
   const useSeparateDialogueAudio = videoInfo.hasAudio && captions.length > 0;
@@ -2287,7 +2348,7 @@ function createProject(args) {
   ]);
 
   const ranges = splitRanges(videoInfo.durationUs, Number(args.clipCount || DEFAULTS.clipCount), rng);
-  const splitClips = splitVideo({ source: video, outputDir: resourceMediaDir, ranges, ffmpegBin });
+  const splitClips = splitVideo({ source: video, outputDir: resourceMediaDir, ranges, ffmpegBin, nameBase: materialBaseName });
   const videoMaterials = [];
   const videoMetas = [];
   const videoExtraRefKeys = useSeparateDialogueAudio
@@ -2348,7 +2409,7 @@ function createProject(args) {
   const audioInfos = [];
   let dialogueAudioTrack = null;
   if (useSeparateDialogueAudio) {
-    const dialogueAudio = extractDialogueAudio({ source: video, outputDir: resourceAudioDir, ffmpegBin });
+    const dialogueAudio = extractDialogueAudio({ source: video, outputDir: resourceAudioDir, ffmpegBin, nameBase: materialBaseName });
     const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
     const materialId = uuid();
     const materialLocalId = localId();
@@ -2502,6 +2563,14 @@ function createProject(args) {
 
   updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs);
   updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs);
+  const resourceProblems = collectDraftResourceReferenceProblems(draftDir);
+  if (resourceProblems.length) {
+    const preview = resourceProblems
+      .slice(0, 8)
+      .map((item) => `${item.file}:${item.location} -> ${item.resource}`)
+      .join('; ');
+    fail(`Draft contains missing resource references, template/source cleanup may be incomplete: ${preview}`);
+  }
 
   const rootBackup = `${rootFile}.codex-backup-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`;
   const draftMaterialSize = [...videoMetas, ...audioMetas].reduce((sum, item) => sum + item.size, 0);

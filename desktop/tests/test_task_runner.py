@@ -637,6 +637,35 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
     assert ("剪映工程图已生成：神医归来（4 张）", "task-1") in progress_events
 
 
+def test_jianying_project_rejects_cross_drama_source_video(tmp_path):
+    source = tmp_path / "心动偏离航线-第21集.mp4"
+    source.write_bytes(b"video")
+    jianying_generator = FakeJianyingGenerator()
+    progress_events = []
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        contracts_dir=tmp_path / "contracts",
+        jianying_generator=jianying_generator,
+    )
+
+    with pytest.raises(RuntimeError, match="剪映工程素材疑似串剧"):
+        runner._prepare_jianying_project_materials(
+            [EpisodeMediaFile({"episodeNo": 37}, 37, source)],
+            "task-1",
+            "风起石林",
+            platform="WECHAT_VIDEO",
+            download_plan={"dramaId": "drama-1", "title": "风起石林"},
+        )
+
+    assert not jianying_generator.calls
+    assert any("剪映工程素材校验失败" in stage for stage, _ in progress_events)
+
+
 def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):
     class StoryboardApi(FakeApi):
         def get(self, path):
