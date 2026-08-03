@@ -814,3 +814,34 @@ def test_ffmpeg_processor_reports_windows_signed_returncode_without_stderr(monke
     assert "FFmpeg stderr：" in message
     assert "（空）" in message
     assert not target.exists()
+
+
+def test_ffmpeg_processor_reports_existing_binary_when_launch_still_fails(monkeypatch, tmp_path):
+    ffmpeg_bin = tmp_path / "ffmpeg" / "bin"
+    ffmpeg_bin.mkdir(parents=True)
+    configured_ffmpeg = ffmpeg_bin / "ffmpeg"
+    configured_ffprobe = ffmpeg_bin / "ffprobe"
+    configured_ffmpeg.write_text("#!/bin/sh\n")
+    configured_ffprobe.write_text("#!/bin/sh\n")
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        raise FileNotFoundError("missing runtime dependency")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
+
+    processor = FfmpegProcessor(str(configured_ffmpeg))
+
+    with pytest.raises(FfmpegError) as error:
+        processor.transcode_for_wechat_video(source, target)
+
+    message = str(error.value)
+    assert f"找不到 FFmpeg 可执行文件：{configured_ffmpeg}" in message
+    assert "FFmpeg 文件存在：是" in message
+    assert "同目录 FFprobe 存在：是" in message
+    assert "系统错误：missing runtime dependency" in message
+    assert "DLL 缺失" in message

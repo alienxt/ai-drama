@@ -55,7 +55,7 @@ from aidrama_desktop import __version__
 from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
 from aidrama_desktop.browser.chrome import ChromeController, find_chrome
-from aidrama_desktop.config.settings import Settings, load_settings, save_tool_path_config
+from aidrama_desktop.config.settings import Settings, load_settings, resolve_ffmpeg_path, save_tool_path_config
 from aidrama_desktop.contracts import (
     ContractConfigStore,
     CONTRACT_TEMPLATE_TYPES,
@@ -1146,7 +1146,7 @@ class DesktopWindow(QMainWindow):
 
     def _tool_path_settings_panel(self) -> QFrame:
         panel, panel_layout = self._panel("工具路径")
-        hint = QLabel("Whisper 路径保存后会优先使用，不依赖 launchctl 环境变量。留空则自动探测常见安装位置。")
+        hint = QLabel("FFmpeg、Whisper 路径保存后会优先使用。FFmpeg 支持填写 ffmpeg.exe、bin 目录，或整个 FFmpeg 根目录。留空则自动探测常见安装位置。")
         hint.setObjectName("mutedText")
         panel_layout.addWidget(hint)
 
@@ -1155,6 +1155,12 @@ class DesktopWindow(QMainWindow):
         form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(10)
+
+        self.ffmpeg_path_input = QLineEdit(str(self.settings.ffmpeg_path or ""))
+        self.ffmpeg_path_input.setPlaceholderText(
+            r"例如：D:\software\ffmpeg\bin\ffmpeg.exe 或 /opt/homebrew/bin/ffmpeg"
+        )
+        form.addRow("FFmpeg", self._path_input_row(self.ffmpeg_path_input, self.choose_ffmpeg_path))
 
         self.whisper_path_input = QLineEdit(str(self.settings.whisper_path or ""))
         self.whisper_path_input.setPlaceholderText("例如：/Users/mac/Library/Python/3.9/bin/whisper")
@@ -1377,6 +1383,9 @@ class DesktopWindow(QMainWindow):
     def choose_whisper_path(self) -> None:
         self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
 
+    def choose_ffmpeg_path(self) -> None:
+        self._choose_file_path(self.ffmpeg_path_input, "选择 FFmpeg 命令")
+
     def choose_node_path(self) -> None:
         self._choose_file_path(self.node_path_input, "选择 Node.js 命令")
 
@@ -1405,6 +1414,7 @@ class DesktopWindow(QMainWindow):
             input_widget.setText(path)
 
     def save_tool_path_settings(self) -> None:
+        ffmpeg_path = self.ffmpeg_path_input.text().strip() or None
         whisper_path = self.whisper_path_input.text().strip() or None
         node_path = self.node_path_input.text().strip() or None
         jianying_draft_root = self.jianying_draft_root_input.text().strip() or None
@@ -1412,6 +1422,7 @@ class DesktopWindow(QMainWindow):
         jianying_music_dir = self.jianying_music_dir_input.text().strip() or None
         save_tool_path_config(
             self.settings.config_dir,
+            ffmpeg_path=ffmpeg_path,
             whisper_path=whisper_path,
             node_path=node_path,
             jianying_draft_root=jianying_draft_root,
@@ -1420,6 +1431,7 @@ class DesktopWindow(QMainWindow):
         )
         self.settings = update_settings(
             self.settings,
+            ffmpeg_path=resolve_ffmpeg_path(ffmpeg_path or "ffmpeg"),
             whisper_path=whisper_path,
             node_path=node_path,
             jianying_draft_root=Path(jianying_draft_root).expanduser() if jianying_draft_root else None,
@@ -1428,13 +1440,14 @@ class DesktopWindow(QMainWindow):
         )
         self.append_log(
             "工具路径已保存："
+            f"FFmpeg={self.settings.ffmpeg_path or '自动探测'}，"
             f"Whisper={whisper_path or '自动探测'}，"
             f"Node.js={node_path or '自动探测'}，"
             f"剪映草稿目录={jianying_draft_root or '自动探测'}，"
             f"剪映程序地址={jianying_app or '自动探测'}，"
             f"剪映音乐目录={jianying_music_dir or '默认目录'}"
         )
-        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的 Whisper 路径。")
+        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的 FFmpeg / Whisper 路径。")
 
     def _logs_page(self) -> QWidget:
         page = QWidget()

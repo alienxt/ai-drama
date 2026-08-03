@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aidrama_desktop.config.settings import Settings, load_settings, resolve_whisper_path, save_tool_path_config
+from aidrama_desktop.config.settings import Settings, load_settings, resolve_ffmpeg_path, resolve_whisper_path, save_tool_path_config
 
 
 def test_settings_default_device_id_uses_mac_address(monkeypatch):
@@ -126,6 +126,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     config_dir = tmp_path / "config"
     save_tool_path_config(
         config_dir,
+        ffmpeg_path=None,
         whisper_path=str(saved_whisper),
         node_path=str(saved_node),
         jianying_draft_root=str(draft_root),
@@ -147,6 +148,44 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     assert settings.jianying_draft_root == draft_root
     assert settings.jianying_app == jianying_app
     assert settings.jianying_music_dir == music_dir
+
+
+def test_load_settings_uses_saved_ffmpeg_path_over_environment(monkeypatch, tmp_path):
+    custom_bin = tmp_path / "custom" / "bin"
+    custom_bin.mkdir(parents=True)
+    saved_ffmpeg = custom_bin / "ffmpeg"
+    saved_ffprobe = custom_bin / "ffprobe"
+    fallback_bin = tmp_path / "fallback" / "bin"
+    fallback_bin.mkdir(parents=True)
+    fallback_ffmpeg = fallback_bin / "ffmpeg"
+    fallback_ffprobe = fallback_bin / "ffprobe"
+    saved_ffmpeg.write_text("#!/bin/sh\n")
+    saved_ffprobe.write_text("#!/bin/sh\n")
+    fallback_ffmpeg.write_text("#!/bin/sh\n")
+    fallback_ffprobe.write_text("#!/bin/sh\n")
+    config_dir = tmp_path / "config"
+    save_tool_path_config(config_dir, ffmpeg_path=str(custom_bin), whisper_path=None)
+    monkeypatch.setenv("AIDRAMA_FFMPEG_PATH", str(fallback_ffmpeg))
+    monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
+    monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(config_dir / "token"))
+    monkeypatch.setenv("AIDRAMA_BROWSER_PROFILE_DIR", str(tmp_path / "data" / "browser-profiles"))
+
+    settings = load_settings()
+
+    assert settings.ffmpeg_path == str(saved_ffmpeg)
+
+
+def test_resolve_ffmpeg_path_accepts_bin_directory(monkeypatch, tmp_path):
+    ffmpeg_bin = tmp_path / "ffmpeg" / "bin"
+    ffmpeg_bin.mkdir(parents=True)
+    ffmpeg = ffmpeg_bin / "ffmpeg"
+    ffprobe = ffmpeg_bin / "ffprobe"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffprobe.write_text("#!/bin/sh\n")
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr("aidrama_desktop.config.settings.COMMON_FFMPEG_PATHS", ())
+
+    assert resolve_ffmpeg_path(str(ffmpeg_bin)) == str(ffmpeg)
 
 
 def test_resolve_whisper_path_detects_user_python_install(monkeypatch, tmp_path):

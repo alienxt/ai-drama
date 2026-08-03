@@ -13,6 +13,7 @@ from pathlib import Path
 
 from aidrama_desktop.config.settings import (
     ffprobe_path_for_ffmpeg,
+    find_existing_ffmpeg_path,
     find_ffmpeg_fallback_path,
     normalize_executable_path,
 )
@@ -335,10 +336,7 @@ class FfmpegProcessor:
                     self._cleanup_failed_target(target)
                     raise FfmpegError(f"FFmpeg 无法启动：{fallback_exception}") from fallback_exception
             self._cleanup_failed_target(target)
-            raise FfmpegError(
-                f"找不到 FFmpeg 可执行文件：{command[0]}。"
-                "已尝试 PATH 和常见安装目录兜底，仍未找到可用的 FFmpeg/FFprobe。"
-            ) from exception
+            raise FfmpegError(self._format_ffmpeg_missing_message(command, exception, fallback_command)) from exception
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(
@@ -1311,6 +1309,40 @@ class FfmpegProcessor:
         if not fallback_path:
             return None
         return [fallback_path, *command[1:]]
+
+    @classmethod
+    def _format_ffmpeg_missing_message(
+        cls,
+        command: list[str],
+        exception: FileNotFoundError,
+        fallback_command: list[str] | None = None,
+    ) -> str:
+        configured_path = normalize_executable_path(command[0] if command else "")
+        resolved_path = find_existing_ffmpeg_path(configured_path, require_ffprobe=False) if configured_path else None
+        binary_path = resolved_path or configured_path
+        sections = [f"找不到 FFmpeg 可执行文件：{configured_path or 'ffmpeg'}。"]
+        if binary_path and cls._looks_like_executable_path(binary_path):
+            ffmpeg_exists = Path(binary_path).is_file()
+            ffprobe_path = ffprobe_path_for_ffmpeg(binary_path)
+            ffprobe_exists = Path(ffprobe_path).is_file()
+            sections.append(f"FFmpeg 文件存在：{'是' if ffmpeg_exists else '否'}")
+            sections.append(f"同目录 FFprobe 存在：{'是' if ffprobe_exists else '否'}")
+            if resolved_path and resolved_path != configured_path:
+                sections.append(f"自动识别后的 FFmpeg 路径：{resolved_path}")
+            if ffmpeg_exists:
+                sections.append(
+                    "补充提示：如果 ffmpeg 可执行文件明确存在但仍报 FileNotFoundError，在 Windows 上通常是同目录 DLL 缺失、文件被安全软件隔离，或压缩包未完整解压。"
+                )
+        sections.append(f"系统错误：{exception}")
+        if fallback_command:
+            sections.append(f"兜底尝试：{fallback_command[0]}")
+        else:
+            sections.append("已尝试 PATH 和常见安装目录兜底，仍未找到可用的 FFmpeg/FFprobe。")
+        return "\n".join(sections)
+
+    @staticmethod
+    def _looks_like_executable_path(value: str) -> bool:
+        return value.startswith(("~", ".", "..")) or "/" in value or "\\" in value or (len(value) >= 2 and value[1] == ":")
 
     @staticmethod
     def _bitrate_from_probe_payload(payload: dict) -> int | None:

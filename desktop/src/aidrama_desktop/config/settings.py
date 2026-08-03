@@ -66,9 +66,51 @@ def normalize_optional_executable_path(executable_path: str | None) -> str | Non
     return value or None
 
 
+def _looks_like_filesystem_path(value: str) -> bool:
+    return value.startswith(("~", ".", "..")) or "/" in value or "\\" in value or (len(value) >= 2 and value[1] == ":")
+
+
+def _ffmpeg_executable_name() -> str:
+    return "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+
+def ffmpeg_path_candidates(ffmpeg_path: str | None, *, default: str = "ffmpeg") -> list[str]:
+    value = normalize_executable_path(ffmpeg_path, default=default)
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        normalized = normalize_executable_path(candidate, default=default)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    add(value)
+    if not _looks_like_filesystem_path(value):
+        return candidates
+    base_path = Path(value).expanduser()
+    lower_name = base_path.name.lower()
+    is_named_ffmpeg = lower_name in {"ffmpeg", "ffmpeg.exe"}
+    if base_path.is_dir() or (not is_named_ffmpeg and base_path.suffix == ""):
+        add(str(base_path / _ffmpeg_executable_name()))
+        add(str(base_path / "bin" / _ffmpeg_executable_name()))
+    return candidates
+
+
+def find_existing_ffmpeg_path(ffmpeg_path: str | None, *, require_ffprobe: bool = False) -> str | None:
+    for candidate in ffmpeg_path_candidates(ffmpeg_path):
+        candidate_path = Path(candidate).expanduser()
+        if not candidate_path.is_file():
+            continue
+        if require_ffprobe and not Path(ffprobe_path_for_ffmpeg(str(candidate_path))).is_file():
+            continue
+        return str(candidate_path)
+    return None
+
+
 def ffmpeg_path_is_usable(ffmpeg_path: str) -> bool:
-    candidate = normalize_executable_path(ffmpeg_path)
-    return Path(candidate).is_file() and Path(ffprobe_path_for_ffmpeg(candidate)).is_file()
+    return find_existing_ffmpeg_path(ffmpeg_path, require_ffprobe=True) is not None
 
 
 def find_ffmpeg_fallback_path(*, exclude: str | None = None) -> str | None:
@@ -76,20 +118,28 @@ def find_ffmpeg_fallback_path(*, exclude: str | None = None) -> str | None:
     candidates = [path for path in (shutil.which("ffmpeg"), *COMMON_FFMPEG_PATHS) if path]
     seen: set[str] = set()
     for candidate in candidates:
-        normalized = normalize_executable_path(candidate)
-        if normalized in seen or normalized == excluded:
-            continue
-        seen.add(normalized)
-        if ffmpeg_path_is_usable(normalized):
-            return normalized
+        for normalized in ffmpeg_path_candidates(candidate):
+            if normalized in seen or normalized == excluded:
+                continue
+            seen.add(normalized)
+            usable = find_existing_ffmpeg_path(normalized, require_ffprobe=True)
+            if usable:
+                return usable
     return None
 
 
 def resolve_ffmpeg_path(ffmpeg_path: str) -> str:
-    requested = normalize_executable_path(ffmpeg_path)
-    if ffmpeg_path_is_usable(requested):
-        return requested
-    return find_ffmpeg_fallback_path(exclude=requested) or requested
+    requested_candidates = ffmpeg_path_candidates(ffmpeg_path)
+    for candidate in requested_candidates:
+        usable = find_existing_ffmpeg_path(candidate, require_ffprobe=True)
+        if usable:
+            return usable
+    requested = requested_candidates[0] if requested_candidates else normalize_executable_path(ffmpeg_path)
+    fallback = find_ffmpeg_fallback_path(exclude=requested)
+    if fallback:
+        return fallback
+    existing = find_existing_ffmpeg_path(requested, require_ffprobe=False)
+    return existing or requested
 
 
 def resolve_whisper_path(whisper_path: str | None = None) -> str | None:
@@ -126,6 +176,7 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
         return {}
     result: dict[str, str] = {}
     key_map = {
+        "ffmpegPath": "ffmpeg_path",
         "whisperPath": "whisper_path",
         "nodePath": "node_path",
         "jianyingDraftRoot": "jianying_draft_root",
@@ -142,6 +193,7 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
 def save_tool_path_config(
     config_dir: Path,
     *,
+    ffmpeg_path: str | None = None,
     whisper_path: str | None,
     node_path: str | None = None,
     jianying_draft_root: str | None = None,
@@ -151,6 +203,7 @@ def save_tool_path_config(
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "ffmpegPath": normalize_optional_executable_path(ffmpeg_path) or "",
         "whisperPath": normalize_optional_executable_path(whisper_path) or "",
         "nodePath": normalize_optional_executable_path(node_path) or "",
         "jianyingDraftRoot": normalize_optional_executable_path(jianying_draft_root) or "",
@@ -226,10 +279,12 @@ class Settings(BaseSettings):
 
 def load_settings() -> Settings:
     settings = Settings()
-    settings.ffmpeg_path = resolve_ffmpeg_path(settings.ffmpeg_path)
     settings.work_dir.mkdir(parents=True, exist_ok=True)
     settings.config_dir.mkdir(parents=True, exist_ok=True)
     tool_path_config = load_tool_path_config(settings.config_dir)
+    if tool_path_config.get("ffmpeg_path"):
+        settings.ffmpeg_path = tool_path_config["ffmpeg_path"]
+    settings.ffmpeg_path = resolve_ffmpeg_path(settings.ffmpeg_path)
     if tool_path_config.get("whisper_path"):
         settings.whisper_path = tool_path_config["whisper_path"]
     if tool_path_config.get("node_path"):
