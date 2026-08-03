@@ -1535,46 +1535,85 @@ function Get-ElementName($element) {
   try { return [string]$element.Current.Name } catch { return '' }
 }
 
-function Get-UiText($root) {
-  $all = $root.FindAll(
-    [System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.Condition]::TrueCondition
-  )
-  $names = New-Object System.Collections.Generic.List[string]
-  for ($i = 0; $i -lt $all.Count; $i++) {
-    $name = Get-ElementName $all.Item($i)
-    if (-not [string]::IsNullOrWhiteSpace($name)) { $names.Add($name) }
+function Find-ExactNamedElement($root, [string[]]$names) {
+  foreach ($candidate in $names) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::NameProperty,
+      $candidate
+    )
+    $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($element) { return $element }
   }
-  return ($names -join [Environment]::NewLine)
+  return $null
 }
 
-function Test-Editor($root) {
-  $text = Get-UiText $root
-  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-  if ($text -match 'VETreeMainCellItem:|VETreeSubCellItem:|VECollectTitleView:|currentProgress|totalProgress|MTLSText:') { return $true }
-  $hasEditorChrome = $text -match '播放器|草稿参数|导出|Export|Player'
-  $hasToolTabs = $text -match '媒体|音频|文本|字幕|Media|Audio|Text|Captions|Subtitles'
-  return $hasEditorChrome -and $hasToolTabs
-}
-
-function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
-  $all = $root.FindAll(
-    [System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.Condition]::TrueCondition
-  )
-  for ($pass = 0; $pass -lt 2; $pass++) {
-    for ($i = 0; $i -lt $all.Count; $i++) {
-      $element = $all.Item($i)
-      $name = Get-ElementName $element
-      if ([string]::IsNullOrWhiteSpace($name)) { continue }
+function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [int]$maxNodes) {
+  $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
+  $queue = New-Object System.Collections.Queue
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $child = $walker.GetFirstChild($root)
+  while ($child) {
+    $queue.Enqueue($child)
+    $child = $walker.GetNextSibling($child)
+  }
+  $visited = 0
+  while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
+    $element = $queue.Dequeue()
+    $visited += 1
+    $name = Get-ElementName $element
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
       foreach ($candidate in $names) {
-        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-        if ($pass -eq 0 -and $name -eq $candidate) { return $element }
-        if ($pass -eq 1 -and $allowContains -and $name.Contains($candidate)) { return $element }
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $name.Contains($candidate)) {
+          return $element
+        }
       }
+    }
+    $child = $walker.GetFirstChild($element)
+    while ($child -and $visited + $queue.Count -lt $maxNodes) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
     }
   }
   return $null
+}
+
+function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
+  $element = Find-ExactNamedElement $root $names
+  if ($element -or -not $allowContains) { return $element }
+  return Find-ContainsNamedElement $root $names 2500 900
+}
+
+function Test-Editor($root) {
+  if (Find-ContainsNamedElement $root @(
+    'VETreeMainCellItem:',
+    'VETreeSubCellItem:',
+    'VECollectTitleView:',
+    'currentProgress',
+    'totalProgress',
+    'MTLSText:'
+  ) 1800 900) {
+    return $true
+  }
+  $hasEditorChrome = [bool](Find-ContainsNamedElement $root @(
+    '播放器',
+    '草稿参数',
+    '导出',
+    'Export',
+    'Player'
+  ) 1200 700)
+  $hasToolTabs = [bool](Find-ContainsNamedElement $root @(
+    '媒体',
+    '音频',
+    '文本',
+    '字幕',
+    'Media',
+    'Audio',
+    'Text',
+    'Captions',
+    'Subtitles'
+  ) 1200 700)
+  return $hasEditorChrome -and $hasToolTabs
 }
 
 function Click-Element($element, [int]$clickCount) {
@@ -1600,12 +1639,43 @@ function Click-Element($element, [int]$clickCount) {
   }
   $x = [int]($rect.Left + ($rect.Width / 2))
   $y = [int]($rect.Top + ($rect.Height / 2))
+  Click-Point $x $y $clickCount
+}
+
+function Click-Point([int]$x, [int]$y, [int]$clickCount) {
   [Win32DraftOpen]::SetCursorPos($x, $y) | Out-Null
   for ($i = 0; $i -lt [Math]::Max(1, $clickCount); $i++) {
     [Win32DraftOpen]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     [Win32DraftOpen]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 160
   }
+}
+
+function Open-DraftElement($element) {
+  $scrollPattern = $null
+  try {
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollPattern)) {
+      $scrollPattern.ScrollIntoView()
+      Start-Sleep -Milliseconds 250
+    }
+  } catch {}
+  $rect = $element.Current.BoundingRectangle
+  if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {
+    throw 'Draft title UI element has no usable screen bounds'
+  }
+  $centerX = [int]($rect.Left + ($rect.Width / 2))
+  $points = @(
+    @($centerX, [int]($rect.Top + ($rect.Height / 2))),
+    @($centerX, [int]([Math]::Max(0, $rect.Top - 55))),
+    @($centerX, [int]([Math]::Max(0, $rect.Top - 85)))
+  )
+  foreach ($point in $points) {
+    Click-Point ([int]$point[0]) ([int]$point[1]) 2
+    Start-Sleep -Milliseconds 1200
+    $root = Get-RootElement
+    if (Test-Editor $root) { return $true }
+  }
+  return $false
 }
 
 function Wait-ForDraftTitle {
@@ -1631,10 +1701,16 @@ function Wait-ForEditor {
 }
 
 $root = Get-RootElement
+Write-Output 'stage=window-ready'
 $draftElement = Find-NamedElement $root @("HomePageDraftTitle:$draftName", $draftName) $true
 if (-not $draftElement) {
-  $home = Find-NamedElement $root @('首页', 'Home') $false
+  Write-Output 'stage=draft-title-not-visible'
+  $home = Find-ExactNamedElement $root @('首页', 'Home')
+  if (-not $home) {
+    $home = Find-ContainsNamedElement $root @('首页') 1800 600
+  }
   if ($home) {
+    Write-Output 'stage=click-home'
     Click-Element $home 1
     Start-Sleep -Milliseconds 1200
   }
@@ -1643,9 +1719,11 @@ if (-not $draftElement) {
 if (-not $draftElement) {
   throw "Could not find Jianying draft title: $draftName"
 }
-Click-Element $draftElement 2
-if (-not (Wait-ForEditor)) {
-  throw "Clicked draft title but Jianying editor did not become ready: $draftName"
+Write-Output 'stage=draft-title-found'
+if (-not (Open-DraftElement $draftElement)) {
+  if (-not (Wait-ForEditor)) {
+    throw "Found draft title but Jianying editor did not become ready after clicking: $draftName"
+  }
 }
 Write-Output "opened-by-title"
 `;
@@ -1653,6 +1731,7 @@ Write-Output "opened-by-title"
     return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 70000,
     }).trim();
   } catch (error) {
     const detail = [error.stdout, error.stderr]
@@ -1660,7 +1739,10 @@ Write-Output "opened-by-title"
       .filter(Boolean)
       .join('\n')
       .trim();
-    fail(detail || error.message || 'Windows Jianying draft opening failed.');
+    const timedOut = error.killed || error.signal || /timed out|timeout|ETIMEDOUT/i.test(String(error.message || ''));
+    fail(detail || (timedOut
+      ? 'Windows Jianying draft opening timed out while searching/clicking UI controls.'
+      : error.message || 'Windows Jianying draft opening failed.'));
   }
 }
 

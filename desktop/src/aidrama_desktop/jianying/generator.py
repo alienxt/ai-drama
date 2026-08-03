@@ -114,7 +114,8 @@ class JianyingProjectGenerator:
                 f"剪映工程截图生成失败：{detail or exception.returncode}"
             ) from exception
 
-        payload = self._parse_tool_output(completed.stdout)
+        fallback_result_path = output_dir / "jianying_project_result.json"
+        payload = self._parse_tool_output(completed.stdout, fallback_result_path=fallback_result_path)
         warnings = tuple(str(item) for item in payload.get("warnings") or [])
         if warnings:
             raise JianyingGenerationError("剪映工程截图生成失败：" + "；".join(warnings))
@@ -156,9 +157,14 @@ class JianyingProjectGenerator:
         )
 
     @staticmethod
-    def _parse_tool_output(stdout: str) -> dict[str, Any]:
+    def _parse_tool_output(stdout: str, *, fallback_result_path: Path | None = None) -> dict[str, Any]:
         text = str(stdout or "").strip()
         if not text:
+            if fallback_result_path and fallback_result_path.exists():
+                try:
+                    return json.loads(fallback_result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    pass
             raise JianyingGenerationError("剪映工程生成工具没有返回结果。")
         try:
             return json.loads(text)
@@ -169,6 +175,11 @@ class JianyingProjectGenerator:
                 try:
                     return json.loads(text[start : end + 1])
                 except json.JSONDecodeError:
+                    pass
+            if fallback_result_path and fallback_result_path.exists():
+                try:
+                    return json.loads(fallback_result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
                     pass
             raise JianyingGenerationError(f"无法解析剪映工程生成结果：{text[-500:]}")
 

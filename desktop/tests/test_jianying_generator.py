@@ -51,3 +51,46 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     assert command[command.index("--ffmpeg") + 1] == "/opt/homebrew/bin/ffmpeg"
     assert command[command.index("--ffprobe") + 1] == "/opt/homebrew/bin/ffprobe"
     assert command[command.index("--jianying-app") + 1] == str(jianying_app)
+
+
+def test_jianying_generator_reads_result_file_when_stdout_is_empty(monkeypatch, tmp_path):
+    video = tmp_path / "episode.mp4"
+    tool = tmp_path / "create-jianying-project.js"
+    screenshot = tmp_path / "proof.png"
+    result_file = tmp_path / "jianying_project_result.json"
+    draft_dir = tmp_path / "draft"
+    video.write_text("video")
+    tool.write_text("tool")
+    draft_dir.mkdir()
+
+    def fake_run(command, check=False, capture_output=False, text=False, timeout=None, **kwargs):
+        screenshot.write_bytes(b"png")
+        result_file.write_text(
+            json.dumps(
+                {
+                    "screenshot_path": str(screenshot),
+                    "draft_dir": str(draft_dir),
+                    "result_path": str(result_file),
+                    "warnings": [],
+                }
+            )
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    generator = JianyingProjectGenerator(
+        node_path="/opt/homebrew/bin/node",
+        tool_path=tool,
+    )
+
+    result = generator.generate_project_screenshot(
+        video=video,
+        draft_name="测试工程",
+        output_dir=tmp_path,
+        screenshot_path=screenshot,
+    )
+
+    assert result.screenshot_path == screenshot
+    assert result.draft_dir == draft_dir
+    assert result.result_path == result_file
