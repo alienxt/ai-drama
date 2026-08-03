@@ -1494,6 +1494,9 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class Win32DraftOpen {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
@@ -1529,6 +1532,21 @@ function Get-RootElement {
   [Win32DraftOpen]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
   Start-Sleep -Milliseconds 500
   return [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+}
+
+function Get-WindowRect {
+  $p = Get-TargetProcess
+  if (-not $p) { throw 'Jianying/CapCut process window not found' }
+  $rect = New-Object Win32DraftOpen+RECT
+  if (-not [Win32DraftOpen]::GetWindowRect($p.MainWindowHandle, [ref]$rect)) {
+    throw 'Jianying/CapCut window bounds unavailable'
+  }
+  return @{
+    Left = $rect.Left
+    Top = $rect.Top
+    Width = [Math]::Max(1, $rect.Right - $rect.Left)
+    Height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+  }
 }
 
 function Get-ElementName($element) {
@@ -1574,7 +1592,7 @@ function Find-BoundedNamedElement($root, [string[]]$names, [bool]$allowContains,
 }
 
 function Find-ExactNamedElement($root, [string[]]$names) {
-  return Find-BoundedNamedElement $root $names $false 3500 1200
+  return Find-BoundedNamedElement $root $names $false 1200 420
 }
 
 function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [int]$maxNodes) {
@@ -1619,6 +1637,19 @@ function Test-Editor($root) {
   return $hasEditorChrome -and $hasToolTabs
 }
 
+function Test-EditorReady {
+  try {
+    $p = Get-TargetProcess
+    if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
+  } catch {}
+  try {
+    $root = Get-RootElement
+    return Test-Editor $root
+  } catch {
+    return $false
+  }
+}
+
 function Click-Element($element, [int]$clickCount) {
   $scrollPattern = $null
   try {
@@ -1654,6 +1685,13 @@ function Click-Point([int]$x, [int]$y, [int]$clickCount) {
   }
 }
 
+function Click-WindowRatio([double]$xRatio, [double]$yRatio, [int]$clickCount) {
+  $rect = Get-WindowRect
+  $x = [int]($rect.Left + ($rect.Width * $xRatio))
+  $y = [int]($rect.Top + ($rect.Height * $yRatio))
+  Click-Point $x $y $clickCount
+}
+
 function Open-DraftElement($element) {
   $scrollPattern = $null
   try {
@@ -1675,14 +1713,13 @@ function Open-DraftElement($element) {
   foreach ($point in $points) {
     Click-Point ([int]$point[0]) ([int]$point[1]) 2
     Start-Sleep -Milliseconds 1200
-    $root = Get-RootElement
-    if (Test-Editor $root) { return $true }
+    if (Test-EditorReady) { return $true }
   }
   return $false
 }
 
-function Wait-ForDraftTitle {
-  $deadline = (Get-Date).AddSeconds(14)
+function Wait-ForDraftTitle([int]$seconds) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
   $draftNames = @("HomePageDraftTitle:$draftName", $draftName)
   while ((Get-Date) -lt $deadline) {
     $root = Get-RootElement
@@ -1693,12 +1730,40 @@ function Wait-ForDraftTitle {
   return $null
 }
 
-function Wait-ForEditor {
-  $deadline = (Get-Date).AddSeconds(18)
+function Wait-ForEditor([int]$seconds = 12) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
   while ((Get-Date) -lt $deadline) {
-    $root = Get-RootElement
-    if (Test-Editor $root) { return $true }
+    if (Test-EditorReady) { return $true }
     Start-Sleep -Milliseconds 700
+  }
+  return $false
+}
+
+function Try-OpenNewestDraftByWindowClick {
+  Write-Output 'stage=window-click-fallback'
+  [void](Get-RootElement)
+  $homePoints = @(
+    @(0.052, 0.305),
+    @(0.060, 0.245),
+    @(0.045, 0.360)
+  )
+  foreach ($point in $homePoints) {
+    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 1
+    Start-Sleep -Milliseconds 700
+  }
+  $draftPoints = @(
+    @(0.160, 0.340),
+    @(0.210, 0.340),
+    @(0.270, 0.340),
+    @(0.160, 0.430),
+    @(0.210, 0.430),
+    @(0.270, 0.430)
+  )
+  foreach ($point in $draftPoints) {
+    Write-Output ("stage=window-click-draft {0},{1}" -f $point[0], $point[1])
+    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
+    Start-Sleep -Milliseconds 1800
+    if (Wait-ForEditor 4) { return $true }
   }
   return $false
 }
@@ -1717,16 +1782,22 @@ if (-not $draftElement) {
     Click-Element $home 1
     Start-Sleep -Milliseconds 1200
   }
-  $draftElement = Wait-ForDraftTitle
+  $draftElement = Wait-ForDraftTitle 4
 }
 if (-not $draftElement) {
-  throw "Could not find Jianying draft title: $draftName"
+  if (Try-OpenNewestDraftByWindowClick) {
+    Write-Output 'opened-by-window-click'
+    exit 0
+  }
+  throw "Could not find or open Jianying draft title: $draftName"
 }
 Write-Output 'stage=draft-title-found'
 if (-not (Open-DraftElement $draftElement)) {
-  if (-not (Wait-ForEditor)) {
-    throw "Found draft title but Jianying editor did not become ready after clicking: $draftName"
+  if (Try-OpenNewestDraftByWindowClick) {
+    Write-Output 'opened-by-window-click'
+    exit 0
   }
+  throw "Found draft title but Jianying editor did not become ready after clicking: $draftName"
 }
 Write-Output "opened-by-title"
 `;
@@ -1734,7 +1805,7 @@ Write-Output "opened-by-title"
     return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 70000,
+      timeout: 95000,
     }).trim();
   } catch (error) {
     const timedOut = error.killed || error.signal || /timed out|timeout|ETIMEDOUT/i.test(String(error.message || ''));
