@@ -1992,6 +1992,19 @@ function Get-WindowRect {
   }
 }
 
+function Get-WindowSnapshot {
+  $p = Get-TargetProcess
+  if (-not $p) { return $null }
+  $rect = Get-WindowRect
+  return [pscustomobject]@{
+    Id = $p.Id
+    ProcessName = $p.ProcessName
+    Title = [string]$p.MainWindowTitle
+    Handle = $p.MainWindowHandle.ToInt64()
+    Rect = $rect
+  }
+}
+
 function Get-ElementName($element) {
   try { return [string]$element.Current.Name } catch { return '' }
 }
@@ -2084,10 +2097,26 @@ function Test-EditorReady {
   try {
     $p = Get-TargetProcess
     if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
-    if ($p -and $p.MainWindowTitle -match 'JianyingPro|CapCut|VideoFusion') { return $true }
     if ($p) {
       $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
       if ($root -and (Test-Editor $root)) { return $true }
+    }
+  } catch {}
+  return $false
+}
+
+function Test-EditorAfterClick($before) {
+  try {
+    $after = Get-WindowSnapshot
+    if (-not $after) { return $false }
+    if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) { return $true }
+    if ($before -and $before.Handle -and $after.Handle -ne $before.Handle -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
+      Write-Output ("stage=editor-signal handle-changed title={0}" -f $after.Title)
+      return $true
+    }
+    if ($before -and $before.Title -and $after.Title -and $after.Title -ne $before.Title -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
+      Write-Output ("stage=editor-signal title-changed title={0}" -f $after.Title)
+      return $true
     }
   } catch {}
   return $false
@@ -2148,16 +2177,9 @@ function Open-DraftElement($element) {
     throw 'Draft title UI element has no usable screen bounds'
   }
   $centerX = [int]($rect.Left + ($rect.Width / 2))
-  $points = @(
-    @($centerX, [int]($rect.Top + ($rect.Height / 2))),
-    @($centerX, [int]([Math]::Max(0, $rect.Top - 55))),
-    @($centerX, [int]([Math]::Max(0, $rect.Top - 85)))
-  )
-  foreach ($point in $points) {
-    Click-Point ([int]$point[0]) ([int]$point[1]) 2
-    Start-Sleep -Milliseconds 1200
-    if (Test-EditorReady) { return $true }
-  }
+  $coverY = [int]([Math]::Max(0, $rect.Top - 55))
+  Click-Point $centerX $coverY 2
+  Start-Sleep -Milliseconds 1200
   return $false
 }
 
@@ -2182,6 +2204,15 @@ function Wait-ForEditor([int]$seconds = 12) {
   return $false
 }
 
+function Wait-ForEditorAfterClick($before, [int]$seconds = 45) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
+  while ((Get-Date) -lt $deadline) {
+    if (Test-EditorAfterClick $before) { return $true }
+    Start-Sleep -Milliseconds 1000
+  }
+  return $false
+}
+
 function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=window-click-fallback'
   [void](Get-RootElement)
@@ -2198,28 +2229,20 @@ function Try-OpenNewestDraftByWindowClick {
   }
   Start-Sleep -Milliseconds 3500
   if (Wait-ForEditor 2) { return $true }
-  $draftPoints = @(
-    @(0.153, 0.382),
-    @(0.217, 0.382),
-    @(0.281, 0.382),
-    @(0.345, 0.382),
-    @(0.153, 0.331),
-    @(0.217, 0.331),
-    @(0.281, 0.331),
-    @(0.345, 0.331),
-    @(0.409, 0.331),
-    @(0.153, 0.402),
-    @(0.217, 0.402),
-    @(0.281, 0.402),
-    @(0.345, 0.402)
-  )
-  foreach ($point in $draftPoints) {
-    if (Wait-ForEditor 1) { return $true }
-    Write-Output ("stage=window-click-draft {0},{1}" -f $point[0], $point[1])
-    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
-    Start-Sleep -Milliseconds 1600
-    if (Wait-ForEditor 6) { return $true }
+  $titleElement = Wait-ForDraftTitle 8
+  if ($titleElement) {
+    Write-Output 'stage=title-draft-found'
+    $before = Get-WindowSnapshot
+    if (Open-DraftElement $titleElement) { return $true }
+    if (Wait-ForEditorAfterClick $before 45) { return $true }
+    return $false
   }
+  Write-Output 'stage=title-draft-not-found'
+  if (Wait-ForEditor 1) { return $true }
+  $before = Get-WindowSnapshot
+  Write-Output 'stage=window-click-first-draft'
+  Click-WindowRatio 0.153 0.331 2
+  if (Wait-ForEditorAfterClick $before 45) { return $true }
   return $false
 }
 
@@ -2240,7 +2263,7 @@ throw "Could not open Jianying draft by window click fallback: $draftName"
     return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 95000,
+      timeout: 135000,
     }).trim();
   } catch (error) {
     const timedOut = error.killed || error.signal || /timed out|timeout|ETIMEDOUT/i.test(String(error.message || ''));
@@ -2595,7 +2618,11 @@ public class Win32DebugDraftOpen {
     Click-Point $x $y $clickCount
     Start-Sleep -Milliseconds 900
     $after = Add-Snapshot "$label-after"
-    $opened = [bool]($after.titleContainsDraft -or ($after.title -match 'JianyingPro|CapCut|VideoFusion' -and $after.title -ne $before.title))
+    $opened = [bool](
+      $after.titleContainsDraft -or
+      ($after.handle -ne $before.handle -and $after.title -match 'JianyingPro|CapCut|VideoFusion') -or
+      ($after.title -match 'JianyingPro|CapCut|VideoFusion' -and $after.title -ne $before.title)
+    )
     $click = [ordered]@{
       label = $label
       ratioX = $xRatio
@@ -2631,19 +2658,8 @@ public class Win32DebugDraftOpen {
   Start-Sleep -Milliseconds 3500
 
   $draftPoints = @(
-    @(0.153, 0.382),
-    @(0.217, 0.382),
-    @(0.281, 0.382),
-    @(0.345, 0.382),
     @(0.153, 0.331),
-    @(0.217, 0.331),
-    @(0.281, 0.331),
-    @(0.345, 0.331),
-    @(0.409, 0.331),
-    @(0.153, 0.402),
-    @(0.217, 0.402),
-    @(0.281, 0.402),
-    @(0.345, 0.402)
+    @(0.153, 0.382)
   )
   for ($i = 0; $i -lt $draftPoints.Count; $i++) {
     $point = $draftPoints[$i]
