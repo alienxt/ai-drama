@@ -9,8 +9,10 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     tool = tmp_path / "create-jianying-project.js"
     screenshot = tmp_path / "proof.png"
     result = tmp_path / "result.json"
+    jianying_app = tmp_path / "JianyingPro.exe"
     video.write_text("video")
     tool.write_text("tool")
+    jianying_app.write_text("app")
     commands: list[list[str]] = []
 
     def fake_run(command, check=False, capture_output=False, text=False, timeout=None, **kwargs):
@@ -35,6 +37,7 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
         ffmpeg_path="/opt/homebrew/bin/ffmpeg",
         node_path="/opt/homebrew/bin/node",
         tool_path=tool,
+        jianying_app=jianying_app,
     )
 
     generator.generate_project_screenshot(
@@ -47,3 +50,4 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     command = commands[0]
     assert command[command.index("--ffmpeg") + 1] == "/opt/homebrew/bin/ffmpeg"
     assert command[command.index("--ffprobe") + 1] == "/opt/homebrew/bin/ffprobe"
+    assert command[command.index("--jianying-app") + 1] == str(jianying_app)

@@ -1484,6 +1484,186 @@ if ${count} > 1 {
   execFileSync('swift', ['-e', swift], { stdio: 'ignore' });
 }
 
+function winOpenDraftByTitle(appPath, draftName) {
+  if (!draftName) fail('Draft name is required for Windows draft opening.');
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32DraftOpen {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
+}
+"@
+
+$draftName = ${psSingle(draftName)}
+$appPath = ${psSingle(appPath || '')}
+
+function Get-TargetProcess {
+  $baseName = ''
+  if ($appPath) {
+    try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+  }
+  $processes = @(Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and (
+      $_.ProcessName -match 'Jianying|CapCut|VideoFusion' -or
+      ($baseName -and $_.ProcessName -eq $baseName)
+    )
+  })
+  if ($baseName) {
+    $exact = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
+    if ($exact) { return $exact }
+  }
+  return $processes | Select-Object -First 1
+}
+
+function Get-RootElement {
+  $p = Get-TargetProcess
+  if (-not $p) { throw 'Jianying/CapCut process window not found' }
+  [Win32DraftOpen]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
+  [Win32DraftOpen]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+  Start-Sleep -Milliseconds 500
+  return [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+}
+
+function Get-ElementName($element) {
+  try { return [string]$element.Current.Name } catch { return '' }
+}
+
+function Get-UiText($root) {
+  $all = $root.FindAll(
+    [System.Windows.Automation.TreeScope]::Descendants,
+    [System.Windows.Automation.Condition]::TrueCondition
+  )
+  $names = New-Object System.Collections.Generic.List[string]
+  for ($i = 0; $i -lt $all.Count; $i++) {
+    $name = Get-ElementName $all.Item($i)
+    if (-not [string]::IsNullOrWhiteSpace($name)) { $names.Add($name) }
+  }
+  return ($names -join [Environment]::NewLine)
+}
+
+function Test-Editor($root) {
+  $text = Get-UiText $root
+  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+  if ($text -match 'VETreeMainCellItem:|VETreeSubCellItem:|VECollectTitleView:|currentProgress|totalProgress|MTLSText:') { return $true }
+  $hasEditorChrome = $text -match '播放器|草稿参数|导出|Export|Player'
+  $hasToolTabs = $text -match '媒体|音频|文本|字幕|Media|Audio|Text|Captions|Subtitles'
+  return $hasEditorChrome -and $hasToolTabs
+}
+
+function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
+  $all = $root.FindAll(
+    [System.Windows.Automation.TreeScope]::Descendants,
+    [System.Windows.Automation.Condition]::TrueCondition
+  )
+  for ($pass = 0; $pass -lt 2; $pass++) {
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $element = $all.Item($i)
+      $name = Get-ElementName $element
+      if ([string]::IsNullOrWhiteSpace($name)) { continue }
+      foreach ($candidate in $names) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if ($pass -eq 0 -and $name -eq $candidate) { return $element }
+        if ($pass -eq 1 -and $allowContains -and $name.Contains($candidate)) { return $element }
+      }
+    }
+  }
+  return $null
+}
+
+function Click-Element($element, [int]$clickCount) {
+  $scrollPattern = $null
+  try {
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollPattern)) {
+      $scrollPattern.ScrollIntoView()
+      Start-Sleep -Milliseconds 200
+    }
+  } catch {}
+  $invokePattern = $null
+  if ($clickCount -le 1) {
+    try {
+      if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
+        $invokePattern.Invoke()
+        return
+      }
+    } catch {}
+  }
+  $rect = $element.Current.BoundingRectangle
+  if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {
+    throw 'Target UI element has no usable screen bounds'
+  }
+  $x = [int]($rect.Left + ($rect.Width / 2))
+  $y = [int]($rect.Top + ($rect.Height / 2))
+  [Win32DraftOpen]::SetCursorPos($x, $y) | Out-Null
+  for ($i = 0; $i -lt [Math]::Max(1, $clickCount); $i++) {
+    [Win32DraftOpen]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [Win32DraftOpen]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 160
+  }
+}
+
+function Wait-ForDraftTitle {
+  $deadline = (Get-Date).AddSeconds(14)
+  $draftNames = @("HomePageDraftTitle:$draftName", $draftName)
+  while ((Get-Date) -lt $deadline) {
+    $root = Get-RootElement
+    $element = Find-NamedElement $root $draftNames $true
+    if ($element) { return $element }
+    Start-Sleep -Milliseconds 500
+  }
+  return $null
+}
+
+function Wait-ForEditor {
+  $deadline = (Get-Date).AddSeconds(18)
+  while ((Get-Date) -lt $deadline) {
+    $root = Get-RootElement
+    if (Test-Editor $root) { return $true }
+    Start-Sleep -Milliseconds 700
+  }
+  return $false
+}
+
+$root = Get-RootElement
+$draftElement = Find-NamedElement $root @("HomePageDraftTitle:$draftName", $draftName) $true
+if (-not $draftElement) {
+  $home = Find-NamedElement $root @('首页', 'Home') $false
+  if ($home) {
+    Click-Element $home 1
+    Start-Sleep -Milliseconds 1200
+  }
+  $draftElement = Wait-ForDraftTitle
+}
+if (-not $draftElement) {
+  throw "Could not find Jianying draft title: $draftName"
+}
+Click-Element $draftElement 2
+if (-not (Wait-ForEditor)) {
+  throw "Clicked draft title but Jianying editor did not become ready: $draftName"
+}
+Write-Output "opened-by-title"
+`;
+  try {
+    return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    const detail = [error.stdout, error.stderr]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    fail(detail || error.message || 'Windows Jianying draft opening failed.');
+  }
+}
+
 function openFirstDraftCard(appPath, draftName = '') {
   if (process.platform === 'darwin') {
     activateJianying(appPath);
@@ -1522,42 +1702,7 @@ function openFirstDraftCard(appPath, draftName = '') {
   }
   if (process.platform === 'win32') {
     activateJianying(appPath);
-    const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
-  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-}
-"@
-$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -match "Jianying|CapCut|VideoFusion" } | Select-Object -First 1
-if (-not $p) { exit 2 }
-[Win32]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
-[Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
-Start-Sleep -Milliseconds 800
-$r = New-Object Win32+RECT
-[Win32]::GetWindowRect($p.MainWindowHandle, [ref]$r) | Out-Null
-$homeX = [int]($r.Left + ($r.Right - $r.Left) * ${DEFAULTS.homeNavClickXRatio})
-$homeY = [int]($r.Top + ($r.Bottom - $r.Top) * ${DEFAULTS.homeNavClickYRatio})
-[Win32]::SetCursorPos($homeX, $homeY) | Out-Null
-[Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-[Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 1200
-$x = [int]($r.Left + ($r.Right - $r.Left) * ${DEFAULTS.draftCardClickXRatio})
-$y = [int]($r.Top + ($r.Bottom - $r.Top) * ${DEFAULTS.draftCardClickYRatio})
-[Win32]::SetCursorPos($x, $y) | Out-Null
-[Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-[Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 180
-[Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-[Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-`;
-    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { stdio: 'ignore' });
+    winOpenDraftByTitle(appPath, draftName);
     return true;
   }
   return false;

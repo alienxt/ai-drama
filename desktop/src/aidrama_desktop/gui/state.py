@@ -63,6 +63,7 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
         SettingsRow("Whisper", settings.whisper_path or "自动探测"),
         SettingsRow("Node.js", settings.node_path or "自动探测"),
         SettingsRow("剪映草稿目录", str(settings.jianying_draft_root) if settings.jianying_draft_root else "自动探测"),
+        SettingsRow("剪映程序地址", str(settings.jianying_app) if settings.jianying_app else "自动探测"),
         SettingsRow("剪映音乐目录", str(settings.jianying_music_dir) if settings.jianying_music_dir else "默认目录"),
         SettingsRow("LibreOffice", settings.soffice_path),
     ]

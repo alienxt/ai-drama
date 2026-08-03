@@ -1170,6 +1170,12 @@ class DesktopWindow(QMainWindow):
         )
         form.addRow("剪映草稿目录", self._path_input_row(self.jianying_draft_root_input, self.choose_jianying_draft_root))
 
+        self.jianying_app_input = QLineEdit(str(self.settings.jianying_app or ""))
+        self.jianying_app_input.setPlaceholderText(
+            r"例如：C:\Users\user\AppData\Local\JianyingPro\JianyingPro.exe"
+        )
+        form.addRow("剪映程序地址", self._path_input_row(self.jianying_app_input, self.choose_jianying_app))
+
         self.jianying_music_dir_input = QLineEdit(str(self.settings.jianying_music_dir or ""))
         self.jianying_music_dir_input.setPlaceholderText(
             "例如：/Users/mac/Library/Application Support/ai-drama-desktop/work/dramas/wav"
@@ -1325,6 +1331,9 @@ class DesktopWindow(QMainWindow):
     def choose_jianying_draft_root(self) -> None:
         self._choose_directory_path(self.jianying_draft_root_input, "选择剪映草稿目录")
 
+    def choose_jianying_app(self) -> None:
+        self._choose_file_path(self.jianying_app_input, "选择剪映程序")
+
     def choose_jianying_music_dir(self) -> None:
         self._choose_directory_path(self.jianying_music_dir_input, "选择剪映音乐目录")
 
@@ -1344,12 +1353,14 @@ class DesktopWindow(QMainWindow):
         whisper_path = self.whisper_path_input.text().strip() or None
         node_path = self.node_path_input.text().strip() or None
         jianying_draft_root = self.jianying_draft_root_input.text().strip() or None
+        jianying_app = self.jianying_app_input.text().strip() or None
         jianying_music_dir = self.jianying_music_dir_input.text().strip() or None
         save_tool_path_config(
             self.settings.config_dir,
             whisper_path=whisper_path,
             node_path=node_path,
             jianying_draft_root=jianying_draft_root,
+            jianying_app=jianying_app,
             jianying_music_dir=jianying_music_dir,
         )
         self.settings = update_settings(
@@ -1357,6 +1368,7 @@ class DesktopWindow(QMainWindow):
             whisper_path=whisper_path,
             node_path=node_path,
             jianying_draft_root=Path(jianying_draft_root).expanduser() if jianying_draft_root else None,
+            jianying_app=Path(jianying_app).expanduser() if jianying_app else None,
             jianying_music_dir=Path(jianying_music_dir).expanduser() if jianying_music_dir else None,
         )
         self.append_log(
@@ -1364,6 +1376,7 @@ class DesktopWindow(QMainWindow):
             f"Whisper={whisper_path or '自动探测'}，"
             f"Node.js={node_path or '自动探测'}，"
             f"剪映草稿目录={jianying_draft_root or '自动探测'}，"
+            f"剪映程序地址={jianying_app or '自动探测'}，"
             f"剪映音乐目录={jianying_music_dir or '默认目录'}"
         )
         QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的 Whisper 路径。")
@@ -1566,6 +1579,7 @@ class DesktopWindow(QMainWindow):
                 ffmpeg_path=self.settings.ffmpeg_path,
                 node_path=self.settings.node_path,
                 draft_root=self.settings.jianying_draft_root,
+                jianying_app=self.settings.jianying_app,
             ),
             whisper_path=self.settings.whisper_path,
             jianying_music_dir=self.settings.jianying_music_dir,

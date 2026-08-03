@@ -114,11 +114,14 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     saved_whisper = tmp_path / "tools" / "whisper"
     saved_node = tmp_path / "tools" / "node"
     draft_root = tmp_path / "jianying" / "drafts"
+    jianying_app = tmp_path / "jianying" / "JianyingPro.exe"
     music_dir = tmp_path / "music"
     saved_whisper.parent.mkdir(parents=True)
     saved_whisper.write_text("#!/bin/sh\n")
     saved_node.write_text("#!/bin/sh\n")
     draft_root.mkdir(parents=True)
+    jianying_app.parent.mkdir(parents=True, exist_ok=True)
+    jianying_app.write_text("#!/bin/sh\n")
     music_dir.mkdir()
     config_dir = tmp_path / "config"
     save_tool_path_config(
@@ -126,10 +129,12 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
         whisper_path=str(saved_whisper),
         node_path=str(saved_node),
         jianying_draft_root=str(draft_root),
+        jianying_app=str(jianying_app),
         jianying_music_dir=str(music_dir),
     )
     monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
     monkeypatch.setenv("JIANYING_DRAFT_ROOT", str(tmp_path / "old" / "drafts"))
+    monkeypatch.setenv("JIANYING_APP", str(tmp_path / "old" / "JianyingPro.exe"))
     monkeypatch.setenv("AIDRAMA_JIANYING_MUSIC_DIR", str(tmp_path / "old" / "music"))
     monkeypatch.setenv("AIDRAMA_WORK_DIR", str(tmp_path / "data" / "work"))
     monkeypatch.setenv("AIDRAMA_TOKEN_FILE", str(config_dir / "token"))
@@ -140,6 +145,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     assert settings.whisper_path == str(saved_whisper)
     assert settings.node_path == str(saved_node)
     assert settings.jianying_draft_root == draft_root
+    assert settings.jianying_app == jianying_app
     assert settings.jianying_music_dir == music_dir
 
 

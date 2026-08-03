@@ -129,6 +129,7 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
         "whisperPath": "whisper_path",
         "nodePath": "node_path",
         "jianyingDraftRoot": "jianying_draft_root",
+        "jianyingApp": "jianying_app",
         "jianyingMusicDir": "jianying_music_dir",
     }
     for raw_key, settings_key in key_map.items():
@@ -144,6 +145,7 @@ def save_tool_path_config(
     whisper_path: str | None,
     node_path: str | None = None,
     jianying_draft_root: str | None = None,
+    jianying_app: str | None = None,
     jianying_music_dir: str | None = None,
 ) -> None:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
@@ -152,6 +154,7 @@ def save_tool_path_config(
         "whisperPath": normalize_optional_executable_path(whisper_path) or "",
         "nodePath": normalize_optional_executable_path(node_path) or "",
         "jianyingDraftRoot": normalize_optional_executable_path(jianying_draft_root) or "",
+        "jianyingApp": normalize_optional_executable_path(jianying_app) or "",
         "jianyingMusicDir": normalize_optional_executable_path(jianying_music_dir) or "",
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -165,6 +168,7 @@ class Settings(BaseSettings):
     whisper_path: str | None = None
     node_path: str | None = None
     jianying_draft_root: Path | None = None
+    jianying_app: Path | None = None
     jianying_music_dir: Path | None = None
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
@@ -234,6 +238,10 @@ def load_settings() -> Settings:
         settings.jianying_draft_root = Path(tool_path_config["jianying_draft_root"]).expanduser()
     elif os.environ.get("JIANYING_DRAFT_ROOT"):
         settings.jianying_draft_root = Path(str(os.environ["JIANYING_DRAFT_ROOT"])).expanduser()
+    if tool_path_config.get("jianying_app"):
+        settings.jianying_app = Path(tool_path_config["jianying_app"]).expanduser()
+    elif os.environ.get("JIANYING_APP"):
+        settings.jianying_app = Path(str(os.environ["JIANYING_APP"])).expanduser()
     if tool_path_config.get("jianying_music_dir"):
         settings.jianying_music_dir = Path(tool_path_config["jianying_music_dir"]).expanduser()
     elif os.environ.get("AIDRAMA_JIANYING_MUSIC_DIR"):

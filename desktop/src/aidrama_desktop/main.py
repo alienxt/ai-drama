@@ -178,7 +178,12 @@ def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
         video_reassembly_config=video_reassembly_config,
         storyboard_generator=StoryboardGenerator(settings.ffmpeg_path, chrome_path),
         storyboards_dir=settings.work_dir / "storyboards",
-        jianying_generator=JianyingProjectGenerator(ffmpeg_path=settings.ffmpeg_path),
+        jianying_generator=JianyingProjectGenerator(
+            ffmpeg_path=settings.ffmpeg_path,
+            node_path=settings.node_path,
+            draft_root=settings.jianying_draft_root,
+            jianying_app=settings.jianying_app,
+        ),
     )
 
 
