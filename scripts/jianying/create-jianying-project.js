@@ -2200,7 +2200,6 @@ function Test-Editor($root) {
 function Test-EditorReady {
   try {
     $p = Get-TargetProcess
-    if ($p -and $p.MainWindowTitle -and $p.MainWindowTitle.Contains($draftName)) { return $true }
     if ($p) {
       $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
       if ($root -and (Test-Editor $root)) { return $true }
@@ -2250,13 +2249,13 @@ function Test-CurrentHomePage {
   }
 }
 
-function Test-NonHomeDraftPageAfterClick($before, [string]$label = '') {
+function Log-NonHomeDraftPageAfterClick($before, [string]$label = '') {
   try {
-    if (Test-EditorReady) { return $true }
+    if (Test-EditorReady) { return }
     $after = Get-WindowSnapshot
-    if (-not $after) { return $false }
+    if (-not $after) { return }
     $root = Get-RootElement
-    if (Test-HomePage $root) { return $false }
+    if (Test-HomePage $root) { return }
     $hasDraftSignal = $false
     if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) { $hasDraftSignal = $true }
     if ($before -and $before.Handle -and $after.Handle -ne $before.Handle) { $hasDraftSignal = $true }
@@ -2265,11 +2264,9 @@ function Test-NonHomeDraftPageAfterClick($before, [string]$label = '') {
       $hasDraftSignal = [bool](Find-ContainsNamedElement $root @($draftName) 1000 700)
     }
     if ($hasDraftSignal) {
-      Write-Output ("stage=non-home-draft-page-accepted label={0} title={1}" -f $label, $after.Title)
-      return $true
+      Write-Output ("stage=non-home-draft-page-detected label={0} title={1}" -f $label, $after.Title)
     }
   } catch {}
-  return $false
 }
 
 function Click-Element($element, [int]$clickCount) {
@@ -2333,7 +2330,7 @@ function Open-DraftElement($element) {
     Click-Element $ancestor 1
     if (Wait-ForEditorAfterClick $before 18) { return $true }
     if (Try-OpenFromDraftDetail 5) { return $true }
-    if (Test-NonHomeDraftPageAfterClick $before 'title-ancestor') { return $true }
+    Log-NonHomeDraftPageAfterClick $before 'title-ancestor'
   }
   $centerX = [int]($rect.Left + ($rect.Width / 2))
   $centerY = [int]($rect.Top + ($rect.Height / 2))
@@ -2349,7 +2346,7 @@ function Open-DraftElement($element) {
     Start-Sleep -Milliseconds 1200
     if (Wait-ForEditorAfterClick $before 18) { return $true }
     if (Try-OpenFromDraftDetail 5) { return $true }
-    if (Test-NonHomeDraftPageAfterClick $before $point.Label) { return $true }
+    Log-NonHomeDraftPageAfterClick $before $point.Label
     if (-not (Test-CurrentHomePage)) {
       Write-Output ("stage=not-homepage-stop-after-title-click label={0}" -f $point.Label)
       return $false
@@ -2443,7 +2440,7 @@ function Try-OpenNewestDraftByWindowClick {
     if (Open-DraftElement $titleElement) { return $true }
     if (Wait-ForEditorAfterClick $before 45) { return $true }
     if (Try-OpenFromDraftDetail 8) { return $true }
-    if (Test-NonHomeDraftPageAfterClick $before 'title-final') { return $true }
+    Log-NonHomeDraftPageAfterClick $before 'title-final'
     return $false
   }
   Write-Output 'stage=title-draft-not-found'
@@ -2471,7 +2468,7 @@ function Try-OpenNewestDraftByWindowClick {
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
     if (Wait-ForEditorAfterClick $before 18) { return $true }
     if (Try-OpenFromDraftDetail 4) { return $true }
-    if (Test-NonHomeDraftPageAfterClick $before ("ratio-{0}" -f ($i + 1))) { return $true }
+    Log-NonHomeDraftPageAfterClick $before ("ratio-{0}" -f ($i + 1))
     if (-not (Test-CurrentHomePage)) {
       Write-Output ("stage=not-homepage-stop-after-ratio-click-{0}" -f ($i + 1))
       return $false
