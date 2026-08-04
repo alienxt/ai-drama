@@ -2155,10 +2155,45 @@ function Find-ClickableAncestor($element, [int]$maxDepth = 5) {
       if ((Element-HasInvokePattern $current) -or $allowedControlTypes -contains $controlType) {
         try {
           $rect = $current.Current.BoundingRectangle
-          if (-not $rect.IsEmpty -and $rect.Width -ge 80 -and $rect.Height -ge 40) {
+          $windowRect = Get-WindowRect
+          $maxWidth = [Math]::Min(520, [Math]::Max(160, $windowRect.Width * 0.45))
+          $maxHeight = [Math]::Min(360, [Math]::Max(120, $windowRect.Height * 0.45))
+          $usableBounds = (-not $rect.IsEmpty) -and $rect.Width -ge 80 -and $rect.Height -ge 40 -and $rect.Width -le $maxWidth -and $rect.Height -le $maxHeight
+          if ($usableBounds) {
             return $current
           }
         } catch {}
+      }
+    }
+  }
+  return $null
+}
+
+function Find-FirstElementWithNamePrefix($root, [string]$prefix, [int]$timeoutMs, [int]$maxNodes) {
+  $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
+  $walkers = @(
+    [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+    [System.Windows.Automation.TreeWalker]::RawViewWalker
+  )
+  foreach ($walker in $walkers) {
+    $queue = New-Object System.Collections.Queue
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+    $visited = 0
+    while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
+      $element = $queue.Dequeue()
+      $visited += 1
+      $name = Get-ElementName $element
+      if (-not [string]::IsNullOrWhiteSpace($name) -and $name.StartsWith($prefix)) {
+        return $element
+      }
+      $child = $walker.GetFirstChild($element)
+      while ($child -and $visited + $queue.Count -lt $maxNodes) {
+        $queue.Enqueue($child)
+        $child = $walker.GetNextSibling($child)
       }
     }
   }
@@ -2249,6 +2284,25 @@ function Test-CurrentHomePage {
   }
 }
 
+function Try-GoHome {
+  try {
+    $root = Get-RootElement
+    if (Test-HomePage $root) {
+      Write-Output 'stage=home-ready'
+      return $true
+    }
+    $home = Find-ClickableNamedElement $root @('首页', 'Home') $true 1500 900
+    if ($home) {
+      Write-Output ("stage=click-home-ui name={0} controlType={1}" -f (Get-ElementName $home), (Get-ControlTypeName $home))
+      Click-Element $home 1
+      Start-Sleep -Milliseconds 1800
+      return [bool](Test-CurrentHomePage)
+    }
+  } catch {}
+  Write-Output 'stage=home-ui-not-found'
+  return $false
+}
+
 function Log-NonHomeDraftPageAfterClick($before, [string]$label = '') {
   try {
     if (Test-EditorReady) { return }
@@ -2323,6 +2377,7 @@ function Open-DraftElement($element) {
   if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {
     throw 'Draft title UI element has no usable screen bounds'
   }
+  Write-Output ("stage=open-draft-title name={0} bounds={1},{2},{3}x{4}" -f (Get-ElementName $element), [int]$rect.Left, [int]$rect.Top, [int]$rect.Width, [int]$rect.Height)
   $ancestor = Find-ClickableAncestor $element
   if ($ancestor) {
     Write-Output ("stage=title-clickable-ancestor name={0} controlType={1}" -f (Get-ElementName $ancestor), (Get-ControlTypeName $ancestor))
@@ -2393,7 +2448,15 @@ function Wait-ForDraftTitle([int]$seconds) {
   while ((Get-Date) -lt $deadline) {
     $root = Get-RootElement
     $element = Find-NamedElement $root $draftNames $true
-    if ($element) { return $element }
+    if ($element) {
+      Write-Output ("stage=draft-title-matched name={0}" -f (Get-ElementName $element))
+      return $element
+    }
+    $element = Find-FirstElementWithNamePrefix $root 'HomePageDraftTitle:' 1500 1200
+    if ($element) {
+      Write-Output ("stage=draft-title-first-card name={0}" -f (Get-ElementName $element))
+      return $element
+    }
     Start-Sleep -Milliseconds 500
   }
   return $null
@@ -2421,17 +2484,8 @@ function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=window-click-fallback'
   [void](Get-RootElement)
   if (Wait-ForEditor 1) { return $true }
-  $homePoints = @(
-    @(0.033, 0.182),
-    @(0.055, 0.182),
-    @(0.040, 0.176)
-  )
-  foreach ($point in $homePoints) {
-    if (Wait-ForEditor 1) { return $true }
-    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 1
-    Start-Sleep -Milliseconds 700
-  }
-  Start-Sleep -Milliseconds 3500
+  [void](Try-GoHome)
+  Start-Sleep -Milliseconds 1200
   if (Wait-ForEditor 2) { return $true }
   $titleElement = Wait-ForDraftTitle 8
   if ($titleElement) {
@@ -2446,34 +2500,7 @@ function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
   if (Try-OpenFromDraftDetail 4) { return $true }
-  if (-not (Test-CurrentHomePage)) {
-    Write-Output 'stage=not-homepage-stop-before-ratio-clicks'
-    return $false
-  }
-  $draftClickPoints = @(
-    @(0.187, 0.408),
-    @(0.265, 0.408),
-    @(0.345, 0.408),
-    @(0.425, 0.408),
-    @(0.187, 0.480),
-    @(0.265, 0.480),
-    @(0.153, 0.331),
-    @(0.153, 0.382)
-  )
-  for ($i = 0; $i -lt $draftClickPoints.Count; $i++) {
-    if (Wait-ForEditor 1) { return $true }
-    $point = $draftClickPoints[$i]
-    $before = Get-WindowSnapshot
-    Write-Output ("stage=window-click-draft-ratio-{0} x={1} y={2}" -f ($i + 1), $point[0], $point[1])
-    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
-    if (Wait-ForEditorAfterClick $before 18) { return $true }
-    if (Try-OpenFromDraftDetail 4) { return $true }
-    Log-NonHomeDraftPageAfterClick $before ("ratio-{0}" -f ($i + 1))
-    if (-not (Test-CurrentHomePage)) {
-      Write-Output ("stage=not-homepage-stop-after-ratio-click-{0}" -f ($i + 1))
-      return $false
-    }
-  }
+  Write-Output 'stage=draft-title-ui-not-found-no-coordinate-fallback'
   return $false
 }
 
