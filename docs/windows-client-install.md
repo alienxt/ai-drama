@@ -1,6 +1,6 @@
 # Windows 客户端安装文档
 
-本文面向 AI Drama Desktop 的 Windows 使用机器。普通用户只需要安装客户端和运行依赖，不需要安装 Python、Git、Inno Setup 或项目源码。
+本文面向 AI Drama Desktop 的 Windows 使用机器。普通用户只需要安装客户端和运行依赖，不需要安装 Git、Inno Setup 或项目源码。只有启用本机 Whisper 字幕识别时，才需要额外安装官方版 Python 3.11。
 
 ## 1. 必装软件清单
 
@@ -9,6 +9,7 @@
 | AI Drama Desktop | 客户端程序 | 由管理员提供 `.exe` 安装包 | 双击安装 |
 | Google Chrome | 登录媒体号、自动打开发布页面、上传视频 | https://www.google.com/chrome/ | 默认安装 |
 | FFmpeg | 视频转码、提高码率、添加封面帧 | https://ffmpeg.org/download.html | 下载 Windows 预编译包后解压 |
+| Whisper | 可选：为剪映工程生成中文字幕 SRT | https://www.python.org/downloads/release/python-3119/ | 安装官方 Python 3.11 后通过 pip 安装 |
 | Node.js | 运行剪映工程截图生成工具 | https://nodejs.org/ | 默认安装 |
 | 剪映专业版 | 生成剧目制作证明用剪映工程截图 | 官方剪映专业版安装包 | 安装 5.9 或兼容版本 |
 | LibreOffice | 将合同 Word `.docx` 转为 PDF | https://www.libreoffice.org/download/ | 默认安装 |
@@ -132,7 +133,87 @@ ffmpeg -version
 ffprobe -version
 ```
 
-## 5. 安装 LibreOffice
+## 5. 安装 Whisper（可选：剪映字幕识别）
+
+用途：客户端可以调用本机 `whisper.exe` 识别视频对白，生成剪映工程可用的中文字幕 SRT。Whisper 依赖 FFmpeg，所以请先完成上一节 FFmpeg 安装。
+
+不要使用绿色版或 embeddable Python 安装 Whisper。如果运行下面命令：
+
+```cmd
+C:\duanju_ruanjian\python3.11\python.exe -m pip --version
+C:\duanju_ruanjian\python3.11\python.exe -m ensurepip --upgrade
+```
+
+出现：
+
+```text
+No module named pip
+No module named ensurepip
+```
+
+说明这个 Python 不适合安装 Whisper。它默认没有 `pip`、没有 `ensurepip`，后面安装 `torch` 或 `openai-whisper` 也容易继续踩坑。
+
+推荐直接安装官方版 Python 3.11：
+
+1. 打开下载页：
+
+```text
+https://www.python.org/downloads/release/python-3119/
+```
+
+2. 下载 `Windows installer (64-bit)`。
+3. 安装时一定勾选：
+
+```text
+Add python.exe to PATH
+pip
+```
+
+4. 安装完成后，关闭并重新打开 CMD 或 PowerShell。
+5. 验证 Python 和 pip：
+
+```cmd
+py -3.11 --version
+py -3.11 -m pip --version
+```
+
+如果 `python --version` 提示跳转 Microsoft Store，可以到 Windows 设置里关闭执行别名：
+
+```text
+设置 -> 应用 -> 高级应用设置 -> 应用执行别名
+```
+
+把 `python.exe` 和 `python3.exe` 的 Microsoft Store 开关关掉。
+
+创建独立 Whisper 环境：
+
+```cmd
+py -3.11 -m venv C:\AI-Drama\whisper-venv
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U openai-whisper
+```
+
+验证 Whisper：
+
+```cmd
+C:\AI-Drama\whisper-venv\Scripts\whisper.exe --help
+```
+
+设置客户端使用的 Whisper 路径：
+
+```powershell
+setx AIDRAMA_WHISPER_PATH "C:\AI-Drama\whisper-venv\Scripts\whisper.exe"
+```
+
+设置后需要关闭并重新打开客户端。也可以在客户端“系统配置/工具路径”里手动填写：
+
+```text
+C:\AI-Drama\whisper-venv\Scripts\whisper.exe
+```
+
+第一次运行 Whisper 会下载模型。客户端默认使用 `small` 模型和中文识别，CPU 也能运行，只是会比较慢。
+
+## 6. 安装 LibreOffice
 
 用途：完整发布任务中，将 Word 合同 `.docx` 转成 `.pdf`。
 
@@ -173,7 +254,7 @@ setx AIDRAMA_SOFFICE_PATH "C:\Program Files\LibreOffice\program\soffice.exe"
 soffice --version
 ```
 
-## 6. 安装 Poppler
+## 7. 安装 Poppler
 
 用途：完整发布任务中，将合同 PDF 转成 PNG 图片，主要使用 `pdftoppm.exe`。
 
@@ -218,7 +299,7 @@ C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 pdftoppm -v
 ```
 
-## 7. 环境变量说明
+## 8. 环境变量说明
 
 常用环境变量：
 
@@ -226,6 +307,7 @@ pdftoppm -v
 AIDRAMA_SERVER_URL      后台 API 地址
 AIDRAMA_CHROME_PATH     Chrome 可执行文件路径
 AIDRAMA_FFMPEG_PATH     FFmpeg 可执行文件路径
+AIDRAMA_WHISPER_PATH    Whisper 可执行文件路径，用于本机字幕识别
 AIDRAMA_SOFFICE_PATH    LibreOffice soffice 可执行文件路径
 AIDRAMA_PDFTOPPM_PATH   Poppler pdftoppm 可执行文件路径
 AIDRAMA_WORK_DIR        客户端工作数据目录，保存下载、转码、合同、更新包和临时文件
@@ -273,7 +355,7 @@ setx AIDRAMA_TOKEN_FILE "D:\ai-drama\ai-drama-desktop\config\token"
 
 不建议随意设置 `AIDRAMA_DEVICE_ID`，否则可能影响后台的设备绑定和媒体号权限判断。
 
-## 8. 安装后检查
+## 9. 安装后检查
 
 打开新的 PowerShell，执行：
 
@@ -281,14 +363,15 @@ setx AIDRAMA_TOKEN_FILE "D:\ai-drama\ai-drama-desktop\config\token"
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --version
 C:\Tools\ffmpeg\bin\ffmpeg.exe -version
 C:\Tools\ffmpeg\bin\ffprobe.exe -version
+C:\AI-Drama\whisper-venv\Scripts\whisper.exe --help
 node -v
 & "C:\Program Files\LibreOffice\program\soffice.exe" --version
 C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 ```
 
-以上命令都能输出版本信息，说明客户端运行依赖基本安装完成。
+如果没有安装 Whisper，可以跳过 `whisper.exe --help`。以上命令都能输出版本信息，说明客户端运行依赖基本安装完成。
 
-## 9. 合同功能说明
+## 10. 合同功能说明
 
 “合同配置 -> 测试生成 -> 生成合同”只生成 Word `.docx`，不需要 LibreOffice 和 Poppler。
 
@@ -304,17 +387,17 @@ C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 C:\Tools\poppler\Library\bin\pdftoppm.exe -v
 ```
 
-## 10. 普通用户不需要安装的软件
+## 11. 普通用户不需要安装的软件
 
-以下软件只在开发、拉代码或打包 Windows 客户端时需要，普通用户拿到安装包后不需要安装：
+以下软件只在开发、拉代码、打包 Windows 客户端或启用本机 Whisper 字幕识别时需要，普通用户拿到安装包后不一定需要安装：
 
-- Python 3.11+
+- Python 3.11+（仅 Whisper 字幕识别或开发打包需要）
 - Git
 - Inno Setup 6
 - 项目源码
 - `.venv`
 
-## 11. 开发打包机器额外软件
+## 12. 开发打包机器额外软件
 
 只有需要从源码构建 Windows 客户端时，才需要安装以下软件。
 

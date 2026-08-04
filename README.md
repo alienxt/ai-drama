@@ -23,6 +23,8 @@
 - [功能文档](docs/功能文档.md)
 - [技术文档](docs/技术文档.md)
 - [API 设计](docs/API设计.md)
+- [Windows 客户端安装文档](docs/windows-client-install.md)
+- [macOS 客户端安装文档](docs/macos-client-install.md)
 
 ## Quick Start
 
