@@ -383,6 +383,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_size = 10
         self.task_history_total_pages = 1
         self.task_history_total_elements = 0
+        self.last_task_error_message: str | None = None
         self.last_auto_error_popup_message: str | None = None
         self.task_cancel_event = threading.Event()
         self.task_pause_event = threading.Event()
@@ -3841,6 +3842,7 @@ class DesktopWindow(QMainWindow):
         self.auto_task_enabled = True
         self.auto_task_timer.start()
         self.auto_task_button.setText("停止自动执行")
+        self.set_task_error_message(None)
         self.update_task_progress("自动执行已启动", self.current_task_id)
         self.run_auto_task_cycle()
 
@@ -3902,6 +3904,7 @@ class DesktopWindow(QMainWindow):
         if not self.auto_task_enabled or self.auto_task_busy or self.manual_publish_busy:
             return
         self.auto_task_busy = True
+        self.set_task_error_message(None)
         self.update_task_progress("发送心跳", self.current_task_id)
         self.run_async(
             "自动执行任务",
@@ -4094,9 +4097,11 @@ class DesktopWindow(QMainWindow):
 
     @staticmethod
     def is_jianying_error(message: str) -> bool:
-        return "剪映" in message
+        normalized = message.lower()
+        return "剪映" in message or "jianying" in normalized or "could not open newest draft card" in normalized
 
-    def set_task_error_message(self, message: str) -> None:
+    def set_task_error_message(self, message: str | None) -> None:
+        self.last_task_error_message = message or None
         if hasattr(self, "task_error_label"):
             self.task_error_label.setText(f"最近错误：{message or '-'}")
 
@@ -4197,8 +4202,7 @@ class DesktopWindow(QMainWindow):
         if stage.startswith("任务失败："):
             reason = self.clean_error_message(stage.removeprefix("任务失败："))
             display_stage = f"任务失败：{reason}"
-            if hasattr(self, "task_error_label"):
-                self.task_error_label.setText(f"最近错误：{reason}")
+            self.set_task_error_message(reason)
         if hasattr(self, "auto_task_state"):
             self.auto_task_state.setText(f"自动执行：{'运行中' if self.auto_task_enabled else '未启动'}")
         if hasattr(self, "current_task_label"):
@@ -4266,6 +4270,8 @@ class DesktopWindow(QMainWindow):
         return str(account.get("displayName") or account.get("externalAccountId") or media_account_id)
 
     def current_task_error_message(self) -> str | None:
+        if getattr(self, "last_task_error_message", None):
+            return str(self.last_task_error_message)
         if not hasattr(self, "task_error_label"):
             return None
         text = self.task_error_label.text().removeprefix("最近错误：").strip()
