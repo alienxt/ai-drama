@@ -1956,17 +1956,37 @@ Enable-DpiAwareness
 $draftName = ${psSingle(draftName)}
 $appPath = ${psSingle(appPath || '')}
 
-function Get-TargetProcess {
+function Get-AppBaseName {
   $baseName = ''
   if ($appPath) {
     try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
   }
-  $processes = @(Get-Process | Where-Object {
+  return $baseName
+}
+
+function Get-CandidateProcesses {
+  $baseName = Get-AppBaseName
+  return @(Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and (
-      $_.ProcessName -match 'Jianying|CapCut|VideoFusion' -or
+      $_.ProcessName -match 'Jianying|CapCut|VideoFusion|剪映' -or
+      ($_.MainWindowTitle -and $_.MainWindowTitle -match 'Jianying|CapCut|VideoFusion|剪映') -or
+      ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
       ($baseName -and $_.ProcessName -eq $baseName)
     )
   } | Sort-Object Id)
+}
+
+function Format-VisibleWindowCandidates {
+  $windows = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Sort-Object ProcessName, Id | Select-Object -First 18)
+  if (-not $windows.Count) { return 'none' }
+  return (($windows | ForEach-Object {
+    ('pid={0},name={1},title="{2}"' -f $_.Id, $_.ProcessName, $_.MainWindowTitle)
+  }) -join ' | ')
+}
+
+function Get-TargetProcess {
+  $baseName = Get-AppBaseName
+  $processes = @(Get-CandidateProcesses)
   if ($draftName) {
     $draftWindow = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
     if ($draftWindow) { return $draftWindow }
@@ -1978,9 +1998,22 @@ function Get-TargetProcess {
   return $processes | Select-Object -First 1
 }
 
+function Wait-TargetProcess([int]$seconds = 60) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
+  while ((Get-Date) -lt $deadline) {
+    $p = Get-TargetProcess
+    if ($p) {
+      Write-Output ("stage=window-found pid={0} name={1} title={2}" -f $p.Id, $p.ProcessName, $p.MainWindowTitle)
+      return $p
+    }
+    Start-Sleep -Milliseconds 700
+  }
+  Write-Output ("stage=window-not-found appPath={0} baseName={1} visibleWindows={2}" -f $appPath, (Get-AppBaseName), (Format-VisibleWindowCandidates))
+  throw 'Jianying/CapCut process window not found'
+}
+
 function Get-RootElement {
-  $p = Get-TargetProcess
-  if (-not $p) { throw 'Jianying/CapCut process window not found' }
+  $p = Wait-TargetProcess 60
   [Win32DraftOpen]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
   [Win32DraftOpen]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
   Start-Sleep -Milliseconds 500
@@ -2655,7 +2688,9 @@ if ($appPath) {
 }
 $processes = @(Get-Process | Where-Object {
   $_.MainWindowHandle -ne 0 -and (
-    $_.ProcessName -match "Jianying|CapCut|VideoFusion" -or
+    $_.ProcessName -match "Jianying|CapCut|VideoFusion|剪映" -or
+    ($_.MainWindowTitle -and $_.MainWindowTitle -match "Jianying|CapCut|VideoFusion|剪映") -or
+    ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
     ($baseName -and $_.ProcessName -eq $baseName)
   )
 } | Sort-Object Id)
