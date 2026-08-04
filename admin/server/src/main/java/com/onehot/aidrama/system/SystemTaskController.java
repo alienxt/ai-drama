@@ -5,7 +5,9 @@ import com.onehot.aidrama.common.MongoPageQuery;
 import com.onehot.aidrama.common.PageResult;
 import com.onehot.aidrama.common.TraceIdFilter;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -31,8 +33,19 @@ public class SystemTaskController {
                 .eq("type", type)
                 .eq("status", status);
         return ApiResponse.ok(
-                PageResult.from(query.page(mongoTemplate, SystemTask.class, pageable)),
+                PageResult.from(query.page(mongoTemplate, SystemTask.class, systemTaskListPageable(pageable))),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
+    }
+
+    private Pageable systemTaskListPageable(Pageable pageable) {
+        if (pageable.getSort().isSorted()) {
+            return pageable;
+        }
+        Sort sort = Sort.by(Sort.Direction.DESC, "startedAt");
+        if (pageable.isPaged()) {
+            return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
+        }
+        return Pageable.unpaged(sort);
     }
 }
