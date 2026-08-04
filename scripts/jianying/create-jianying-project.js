@@ -1834,15 +1834,28 @@ function activateJianying(appPath) {
   }
   if (process.platform === 'win32') {
     const script = `
+$appPath = ${psSingle(appPath || '')}
+$baseName = ''
+if ($appPath) {
+  try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+}
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class Win32Focus {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
-$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -match "Jianying|CapCut|VideoFusion" } | Select-Object -First 1
+$p = Get-Process | Where-Object {
+  $_.MainWindowHandle -ne 0 -and (
+    $_.ProcessName -match "Jianying|CapCut|VideoFusion|剪映" -or
+    ($_.MainWindowTitle -and $_.MainWindowTitle -match "Jianying|CapCut|VideoFusion|剪映") -or
+    ($baseName -and $_.ProcessName -eq $baseName)
+  )
+} | Select-Object -First 1
 if (-not $p) { exit 2 }
+[Win32Focus]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
 [Win32Focus]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 `;
     try {
@@ -1929,6 +1942,7 @@ public class Win32DraftOpen {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, UInt32 dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
@@ -2234,16 +2248,12 @@ function Find-FirstElementWithNamePrefix($root, [string]$prefix, [int]$timeoutMs
 }
 
 function Test-Editor($root) {
-  if (Find-ContainsNamedElement $root @(
+  $hasTimelineSignal = [bool](Find-ContainsNamedElement $root @(
     'VETreeMainCellItem:',
     'VETreeSubCellItem:',
-    'VECollectTitleView:',
     'currentProgress',
-    'totalProgress',
-    'MTLSText:'
-  ) 1800 900) {
-    return $true
-  }
+    'totalProgress'
+  ) 1800 900)
   $hasEditorChrome = [bool](Find-ContainsNamedElement $root @(
     '播放器',
     '草稿参数',
@@ -2262,7 +2272,7 @@ function Test-Editor($root) {
     'Captions',
     'Subtitles'
   ) 1200 700)
-  return $hasEditorChrome -and $hasToolTabs
+  return $hasToolTabs -and ($hasEditorChrome -or $hasTimelineSignal)
 }
 
 function Test-EditorReady {
@@ -2391,11 +2401,32 @@ function Click-Point([int]$x, [int]$y, [int]$clickCount) {
   }
 }
 
+function Press-EnterKey {
+  [Win32DraftOpen]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 80
+  [Win32DraftOpen]::keybd_event(0x0D, 0, 0x0002, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 260
+}
+
 function Click-WindowRatio([double]$xRatio, [double]$yRatio, [int]$clickCount) {
   $rect = Get-WindowRect
   $x = [int]($rect.Left + ($rect.Width * $xRatio))
   $y = [int]($rect.Top + ($rect.Height * $yRatio))
   Click-Point $x $y $clickCount
+}
+
+function Try-FocusAndEnter($element, [string]$label, [int]$seconds = 18) {
+  try {
+    $before = Get-WindowSnapshot
+    Write-Output ("stage=focus-enter label={0} name={1} controlType={2}" -f $label, (Get-ElementName $element), (Get-ControlTypeName $element))
+    try { $element.SetFocus(); Start-Sleep -Milliseconds 300 } catch {}
+    Press-EnterKey
+    if (Wait-ForEditorAfterClick $before $seconds) { return $true }
+    if (Try-OpenFromDraftDetail 6) { return $true }
+  } catch {
+    Write-Output ("stage=focus-enter-failed label={0} error={1}" -f $label, $_.Exception.Message)
+  }
+  return $false
 }
 
 function Open-DraftElement($element) {
@@ -2411,9 +2442,11 @@ function Open-DraftElement($element) {
     throw 'Draft title UI element has no usable screen bounds'
   }
   Write-Output ("stage=open-draft-title name={0} bounds={1},{2},{3}x{4}" -f (Get-ElementName $element), [int]$rect.Left, [int]$rect.Top, [int]$rect.Width, [int]$rect.Height)
+  if (Try-FocusAndEnter $element 'title-element' 18) { return $true }
   $ancestor = Find-ClickableAncestor $element
   if ($ancestor) {
     Write-Output ("stage=title-clickable-ancestor name={0} controlType={1}" -f (Get-ElementName $ancestor), (Get-ControlTypeName $ancestor))
+    if (Try-FocusAndEnter $ancestor 'title-ancestor' 18) { return $true }
     $before = Get-WindowSnapshot
     Click-Element $ancestor 1
     if (Wait-ForEditorAfterClick $before 18) { return $true }
@@ -2434,6 +2467,9 @@ function Open-DraftElement($element) {
     Start-Sleep -Milliseconds 1200
     if (Wait-ForEditorAfterClick $before 18) { return $true }
     if (Try-OpenFromDraftDetail 5) { return $true }
+    Press-EnterKey
+    if (Wait-ForEditorAfterClick $before 12) { return $true }
+    if (Try-OpenFromDraftDetail 5) { return $true }
     Log-NonHomeDraftPageAfterClick $before $point.Label
     if (-not (Test-CurrentHomePage)) {
       Write-Output ("stage=not-homepage-stop-after-title-click label={0}" -f $point.Label)
@@ -2452,13 +2488,19 @@ function Try-OpenFromDraftDetail([int]$seconds = 8) {
     '继续编辑',
     '继续剪辑',
     '开始编辑',
+    '开始剪辑',
+    '打开项目',
+    '进入项目',
+    '继续',
     '打开',
     '编辑',
     'Open draft',
+    'Open project',
     'Open',
     'Edit',
     'Continue editing'
   )
+  $sentEnterFallback = $false
   while ((Get-Date) -lt $deadline) {
     if (Test-EditorReady) { return $true }
     $root = Get-RootElement
@@ -2469,6 +2511,13 @@ function Try-OpenFromDraftDetail([int]$seconds = 8) {
       Click-Element $button 1
       if (Wait-ForEditorAfterClick $before 25) { return $true }
       return $false
+    }
+    if (-not $sentEnterFallback -and -not (Test-HomePage $root)) {
+      Write-Output 'stage=detail-enter-fallback'
+      $before = Get-WindowSnapshot
+      Press-EnterKey
+      $sentEnterFallback = $true
+      if (Wait-ForEditorAfterClick $before 12) { return $true }
     }
     Start-Sleep -Milliseconds 700
   }
@@ -2513,6 +2562,39 @@ function Wait-ForEditorAfterClick($before, [int]$seconds = 45) {
   return $false
 }
 
+function Try-OpenFirstDraftByHomeLayout {
+  if (-not (Test-CurrentHomePage)) {
+    Write-Output 'stage=home-layout-fallback-skipped-not-home'
+    return $false
+  }
+  $points = @(
+    @{ Label = 'first-card-cover-center'; XRatio = 0.187; YRatio = 0.410; Count = 2 },
+    @{ Label = 'first-card-title-center'; XRatio = 0.187; YRatio = 0.480; Count = 2 }
+  )
+  foreach ($point in $points) {
+    $before = Get-WindowSnapshot
+    $rect = Get-WindowRect
+    $x = [int]($rect.Left + ($rect.Width * [double]$point.XRatio))
+    $y = [int]($rect.Top + ($rect.Height * [double]$point.YRatio))
+    Write-Output ("stage=home-layout-first-card-click label={0} x={1} y={2} rect={3},{4},{5}x{6} dpi={7} scale={8}" -f $point.Label, $x, $y, $rect.Left, $rect.Top, $rect.Width, $rect.Height, $rect.Dpi, $rect.Scale)
+    Click-Point $x $y 1
+    Start-Sleep -Milliseconds 300
+    Press-EnterKey
+    if (Wait-ForEditorAfterClick $before 16) { return $true }
+    if (Try-OpenFromDraftDetail 6) { return $true }
+    Click-Point $x $y ([int]$point.Count)
+    Start-Sleep -Milliseconds 900
+    if (Wait-ForEditorAfterClick $before 18) { return $true }
+    if (Try-OpenFromDraftDetail 6) { return $true }
+    Log-NonHomeDraftPageAfterClick $before $point.Label
+    if (-not (Test-CurrentHomePage)) {
+      Write-Output ("stage=home-layout-fallback-stopped-not-home label={0}" -f $point.Label)
+      return $false
+    }
+  }
+  return $false
+}
+
 function Try-OpenNewestDraftByWindowClick {
   Write-Output 'stage=window-click-fallback'
   [void](Get-RootElement)
@@ -2528,12 +2610,13 @@ function Try-OpenNewestDraftByWindowClick {
     if (Wait-ForEditorAfterClick $before 45) { return $true }
     if (Try-OpenFromDraftDetail 8) { return $true }
     Log-NonHomeDraftPageAfterClick $before 'title-final'
-    return $false
+    return [bool](Try-OpenFirstDraftByHomeLayout)
   }
   Write-Output 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
   if (Try-OpenFromDraftDetail 4) { return $true }
-  Write-Output 'stage=draft-title-ui-not-found-no-coordinate-fallback'
+  if (Try-OpenFirstDraftByHomeLayout) { return $true }
+  Write-Output 'stage=draft-title-ui-not-found-or-home-layout-fallback-failed'
   return $false
 }
 
@@ -3415,6 +3498,167 @@ function createProject(args) {
   return audit;
 }
 
+function windowsJianyingEditorReady(appPath, draftName) {
+  if (process.platform !== 'win32') return { ready: true, reason: 'non-windows' };
+  const script = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32EditorCheck {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+"@
+try { [Win32EditorCheck]::SetProcessDPIAware() | Out-Null } catch {}
+
+$draftName = ${psSingle(draftName || '')}
+$appPath = ${psSingle(appPath || '')}
+
+function Get-AppBaseName {
+  if (-not $appPath) { return '' }
+  try { return [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch { return '' }
+}
+
+function Get-CandidateProcesses {
+  $baseName = Get-AppBaseName
+  return @(Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and (
+      $_.ProcessName -match 'Jianying|CapCut|VideoFusion|剪映' -or
+      ($_.MainWindowTitle -and $_.MainWindowTitle -match 'Jianying|CapCut|VideoFusion|剪映') -or
+      ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
+      ($baseName -and $_.ProcessName -eq $baseName)
+    )
+  } | Sort-Object Id)
+}
+
+function Get-TargetProcess {
+  $baseName = Get-AppBaseName
+  $processes = @(Get-CandidateProcesses)
+  if ($draftName) {
+    $draftWindow = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
+    if ($draftWindow) { return $draftWindow }
+  }
+  if ($baseName) {
+    $exact = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
+    if ($exact) { return $exact }
+  }
+  return $processes | Select-Object -First 1
+}
+
+function Get-ElementName($element) {
+  try { return [string]$element.Current.Name } catch { return '' }
+}
+
+function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [int]$maxNodes) {
+  $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
+  $walkers = @(
+    [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+    [System.Windows.Automation.TreeWalker]::RawViewWalker
+  )
+  foreach ($walker in $walkers) {
+    $queue = New-Object System.Collections.Queue
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+    $visited = 0
+    while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
+      $element = $queue.Dequeue()
+      $visited += 1
+      $name = Get-ElementName $element
+      if (-not [string]::IsNullOrWhiteSpace($name)) {
+        foreach ($candidate in $names) {
+          if (-not [string]::IsNullOrWhiteSpace($candidate) -and $name.Contains($candidate)) {
+            return $element
+          }
+        }
+      }
+      $child = $walker.GetFirstChild($element)
+      while ($child -and $visited + $queue.Count -lt $maxNodes) {
+        $queue.Enqueue($child)
+        $child = $walker.GetNextSibling($child)
+      }
+    }
+  }
+  return $null
+}
+
+function Test-Editor($root) {
+  $hasTimelineSignal = [bool](Find-ContainsNamedElement $root @(
+    'VETreeMainCellItem:',
+    'VETreeSubCellItem:',
+    'currentProgress',
+    'totalProgress'
+  ) 1800 900)
+  $hasEditorChrome = [bool](Find-ContainsNamedElement $root @(
+    '播放器',
+    '草稿参数',
+    '导出',
+    'Export',
+    'Player'
+  ) 1200 700)
+  $hasToolTabs = [bool](Find-ContainsNamedElement $root @(
+    '媒体',
+    '音频',
+    '文本',
+    '字幕',
+    'Media',
+    'Audio',
+    'Text',
+    'Captions',
+    'Subtitles'
+  ) 1200 700)
+  return @{
+    ready = [bool]($hasToolTabs -and ($hasEditorChrome -or $hasTimelineSignal))
+    hasTimelineSignal = $hasTimelineSignal
+    hasEditorChrome = $hasEditorChrome
+    hasToolTabs = $hasToolTabs
+  }
+}
+
+$p = Get-TargetProcess
+if (-not $p) {
+  [ordered]@{ ready = $false; reason = 'window-not-found' } | ConvertTo-Json -Compress
+  exit 0
+}
+[Win32EditorCheck]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
+[Win32EditorCheck]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 500
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+$editor = Test-Editor $root
+[ordered]@{
+  ready = [bool]$editor.ready
+  reason = if ($editor.ready) { 'editor-ready' } else { 'editor-ui-not-detected' }
+  processName = $p.ProcessName
+  title = $p.MainWindowTitle
+  hasTimelineSignal = [bool]$editor.hasTimelineSignal
+  hasEditorChrome = [bool]$editor.hasEditorChrome
+  hasToolTabs = [bool]$editor.hasToolTabs
+} | ConvertTo-Json -Compress
+`;
+  try {
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 20000,
+    }).trim();
+    return JSON.parse(output || '{}');
+  } catch (error) {
+    return {
+      ready: false,
+      reason: 'editor-check-failed',
+      detail: String(error.stderr || error.message || '').trim(),
+    };
+  }
+}
+
 function postCreateAutomation(args, audit) {
   let draftOpened = !args.openDraft;
   if (args.closeExisting) {
@@ -3439,6 +3683,13 @@ function postCreateAutomation(args, audit) {
     if (args.openDraft && !draftOpened) {
       audit.warnings.push('Screenshot skipped because Jianying editor did not open.');
       return;
+    }
+    if (process.platform === 'win32' && args.openDraft) {
+      const editorCheck = windowsJianyingEditorReady(appPath, audit.draft_name);
+      if (!editorCheck.ready) {
+        audit.warnings.push(`Screenshot skipped because Jianying editor UI was not detected: ${JSON.stringify(editorCheck)}`);
+        return;
+      }
     }
     if (args.open || args.openDraft) activateJianying(appPath);
     sleep(Number(args.captureDelay ?? DEFAULTS.captureDelay));

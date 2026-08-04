@@ -38,7 +38,9 @@ Windows:
 ```
 
 Windows 打包需要先安装 Python 3.11+ 和 Inno Setup 6。脚本会使用 `.venv-windows`
-作为独立构建环境，避免和 macOS/Linux 的 `.venv` 冲突。默认输出：
+作为独立构建环境，避免和 macOS/Linux 的 `.venv` 冲突。脚本会打印 `Desktop source root`
+和 `Desktop source version`，并在生成安装包前校验打包出的 exe 内部版本是否一致；如果移动过工程目录，
+请确认这里显示的是当前要打包的新目录。默认输出：
 
 - `dist\AI-Drama-Desktop-<version>-windows-x64.zip`: 便携版。
 - `dist\AI-Drama-Desktop-Setup-<version>-windows-x64.exe`: 正式安装包。

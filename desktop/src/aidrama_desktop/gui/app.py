@@ -4695,7 +4695,24 @@ def app_icon() -> QIcon:
     return QIcon(str(icon_path))
 
 
+def handle_non_gui_args(argv: list[str]) -> bool:
+    if "--version" in argv:
+        print(__version__)
+        return True
+    if "--write-version-file" in argv:
+        index = argv.index("--write-version-file")
+        if index + 1 >= len(argv):
+            raise SystemExit("--write-version-file requires a target path")
+        target = Path(argv[index + 1])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(__version__, encoding="utf-8")
+        return True
+    return False
+
+
 def main() -> None:
+    if handle_non_gui_args(sys.argv[1:]):
+        return
     app = QApplication(sys.argv)
     app.setApplicationName("AI Drama Desktop")
     app.setWindowIcon(app_icon())

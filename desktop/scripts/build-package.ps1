@@ -69,6 +69,21 @@ $InitText = Get-Content "src\aidrama_desktop\__init__.py" -Raw
 $VersionMatch = [regex]::Match($InitText, '__version__ = "([^"]+)"')
 $Version = if ($VersionMatch.Success) { $VersionMatch.Groups[1].Value } else { "dev" }
 
+$BuildDir = Join-Path $RootDir "build"
+$DistDir = Join-Path $RootDir "dist\AI Drama Desktop"
+$OutputDir = Join-Path $RootDir "dist"
+$ExePath = Join-Path $DistDir "AI Drama Desktop.exe"
+
+Write-Host "Desktop source root: $RootDir"
+Write-Host "Desktop source version: $Version"
+
+foreach ($PathToClean in @($BuildDir, $DistDir)) {
+    if (Test-Path $PathToClean) {
+        Write-Host "Removing stale build output: $PathToClean"
+        Remove-Item $PathToClean -Recurse -Force
+    }
+}
+
 $VenvPython = New-WindowsVenvIfNeeded
 $VenvScripts = Split-Path $VenvPython -Parent
 $PyInstaller = Join-Path $VenvScripts "pyinstaller.exe"
@@ -80,11 +95,33 @@ Write-Host "Installing desktop build dependencies..."
 Write-Host "Building Windows desktop app..."
 & $PyInstaller --clean --noconfirm packaging\pyinstaller\ai-drama-desktop.spec
 
-$DistDir = Join-Path $RootDir "dist\AI Drama Desktop"
-$OutputDir = Join-Path $RootDir "dist"
-$ExePath = Join-Path $DistDir "AI Drama Desktop.exe"
 if (-not (Test-Path $ExePath)) {
     throw "PyInstaller finished, but the Windows executable was not found at $ExePath."
+}
+
+Write-Host "Verifying bundled desktop version..."
+$VersionCheckFile = Join-Path ([System.IO.Path]::GetTempPath()) "ai-drama-desktop-version-$([System.Guid]::NewGuid().ToString('N')).txt"
+try {
+    $VersionProcess = Start-Process `
+        -FilePath $ExePath `
+        -ArgumentList "--write-version-file `"$VersionCheckFile`"" `
+        -Wait `
+        -PassThru
+    if ($VersionProcess.ExitCode -ne 0) {
+        throw "Bundled executable version check failed with exit code $($VersionProcess.ExitCode)."
+    }
+    if (-not (Test-Path $VersionCheckFile)) {
+        throw "Bundled executable did not write a version check file."
+    }
+    $BundledVersion = (Get-Content $VersionCheckFile -Raw).Trim()
+    if ($BundledVersion -ne $Version) {
+        throw "Bundled executable version mismatch. Source version is $Version, but built executable reports $BundledVersion."
+    }
+    Write-Host "Bundled desktop version verified: $BundledVersion"
+} finally {
+    if (Test-Path $VersionCheckFile) {
+        Remove-Item $VersionCheckFile -Force
+    }
 }
 
 $Artifacts = @()

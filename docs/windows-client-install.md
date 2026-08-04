@@ -458,13 +458,16 @@ git --version
 在开发打包机器上执行：
 
 ```powershell
-cd desktop
+Set-Location E:\IT\ai-drama\desktop
 .\scripts\build-package.ps1
 ```
+
+如果工程不在 `E:\IT\ai-drama`，请替换成实际路径。脚本会打印 `Desktop source root`
+和 `Desktop source version`，并在生成安装包前验证打包出的 exe 内部版本，避免安装包显示新版本但客户端仍是旧版本。
 
 只生成便携版、不生成安装包：
 
 ```powershell
-cd desktop
+Set-Location E:\IT\ai-drama\desktop
 .\scripts\build-package.ps1 -SkipInstaller
 ```
