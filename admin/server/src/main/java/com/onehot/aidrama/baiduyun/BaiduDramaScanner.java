@@ -143,21 +143,27 @@ public class BaiduDramaScanner {
                 .distinct()
                 .toList();
         List<Drama> synced = new ArrayList<>();
+        List<SyncFailure> failures = new ArrayList<>();
         Set<String> foundIds = new HashSet<>();
         for (Drama drama : dramaRepository.findAllById(requestedIds)) {
             foundIds.add(drama.getId());
             if (!isBaiduDrama(drama)) {
                 LOGGER.info("Skip Baidu asset sync for non-Baidu drama: dramaId={}, source={}", drama.getId(), drama.getSource());
+                failures.add(new SyncFailure(drama.getId(), drama.getTitle(), drama.getSourcePath(), "红果来源不需要同步百度封面和简介"));
                 continue;
             }
             try {
                 synced.add(syncImportedDrama(drama));
             } catch (BaiduPanException | IllegalArgumentException exception) {
-                LOGGER.warn("Skip Baidu asset sync for {}: {}", drama.getSourcePath(), rootCauseMessage(exception));
+                String reason = rootCauseMessage(exception);
+                failures.add(new SyncFailure(drama.getId(), drama.getTitle(), drama.getSourcePath(), reason));
+                LOGGER.warn("Skip Baidu asset sync for {}: {}", drama.getSourcePath(), reason);
             }
         }
-        int failed = requestedIds.size() - synced.size();
-        return new SyncResult(requestedIds.size(), synced.size(), failed, synced);
+        requestedIds.stream()
+                .filter(id -> !foundIds.contains(id))
+                .forEach(id -> failures.add(new SyncFailure(id, null, null, "短剧不存在或已删除")));
+        return new SyncResult(requestedIds.size(), synced.size(), failures.size(), synced, failures);
     }
 
     public List<ClientAssetSyncPlan> clientAssetSyncPlans(List<String> ids) {
@@ -552,7 +558,10 @@ public class BaiduDramaScanner {
         return values;
     }
 
-    public record SyncResult(int requested, int succeeded, int failed, List<Drama> dramas) {
+    public record SyncResult(int requested, int succeeded, int failed, List<Drama> dramas, List<SyncFailure> failures) {
+    }
+
+    public record SyncFailure(String dramaId, String title, String sourcePath, String reason) {
     }
 
     public record ClientAssetSyncPlan(

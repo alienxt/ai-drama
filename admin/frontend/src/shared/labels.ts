@@ -142,7 +142,9 @@ export function aiTaskStatusLabel(status: string) {
 
 export const systemTaskTypeLabels: Record<SystemTaskType, string> = {
   BAIDU_PAN_SCAN: '百度网盘扫描',
+  BAIDU_ASSET_SYNC: '百度封面简介同步',
   HONGGUO_AI_MANGA_AUTO_IMPORT: '红果AI漫剧自动导入',
+  HONGGUO_NEW_PLAY_AUTO_IMPORT: '红果新剧自动导入',
 };
 
 export const systemTaskTypeOptions = Object.entries(systemTaskTypeLabels).map(([value, label]) => ({

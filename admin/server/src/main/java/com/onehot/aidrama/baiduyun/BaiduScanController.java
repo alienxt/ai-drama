@@ -75,12 +75,22 @@ public class BaiduScanController {
         List<String> ids = normalizeIds(request == null ? null : request.ids());
         taskExecutor.execute(() -> {
             try {
-                BaiduDramaScanner.SyncResult result = scanner.syncImportedAssets(ids);
-                LOGGER.info(
-                        "Baidu asset sync finished: requested={}, succeeded={}, failed={}",
-                        result.requested(),
-                        result.succeeded(),
-                        result.failed()
+                systemTaskService.run(
+                        SystemTaskType.BAIDU_ASSET_SYNC,
+                        "同步百度封面和简介",
+                        "manual",
+                        mapOf("ids", ids, "requested", ids.size()),
+                        () -> {
+                            BaiduDramaScanner.SyncResult result = scanner.syncImportedAssets(ids);
+                            LOGGER.info(
+                                    "Baidu asset sync finished: requested={}, succeeded={}, failed={}",
+                                    result.requested(),
+                                    result.succeeded(),
+                                    result.failed()
+                            );
+                            return result;
+                        },
+                        this::assetSyncTaskResult
                 );
             } catch (RuntimeException exception) {
                 LOGGER.error("Baidu asset sync failed", exception);
@@ -151,6 +161,19 @@ public class BaiduScanController {
                 mapOf(
                         "importedCount", dramas.size(),
                         "dramas", dramas.stream().map(this::dramaSummary).toList()
+                )
+        );
+    }
+
+    private SystemTaskService.TaskResult assetSyncTaskResult(BaiduDramaScanner.SyncResult result) {
+        return new SystemTaskService.TaskResult(
+                "同步成功 %d/%d，失败 %d".formatted(result.succeeded(), result.requested(), result.failed()),
+                mapOf(
+                        "requested", result.requested(),
+                        "succeeded", result.succeeded(),
+                        "failed", result.failed(),
+                        "dramas", result.dramas().stream().map(this::dramaSummary).toList(),
+                        "failures", result.failures()
                 )
         );
     }

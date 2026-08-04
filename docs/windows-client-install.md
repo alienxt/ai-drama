@@ -193,6 +193,18 @@ C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U pip setuptools whe
 C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U openai-whisper
 ```
 
+如果 Windows 上安装 Whisper 下载很慢，可以先配置国内 PyPI 镜像，再安装：
+
+```cmd
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+C:\AI-Drama\whisper-venv\Scripts\python.exe -m pip install -U openai-whisper
+```
+
+如果不是虚拟环境，也可以把上面的 `C:\AI-Drama\whisper-venv\Scripts\python.exe` 换成 `python`。
+
 验证 Whisper：
 
 ```cmd

@@ -598,9 +598,11 @@ export function DramasPage() {
       const result = await apiPost<DramaAssetSyncAccepted>('/admin/dramas/sync-assets', {
         ids: selectedDramaIds,
       });
-      appMessage.success(`已开始后台同步 ${result.requested} 部短剧，同步后会继续生成 AI 剧名、AI 简介和封面`);
+      appMessage.success(`已提交 ${result.requested} 部短剧的后台同步任务，可在“系统任务”查看成功/失败原因`);
       setSelectedRowKeys([]);
       setSyncModeOpen(false);
+      window.setTimeout(() => setVersion((value) => value + 1), 10000);
+      window.setTimeout(() => setVersion((value) => value + 1), 30000);
     } finally {
       setSyncingAssets(false);
     }
@@ -1136,7 +1138,7 @@ export function DramasPage() {
               <span className="asset-sync-mode-dot" />
               <span>
                 <strong>后台同步</strong>
-                <em>继续由 AWS 后台下载，适合少量或网络稳定时使用。</em>
+                <em>由后台服务器通过当前百度网盘代理下载，结果可在系统任务查看。</em>
               </span>
             </button>
           </div>

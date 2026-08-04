@@ -44,7 +44,7 @@ class BaiduScanControllerTest {
         com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
         drama.setId("drama-1");
         when(scanner.syncImportedAssets(List.of("drama-1", "drama-2")))
-                .thenReturn(new BaiduDramaScanner.SyncResult(2, 2, 0, List.of(drama)));
+                .thenReturn(new BaiduDramaScanner.SyncResult(2, 2, 0, List.of(drama), List.of()));
 
         var response = controller.syncAssets(new BaiduScanController.SyncAssetsRequest(List.of("drama-1", "drama-2")));
 

@@ -23,6 +23,13 @@ type DramaSummary = {
   status?: string;
 };
 
+type AssetSyncFailure = {
+  dramaId?: string;
+  title?: string;
+  sourcePath?: string;
+  reason?: string;
+};
+
 function asNumber(value: unknown) {
   return typeof value === 'number' ? value : 0;
 }
@@ -32,6 +39,13 @@ function asDramaSummaries(value: unknown): DramaSummary[] {
     return [];
   }
   return value.filter((item): item is DramaSummary => typeof item === 'object' && item !== null);
+}
+
+function asAssetSyncFailures(value: unknown): AssetSyncFailure[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is AssetSyncFailure => typeof item === 'object' && item !== null);
 }
 
 function JsonBlock({ value }: { value?: unknown }) {
@@ -86,6 +100,39 @@ function BaiduScanResult({ task }: { task: SystemTask }) {
             ellipsis: true,
             render: (value?: string) => value ? <Typography.Text copyable className="mono-id">{value}</Typography.Text> : '-',
           },
+        ]}
+      />
+    </section>
+  );
+}
+
+function BaiduAssetSyncResult({ task }: { task: SystemTask }) {
+  const result = task.resultPayload ?? {};
+  const failures = asAssetSyncFailures(result.failures);
+
+  return (
+    <section className="system-task-detail-section">
+      <Typography.Title level={5}>同步结果</Typography.Title>
+      <div className="system-task-metrics">
+        <Statistic title="请求短剧" value={asNumber(result.requested)} suffix="部" />
+        <Statistic title="同步成功" value={asNumber(result.succeeded)} suffix="部" />
+        <Statistic title="同步失败" value={asNumber(result.failed)} suffix="部" />
+      </div>
+      <Table<AssetSyncFailure>
+        className="system-task-drama-table"
+        rowKey={(record, index) => record.dramaId || record.sourcePath || String(index)}
+        size="small"
+        pagination={false}
+        dataSource={failures}
+        columns={[
+          { title: '短剧', dataIndex: 'title', width: 180, render: (value?: string) => value || '-' },
+          {
+            title: '来源路径',
+            dataIndex: 'sourcePath',
+            ellipsis: true,
+            render: (value?: string) => value ? <Typography.Text copyable className="mono-id">{value}</Typography.Text> : '-',
+          },
+          { title: '失败原因', dataIndex: 'reason', width: 300, render: (value?: string) => value || '-' },
         ]}
       />
     </section>
@@ -167,6 +214,7 @@ export function SystemTasksPage() {
               <Descriptions.Item label="错误">{active.errorMessage || '-'}</Descriptions.Item>
             </Descriptions>
             {active.type === 'BAIDU_PAN_SCAN' ? <BaiduScanResult task={active} /> : null}
+            {active.type === 'BAIDU_ASSET_SYNC' ? <BaiduAssetSyncResult task={active} /> : null}
             <Typography.Title level={5}>请求参数</Typography.Title>
             <JsonBlock value={active.requestPayload} />
             <Typography.Title level={5}>结果数据</Typography.Title>

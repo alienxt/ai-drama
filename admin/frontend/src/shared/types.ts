@@ -251,7 +251,7 @@ export type AiTask = {
 
 export type SystemTask = {
   id: string;
-  type: 'BAIDU_PAN_SCAN' | 'HONGGUO_AI_MANGA_AUTO_IMPORT';
+  type: 'BAIDU_PAN_SCAN' | 'BAIDU_ASSET_SYNC' | 'HONGGUO_AI_MANGA_AUTO_IMPORT' | 'HONGGUO_NEW_PLAY_AUTO_IMPORT';
   status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
   title?: string;
   triggerSource?: string;
