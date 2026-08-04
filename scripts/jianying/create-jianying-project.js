@@ -38,12 +38,12 @@ const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
 ];
 
+const MAX_TIMELINE_AUDIO_TRACKS = 2;
 const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
 
 const BGM_AUDIO_TRACK_NAMES = [
-  'A2 背景音乐',
+  'A2 背景音乐/音效',
   'A3 环境氛围',
-  'A4 转场音效',
 ];
 
 const HELP = `
@@ -1017,9 +1017,23 @@ function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
 }
 
-function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
-  if (!bgmFiles.length) return [[], [], []];
-  const plans = [[], [], []];
+function audioPlansOverlap(left, right, gapUs = 180000) {
+  const leftEnd = left.start + left.duration + gapUs;
+  const rightEnd = right.start + right.duration + gapUs;
+  return left.start < rightEnd && right.start < leftEnd;
+}
+
+function pushNonOverlappingPlan(track, plan) {
+  if (!plan) return false;
+  if (track.some((item) => audioPlansOverlap(item, plan))) return false;
+  track.push(plan);
+  return true;
+}
+
+function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng, trackLimit = 2 }) {
+  if (!bgmFiles.length || trackLimit <= 0) return [];
+  const trackCount = Math.max(1, Math.min(2, Math.round(Number(trackLimit) || 2)));
+  const plans = Array.from({ length: trackCount }, () => []);
   const makePlan = ({ audioIndex, start, duration }) => {
     const audioDuration = audioInfos[audioIndex].durationUs;
     const safeDuration = Math.min(audioDuration, duration, totalUs - start);
@@ -1046,6 +1060,9 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
     duration: bedDuration,
   });
   if (bedPlan) plans[0].push(bedPlan);
+  if (trackCount === 1) {
+    return plans.map((track) => track.sort((left, right) => left.start - right.start));
+  }
 
   const ambienceCount = totalUs >= 20000000 ? randomInt(rng, 2, 3) : 1;
   const ambienceSlot = totalUs / Math.max(1, ambienceCount + 1);
@@ -1060,7 +1077,7 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
       start: Math.min(slotStart, startMax),
       duration: desired,
     });
-    if (plan) plans[1].push(plan);
+    pushNonOverlappingPlan(plans[1], plan);
   }
 
   const effectCount = totalUs >= 20000000 ? randomInt(rng, 3, 5) : randomInt(rng, 1, 2);
@@ -1071,7 +1088,7 @@ function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
     const centered = Math.round(effectSlot * (index + 1));
     const start = Math.max(0, Math.min(totalUs - desired, centered + Math.round(randomBetween(rng, -1300000, 1300000))));
     const plan = makePlan({ audioIndex, start, duration: desired });
-    if (plan) plans[2].push(plan);
+    pushNonOverlappingPlan(plans[1], plan);
   }
   return plans.map((track) => track.sort((left, right) => left.start - right.start));
 }
@@ -1913,9 +1930,28 @@ public class Win32DraftOpen {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 "@
-[Win32DraftOpen]::SetProcessDPIAware() | Out-Null
+
+function Enable-DpiAwareness {
+  $enabled = $false
+  try { $enabled = [Win32DraftOpen]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
+  if (-not $enabled) {
+    try { [Win32DraftOpen]::SetProcessDPIAware() | Out-Null } catch {}
+  }
+}
+
+function Get-WindowDpi($handle) {
+  try {
+    $dpi = [int]([Win32DraftOpen]::GetDpiForWindow($handle))
+    if ($dpi -gt 0) { return $dpi }
+  } catch {}
+  return 96
+}
+
+Enable-DpiAwareness
 
 $draftName = ${psSingle(draftName)}
 $appPath = ${psSingle(appPath || '')}
@@ -1958,11 +1994,14 @@ function Get-WindowRect {
   if (-not [Win32DraftOpen]::GetWindowRect($p.MainWindowHandle, [ref]$rect)) {
     throw 'Jianying/CapCut window bounds unavailable'
   }
+  $dpi = Get-WindowDpi $p.MainWindowHandle
   return @{
     Left = $rect.Left
     Top = $rect.Top
     Width = [Math]::Max(1, $rect.Right - $rect.Left)
     Height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+    Dpi = $dpi
+    Scale = [Math]::Round($dpi / 96.0, 2)
   }
 }
 
@@ -2035,6 +2074,97 @@ function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
   return Find-ContainsNamedElement $root $names 2500 900
 }
 
+function Get-ControlTypeName($element) {
+  try { return [string]$element.Current.ControlType.ProgrammaticName } catch { return '' }
+}
+
+function Element-HasInvokePattern($element) {
+  try {
+    $invokePattern = $null
+    return [bool]$element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)
+  } catch {
+    return $false
+  }
+}
+
+function Find-ClickableNamedElement($root, [string[]]$names, [bool]$allowContains, [int]$timeoutMs, [int]$maxNodes) {
+  $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
+  $walkers = @(
+    [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+    [System.Windows.Automation.TreeWalker]::RawViewWalker
+  )
+  $allowedControlTypes = @(
+    'ControlType.Button',
+    'ControlType.Hyperlink',
+    'ControlType.MenuItem',
+    'ControlType.ListItem'
+  )
+  foreach ($walker in $walkers) {
+    $queue = New-Object System.Collections.Queue
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+    $visited = 0
+    while ($queue.Count -gt 0 -and $visited -lt $maxNodes -and (Get-Date) -lt $deadline) {
+      $element = $queue.Dequeue()
+      $visited += 1
+      $name = Get-ElementName $element
+      if (-not [string]::IsNullOrWhiteSpace($name)) {
+        foreach ($candidate in $names) {
+          if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+          $matched = ($name -eq $candidate) -or ($allowContains -and $name.Contains($candidate))
+          if ($matched) {
+            $controlType = Get-ControlTypeName $element
+            if ((Element-HasInvokePattern $element) -or $allowedControlTypes -contains $controlType) {
+              return $element
+            }
+          }
+        }
+      }
+      $child = $walker.GetFirstChild($element)
+      while ($child -and $visited + $queue.Count -lt $maxNodes) {
+        $queue.Enqueue($child)
+        $child = $walker.GetNextSibling($child)
+      }
+    }
+  }
+  return $null
+}
+
+function Find-ClickableAncestor($element, [int]$maxDepth = 5) {
+  $walkers = @(
+    [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+    [System.Windows.Automation.TreeWalker]::RawViewWalker
+  )
+  $allowedControlTypes = @(
+    'ControlType.Button',
+    'ControlType.Hyperlink',
+    'ControlType.MenuItem',
+    'ControlType.ListItem',
+    'ControlType.Pane',
+    'ControlType.Custom'
+  )
+  foreach ($walker in $walkers) {
+    $current = $element
+    for ($depth = 0; $depth -lt $maxDepth; $depth += 1) {
+      try { $current = $walker.GetParent($current) } catch { $current = $null }
+      if (-not $current) { break }
+      $controlType = Get-ControlTypeName $current
+      if ((Element-HasInvokePattern $current) -or $allowedControlTypes -contains $controlType) {
+        try {
+          $rect = $current.Current.BoundingRectangle
+          if (-not $rect.IsEmpty -and $rect.Width -ge 80 -and $rect.Height -ge 40) {
+            return $current
+          }
+        } catch {}
+      }
+    }
+  }
+  return $null
+}
+
 function Test-Editor($root) {
   if (Find-ContainsNamedElement $root @(
     'VETreeMainCellItem:',
@@ -2100,6 +2230,48 @@ function Test-EditorAfterClick($before) {
   return $false
 }
 
+function Test-HomePage($root) {
+  if (Find-ContainsNamedElement $root @('HomePageDraftTitle:') 1200 700) { return $true }
+  $hasStartCreating = [bool](Find-ContainsNamedElement $root @('开始创作', 'Start creating') 1200 700)
+  $hasHomeListChrome = [bool](Find-ContainsNamedElement $root @('最近删除', 'Recently deleted') 1200 700)
+  $hasHomeNavigation = [bool](Find-ContainsNamedElement $root @('首页', 'Home') 1200 700)
+  if (-not ($hasStartCreating -and ($hasHomeListChrome -or $hasHomeNavigation))) {
+    return $false
+  }
+  return [bool](Find-ContainsNamedElement $root @($draftName) 1200 700)
+}
+
+function Test-CurrentHomePage {
+  try {
+    $root = Get-RootElement
+    return [bool](Test-HomePage $root)
+  } catch {
+    return $false
+  }
+}
+
+function Test-NonHomeDraftPageAfterClick($before, [string]$label = '') {
+  try {
+    if (Test-EditorReady) { return $true }
+    $after = Get-WindowSnapshot
+    if (-not $after) { return $false }
+    $root = Get-RootElement
+    if (Test-HomePage $root) { return $false }
+    $hasDraftSignal = $false
+    if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) { $hasDraftSignal = $true }
+    if ($before -and $before.Handle -and $after.Handle -ne $before.Handle) { $hasDraftSignal = $true }
+    if ($before -and $before.Title -and $after.Title -and $after.Title -ne $before.Title) { $hasDraftSignal = $true }
+    if (-not $hasDraftSignal -and $draftName) {
+      $hasDraftSignal = [bool](Find-ContainsNamedElement $root @($draftName) 1000 700)
+    }
+    if ($hasDraftSignal) {
+      Write-Output ("stage=non-home-draft-page-accepted label={0} title={1}" -f $label, $after.Title)
+      return $true
+    }
+  } catch {}
+  return $false
+}
+
 function Click-Element($element, [int]$clickCount) {
   $scrollPattern = $null
   try {
@@ -2154,10 +2326,67 @@ function Open-DraftElement($element) {
   if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {
     throw 'Draft title UI element has no usable screen bounds'
   }
+  $ancestor = Find-ClickableAncestor $element
+  if ($ancestor) {
+    Write-Output ("stage=title-clickable-ancestor name={0} controlType={1}" -f (Get-ElementName $ancestor), (Get-ControlTypeName $ancestor))
+    $before = Get-WindowSnapshot
+    Click-Element $ancestor 1
+    if (Wait-ForEditorAfterClick $before 18) { return $true }
+    if (Try-OpenFromDraftDetail 5) { return $true }
+    if (Test-NonHomeDraftPageAfterClick $before 'title-ancestor') { return $true }
+  }
   $centerX = [int]($rect.Left + ($rect.Width / 2))
-  $coverY = [int]([Math]::Max(0, $rect.Top - 55))
-  Click-Point $centerX $coverY 2
-  Start-Sleep -Milliseconds 1200
+  $centerY = [int]($rect.Top + ($rect.Height / 2))
+  $clickPoints = @(
+    @{ Label = 'title-cover-55'; X = $centerX; Y = [int]([Math]::Max(0, $rect.Top - 55)); Count = 2 },
+    @{ Label = 'title-cover-85'; X = $centerX; Y = [int]([Math]::Max(0, $rect.Top - 85)); Count = 2 },
+    @{ Label = 'title-center'; X = $centerX; Y = $centerY; Count = 2 }
+  )
+  foreach ($point in $clickPoints) {
+    $before = Get-WindowSnapshot
+    Write-Output ("stage=title-click-point label={0} x={1} y={2}" -f $point.Label, $point.X, $point.Y)
+    Click-Point ([int]$point.X) ([int]$point.Y) ([int]$point.Count)
+    Start-Sleep -Milliseconds 1200
+    if (Wait-ForEditorAfterClick $before 18) { return $true }
+    if (Try-OpenFromDraftDetail 5) { return $true }
+    if (Test-NonHomeDraftPageAfterClick $before $point.Label) { return $true }
+    if (-not (Test-CurrentHomePage)) {
+      Write-Output ("stage=not-homepage-stop-after-title-click label={0}" -f $point.Label)
+      return $false
+    }
+  }
+  return $false
+}
+
+function Try-OpenFromDraftDetail([int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
+  $buttonNames = @(
+    '打开草稿',
+    '进入草稿',
+    '编辑草稿',
+    '继续编辑',
+    '继续剪辑',
+    '开始编辑',
+    '打开',
+    '编辑',
+    'Open draft',
+    'Open',
+    'Edit',
+    'Continue editing'
+  )
+  while ((Get-Date) -lt $deadline) {
+    if (Test-EditorReady) { return $true }
+    $root = Get-RootElement
+    $button = Find-ClickableNamedElement $root $buttonNames $true 1500 900
+    if ($button) {
+      Write-Output ("stage=detail-open-candidate name={0} controlType={1}" -f (Get-ElementName $button), (Get-ControlTypeName $button))
+      $before = Get-WindowSnapshot
+      Click-Element $button 1
+      if (Wait-ForEditorAfterClick $before 25) { return $true }
+      return $false
+    }
+    Start-Sleep -Milliseconds 700
+  }
   return $false
 }
 
@@ -2213,10 +2442,17 @@ function Try-OpenNewestDraftByWindowClick {
     $before = Get-WindowSnapshot
     if (Open-DraftElement $titleElement) { return $true }
     if (Wait-ForEditorAfterClick $before 45) { return $true }
+    if (Try-OpenFromDraftDetail 8) { return $true }
+    if (Test-NonHomeDraftPageAfterClick $before 'title-final') { return $true }
     return $false
   }
   Write-Output 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
+  if (Try-OpenFromDraftDetail 4) { return $true }
+  if (-not (Test-CurrentHomePage)) {
+    Write-Output 'stage=not-homepage-stop-before-ratio-clicks'
+    return $false
+  }
   $draftClickPoints = @(
     @(0.187, 0.408),
     @(0.265, 0.408),
@@ -2234,12 +2470,23 @@ function Try-OpenNewestDraftByWindowClick {
     Write-Output ("stage=window-click-draft-ratio-{0} x={1} y={2}" -f ($i + 1), $point[0], $point[1])
     Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
     if (Wait-ForEditorAfterClick $before 18) { return $true }
+    if (Try-OpenFromDraftDetail 4) { return $true }
+    if (Test-NonHomeDraftPageAfterClick $before ("ratio-{0}" -f ($i + 1))) { return $true }
+    if (-not (Test-CurrentHomePage)) {
+      Write-Output ("stage=not-homepage-stop-after-ratio-click-{0}" -f ($i + 1))
+      return $false
+    }
   }
   return $false
 }
 
 $root = Get-RootElement
-Write-Output 'stage=window-ready'
+try {
+  $snapshot = Get-WindowSnapshot
+  Write-Output ("stage=window-ready title={0} rect={1},{2},{3}x{4} dpi={5} scale={6}" -f $snapshot.Title, $snapshot.Rect.Left, $snapshot.Rect.Top, $snapshot.Rect.Width, $snapshot.Rect.Height, $snapshot.Rect.Dpi, $snapshot.Rect.Scale)
+} catch {
+  Write-Output 'stage=window-ready'
+}
 if (Try-OpenNewestDraftByWindowClick) {
   Write-Output 'opened-by-window-click'
   exit 0
@@ -2367,10 +2614,15 @@ public class Win32Capture {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-[Win32Capture]::SetProcessDPIAware() | Out-Null
+$dpiAware = $false
+try { $dpiAware = [Win32Capture]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
+if (-not $dpiAware) {
+  try { [Win32Capture]::SetProcessDPIAware() | Out-Null } catch {}
+}
 $draftName = ${psSingle(captureDraftName)}
 $appPath = ${psSingle(captureAppPath)}
 $baseName = ''
@@ -2522,9 +2774,23 @@ public class Win32DebugDraftOpen {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 "@
-  [Win32DebugDraftOpen]::SetProcessDPIAware() | Out-Null
+  $dpiAware = $false
+  try { $dpiAware = [Win32DebugDraftOpen]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
+  if (-not $dpiAware) {
+    try { [Win32DebugDraftOpen]::SetProcessDPIAware() | Out-Null } catch {}
+  }
+
+  function Get-WindowDpi($handle) {
+    try {
+      $dpi = [int]([Win32DebugDraftOpen]::GetDpiForWindow($handle))
+      if ($dpi -gt 0) { return $dpi }
+    } catch {}
+    return 96
+  }
 
   function Get-CandidateProcesses {
     $baseName = ''
@@ -2565,6 +2831,7 @@ public class Win32DebugDraftOpen {
     if (-not [Win32DebugDraftOpen]::GetWindowRect($p.MainWindowHandle, [ref]$rect)) {
       throw 'Jianying/CapCut window bounds unavailable'
     }
+    $dpi = Get-WindowDpi $p.MainWindowHandle
     return [ordered]@{
       left = $rect.Left
       top = $rect.Top
@@ -2572,6 +2839,8 @@ public class Win32DebugDraftOpen {
       bottom = $rect.Bottom
       width = [Math]::Max(1, $rect.Right - $rect.Left)
       height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+      dpi = $dpi
+      scale = [Math]::Round($dpi / 96.0, 2)
     }
   }
 
@@ -2898,7 +3167,15 @@ function createProject(args) {
       size: fs.statSync(audioPath).size,
     });
   });
-  const audioPlans = makeAudioPlan({ bgmFiles, audioInfos, totalUs: videoInfo.durationUs, rng });
+  const dialogueTrackCount = dialogueAudioTrack?.segments.length ? 1 : 0;
+  const bgmTrackLimit = Math.max(0, MAX_TIMELINE_AUDIO_TRACKS - dialogueTrackCount);
+  const audioPlans = makeAudioPlan({
+    bgmFiles,
+    audioInfos,
+    totalUs: videoInfo.durationUs,
+    rng,
+    trackLimit: bgmTrackLimit,
+  });
   const audioTracks = audioPlans
     .map((plans, trackIndex) => ({
       name: BGM_AUDIO_TRACK_NAMES[trackIndex] || `A${trackIndex + 2} 情绪配乐`,
