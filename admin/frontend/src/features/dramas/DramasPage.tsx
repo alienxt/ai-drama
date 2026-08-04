@@ -25,6 +25,9 @@ type HongguoPanelMode = 'manga' | 'new' | 'top' | 'screening';
 const HONGGUO_SYNC_TIMEOUT_MS = 180000;
 const OTHER_CHANNEL_SYNC_TIMEOUT_MS = 180000;
 const OTHER_CHANNEL_IMPORT_TIMEOUT_MS = 180000;
+const ASSET_SYNC_ACCEPT_TIMEOUT_MS = 60000;
+const ASSET_SYNC_CLIENT_PLAN_TIMEOUT_MS = 180000;
+const ASSET_SYNC_CLIENT_COMPLETE_TIMEOUT_MS = 120000;
 const DOUYIN_OTHER_CHANNEL_CODE = 'DOUYIN';
 const XIFAN_SEARCH_CHANNEL_CODE = 'XIFAN';
 const XIFAN_TOP_CHANNEL_CODE = 'XIFAN_TOP';
@@ -597,6 +600,8 @@ export function DramasPage() {
     try {
       const result = await apiPost<DramaAssetSyncAccepted>('/admin/dramas/sync-assets', {
         ids: selectedDramaIds,
+      }, {
+        timeout: ASSET_SYNC_ACCEPT_TIMEOUT_MS,
       });
       appMessage.success(`已提交 ${result.requested} 部短剧的后台同步任务，可在“系统任务”查看成功/失败原因`);
       setSelectedRowKeys([]);
@@ -631,7 +636,9 @@ export function DramasPage() {
     setSyncModeOpen(false);
     setClientSyncOpen(true);
     try {
-      const plan = await apiPost<DramaClientAssetSyncPlan>('/admin/dramas/sync-assets/client-plan', { ids });
+      const plan = await apiPost<DramaClientAssetSyncPlan>('/admin/dramas/sync-assets/client-plan', { ids }, {
+        timeout: ASSET_SYNC_CLIENT_PLAN_TIMEOUT_MS,
+      });
       setClientSyncItems(plan.items.map((item) => ({
         dramaId: item.dramaId,
         title: item.title,
@@ -663,7 +670,7 @@ export function DramasPage() {
             formData.append('cover', cover, coverFileName(item.coverPath));
           }
           await http.post<DramaClientAssetSyncComplete>(`/admin/dramas/sync-assets/client-complete/${item.dramaId}`, formData, {
-            timeout: 120000,
+            timeout: ASSET_SYNC_CLIENT_COMPLETE_TIMEOUT_MS,
           });
           updateClientSyncItem(item.dramaId, { status: 'success', detail: '已保存，后台会继续生成 AI 剧名、AI 简介和封面' });
         } catch (error) {

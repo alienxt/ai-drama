@@ -41,24 +41,6 @@ const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
 ];
 
-const AUX_TEXT_TRACK_NAMES = [
-  'T2 效果/调色标记',
-  'T3 贴纸/包装标记',
-];
-
-const AUX_TEXT_LABELS = [
-  '调色',
-  '转场',
-  '补帧',
-  '贴纸',
-  '卡点',
-  '字幕校对',
-  '封面标记',
-  '节奏点',
-  '画面包装',
-  '镜头补充',
-];
-
 const MEDIA_PANEL_AUDIO_IMPORT_DELAY_US = 60 * 60 * 1000000;
 
 const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
@@ -1058,38 +1040,6 @@ function makeOverlayVideoSegments({
 
 function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
-}
-
-function makeAuxiliaryTextTrack({
-  labels,
-  totalUs,
-  rng,
-  textMaterials,
-  scale = 0.12,
-  y = -1.18,
-  color = '#D8B4FE',
-  textSize = 8,
-}) {
-  const segments = [];
-  const safeTotal = Math.max(totalUs, 1);
-  labels.forEach((label, index) => {
-    const duration = Math.min(
-      Math.round(randomBetween(rng, 1800000, 5200000)),
-      Math.max(600000, safeTotal - 100000),
-    );
-    const startMax = Math.max(0, safeTotal - duration);
-    const start = Math.round(randomBetween(rng, 0, startMax));
-    const material = makeTextMaterial({
-      id: uuid(),
-      text: label,
-      textSize,
-      color,
-      alpha: 0.0,
-    });
-    textMaterials.push(material);
-    segments.push(makeTextSegment(material.id, makeTimelineCaption(label, start, duration), index, scale, y));
-  });
-  return segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start);
 }
 
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
@@ -2997,22 +2947,6 @@ function createProject(args) {
     names: SUBTITLE_TRACK_NAMES,
     count: 1,
   });
-  const auxTracks = AUX_TEXT_TRACK_NAMES.map((name, trackIndex) => {
-    const labels = AUX_TEXT_LABELS.filter((_, index) => index % AUX_TEXT_TRACK_NAMES.length === trackIndex);
-    return {
-      name,
-      segments: makeAuxiliaryTextTrack({
-        labels,
-        totalUs: videoInfo.durationUs,
-        rng,
-        textMaterials,
-        scale: 0.1,
-        y: trackIndex === 0 ? -1.1 : -1.24,
-        color: trackIndex === 0 ? '#FDE68A' : '#93C5FD',
-        textSize: 7,
-      }),
-    };
-  }).filter((track) => track.segments.length);
   const allAudioTracks = [
     ...(dialogueAudioTrack?.segments.length ? [dialogueAudioTrack] : []),
     ...audioTracks,
@@ -3035,10 +2969,6 @@ function createProject(args) {
   });
   let textTrackRenderIndex = 0;
   subtitleTracks.forEach((track) => {
-    draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
-    textTrackRenderIndex += 1;
-  });
-  auxTracks.forEach((track) => {
     draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
     textTrackRenderIndex += 1;
   });
@@ -3117,9 +3047,9 @@ function createProject(args) {
       background_audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       text_segments: textSegments.length,
       subtitle_text_tracks: subtitleTracks.length,
-      auxiliary_text_segments: auxTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      auxiliary_text_segments: 0,
       audio_tracks: allAudioTracks.length,
-      auxiliary_text_tracks: auxTracks.length,
+      auxiliary_text_tracks: 0,
       total_tracks: draft.tracks.length,
     },
     materials: {
