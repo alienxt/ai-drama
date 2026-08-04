@@ -41,6 +41,24 @@ const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
 ];
 
+const AUX_TEXT_TRACK_NAMES = [
+  'T2 效果/调色标记',
+  'T3 贴纸/包装标记',
+];
+
+const AUX_TEXT_LABELS = [
+  '调色',
+  '转场',
+  '补帧',
+  '贴纸',
+  '卡点',
+  '字幕校对',
+  '封面标记',
+  '节奏点',
+  '画面包装',
+  '镜头补充',
+];
+
 const MEDIA_PANEL_AUDIO_IMPORT_DELAY_US = 60 * 60 * 1000000;
 
 const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
@@ -1042,6 +1060,38 @@ function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
 }
 
+function makeAuxiliaryTextTrack({
+  labels,
+  totalUs,
+  rng,
+  textMaterials,
+  scale = 0.12,
+  y = -1.18,
+  color = '#D8B4FE',
+  textSize = 8,
+}) {
+  const segments = [];
+  const safeTotal = Math.max(totalUs, 1);
+  labels.forEach((label, index) => {
+    const duration = Math.min(
+      Math.round(randomBetween(rng, 1800000, 5200000)),
+      Math.max(600000, safeTotal - 100000),
+    );
+    const startMax = Math.max(0, safeTotal - duration);
+    const start = Math.round(randomBetween(rng, 0, startMax));
+    const material = makeTextMaterial({
+      id: uuid(),
+      text: label,
+      textSize,
+      color,
+      alpha: 0.0,
+    });
+    textMaterials.push(material);
+    segments.push(makeTextSegment(material.id, makeTimelineCaption(label, start, duration), index, scale, y));
+  });
+  return segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start);
+}
+
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
   if (!bgmFiles.length) return [[], [], []];
   const plans = [[], [], []];
@@ -1937,8 +1987,10 @@ public class Win32DraftOpen {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
+[Win32DraftOpen]::SetProcessDPIAware() | Out-Null
 
 $draftName = ${psSingle(draftName)}
 $appPath = ${psSingle(appPath || '')}
@@ -1953,7 +2005,11 @@ function Get-TargetProcess {
       $_.ProcessName -match 'Jianying|CapCut|VideoFusion' -or
       ($baseName -and $_.ProcessName -eq $baseName)
     )
-  })
+  } | Sort-Object Id)
+  if ($draftName) {
+    $draftWindow = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
+    if ($draftWindow) { return $draftWindow }
+  }
   if ($baseName) {
     $exact = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
     if ($exact) { return $exact }
@@ -2100,16 +2156,20 @@ function Test-EditorReady {
 
 function Test-EditorAfterClick($before) {
   try {
+    if (Test-EditorReady) { return $true }
     $after = Get-WindowSnapshot
     if (-not $after) { return $false }
-    if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) { return $true }
+    if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) {
+      Write-Output ("stage=editor-signal title-contains-draft title={0}" -f $after.Title)
+      return $false
+    }
     if ($before -and $before.Handle -and $after.Handle -ne $before.Handle -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
       Write-Output ("stage=editor-signal handle-changed title={0}" -f $after.Title)
-      return $true
+      return $false
     }
     if ($before -and $before.Title -and $after.Title -and $after.Title -ne $before.Title -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
       Write-Output ("stage=editor-signal title-changed title={0}" -f $after.Title)
-      return $true
+      return $false
     }
   } catch {}
   return $false
@@ -2232,10 +2292,24 @@ function Try-OpenNewestDraftByWindowClick {
   }
   Write-Output 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
-  $before = Get-WindowSnapshot
-  Write-Output 'stage=window-click-first-draft'
-  Click-WindowRatio 0.153 0.331 2
-  if (Wait-ForEditorAfterClick $before 45) { return $true }
+  $draftClickPoints = @(
+    @(0.187, 0.408),
+    @(0.265, 0.408),
+    @(0.345, 0.408),
+    @(0.425, 0.408),
+    @(0.187, 0.480),
+    @(0.265, 0.480),
+    @(0.153, 0.331),
+    @(0.153, 0.382)
+  )
+  for ($i = 0; $i -lt $draftClickPoints.Count; $i++) {
+    if (Wait-ForEditor 1) { return $true }
+    $point = $draftClickPoints[$i]
+    $before = Get-WindowSnapshot
+    Write-Output ("stage=window-click-draft-ratio-{0} x={1} y={2}" -f ($i + 1), $point[0], $point[1])
+    Click-WindowRatio ([double]$point[0]) ([double]$point[1]) 2
+    if (Wait-ForEditorAfterClick $before 18) { return $true }
+  }
   return $false
 }
 
@@ -2346,6 +2420,8 @@ function captureScreenshot(output, options = {}) {
     return output;
   }
   if (process.platform === 'win32') {
+    const captureDraftName = options.draftName || '';
+    const captureAppPath = options.appPath || '';
     const script = options.fullScreen ? `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -2370,7 +2446,26 @@ public class Win32Capture {
 }
 "@
 [Win32Capture]::SetProcessDPIAware() | Out-Null
-$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -match "Jianying|CapCut|VideoFusion" } | Select-Object -First 1
+$draftName = ${psSingle(captureDraftName)}
+$appPath = ${psSingle(captureAppPath)}
+$baseName = ''
+if ($appPath) {
+  try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+}
+$processes = @(Get-Process | Where-Object {
+  $_.MainWindowHandle -ne 0 -and (
+    $_.ProcessName -match "Jianying|CapCut|VideoFusion" -or
+    ($baseName -and $_.ProcessName -eq $baseName)
+  )
+} | Sort-Object Id)
+$p = $null
+if ($draftName) {
+  $p = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
+}
+if (-not $p -and $baseName) {
+  $p = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
+}
+if (-not $p) { $p = $processes | Select-Object -First 1 }
 if (-not $p) { throw "Jianying/CapCut window not found" }
 [Win32Capture]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
 [Win32Capture]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
@@ -2947,6 +3042,22 @@ function createProject(args) {
     names: SUBTITLE_TRACK_NAMES,
     count: 1,
   });
+  const auxTracks = AUX_TEXT_TRACK_NAMES.map((name, trackIndex) => {
+    const labels = AUX_TEXT_LABELS.filter((_, index) => index % AUX_TEXT_TRACK_NAMES.length === trackIndex);
+    return {
+      name,
+      segments: makeAuxiliaryTextTrack({
+        labels,
+        totalUs: videoInfo.durationUs,
+        rng,
+        textMaterials,
+        scale: 0.1,
+        y: trackIndex === 0 ? -1.1 : -1.24,
+        color: trackIndex === 0 ? '#FDE68A' : '#93C5FD',
+        textSize: 7,
+      }),
+    };
+  }).filter((track) => track.segments.length);
   const allAudioTracks = [
     ...(dialogueAudioTrack?.segments.length ? [dialogueAudioTrack] : []),
     ...audioTracks,
@@ -2969,6 +3080,10 @@ function createProject(args) {
   });
   let textTrackRenderIndex = 0;
   subtitleTracks.forEach((track) => {
+    draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
+    textTrackRenderIndex += 1;
+  });
+  auxTracks.forEach((track) => {
     draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
     textTrackRenderIndex += 1;
   });
@@ -3047,9 +3162,9 @@ function createProject(args) {
       background_audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       text_segments: textSegments.length,
       subtitle_text_tracks: subtitleTracks.length,
-      auxiliary_text_segments: 0,
+      auxiliary_text_segments: auxTracks.reduce((sum, track) => sum + track.segments.length, 0),
       audio_tracks: allAudioTracks.length,
-      auxiliary_text_tracks: 0,
+      auxiliary_text_tracks: auxTracks.length,
       total_tracks: draft.tracks.length,
     },
     materials: {
@@ -3105,6 +3220,7 @@ function postCreateAutomation(args, audit) {
       audit.screenshot_mode = args.fullScreenCapture ? 'full_screen' : 'app_window';
       audit.screenshot_path = captureScreenshot(screenshot, {
         appPath,
+        draftName: audit.draft_name,
         fullScreen: args.fullScreenCapture,
       });
     } catch (error) {
