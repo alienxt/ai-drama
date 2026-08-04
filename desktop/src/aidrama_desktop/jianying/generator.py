@@ -13,7 +13,7 @@ from aidrama_desktop.config.settings import ffprobe_path_for_ffmpeg
 from aidrama_desktop.subprocess_utils import hidden_subprocess_kwargs
 
 
-DEFAULT_CLIP_COUNT = 36
+DEFAULT_CLIP_COUNT = 24
 DEFAULT_TIMEOUT_SECONDS = 8 * 60
 TOOL_ENV_KEY = "AIDRAMA_JIANYING_TOOL_PATH"
 NODE_ENV_KEY = "AIDRAMA_NODE_PATH"

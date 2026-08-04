@@ -11,7 +11,7 @@ const DEFAULTS = {
   captionScale: 0.18,
   captionTextSize: 8,
   captureDelay: 2,
-  clipCount: 36,
+  clipCount: 24,
   editorDelay: 8,
   homepageDelay: 5,
   homeNavClickXRatio: 0.05,
@@ -30,36 +30,13 @@ const AUDIO_DISPLAY_STEMS = [
 ];
 
 const VIDEO_TRACK_NAMES = [
-  'V1 主线剪辑',
-  'V2 补画面/插入镜头',
-  'V3 特写/反应镜头',
-  'V4 转场/叠化素材',
-  'V5 画面包装层',
+  'V1 正片画面',
+  'V2 补画面/转场层',
 ];
 
 const SUBTITLE_TRACK_NAMES = [
   'ST1 中文对白字幕',
 ];
-
-const AUX_TEXT_TRACK_NAMES = [
-  'T2 效果/调色标记',
-  'T3 贴纸/包装标记',
-];
-
-const AUX_TEXT_LABELS = [
-  '调色',
-  '转场',
-  '补帧',
-  '贴纸',
-  '卡点',
-  '字幕校对',
-  '封面标记',
-  '节奏点',
-  '画面包装',
-  '镜头补充',
-];
-
-const MEDIA_PANEL_AUDIO_IMPORT_DELAY_US = 60 * 60 * 1000000;
 
 const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
 
@@ -93,7 +70,7 @@ Common options:
                           AI_DRAMA_TEMPLATE_DRAFT is missing. Disabled by default.
   --draft-root <dir>      Jianying draft root. Defaults to the local OS path.
   --name <name>           Draft name. Defaults to "<video-name>_剪辑工程".
-  --clip-count <n>        Physical video clips on the timeline. Default: 36.
+  --clip-count <n>        Physical video clips on the timeline. Default: 24.
   --output-dir <dir>      Where result JSON and optional screenshot are written.
   --overwrite             Replace an existing draft with the same name.
 
@@ -173,26 +150,6 @@ function localId() {
 
 function nowUs() {
   return Date.now() * 1000;
-}
-
-function mediaPanelImportTimeUs(timestampUs, kind, index) {
-  if (kind === 'audio') {
-    return Math.max(1000000, timestampUs - MEDIA_PANEL_AUDIO_IMPORT_DELAY_US - index);
-  }
-  return timestampUs + index;
-}
-
-function mediaPanelImportTimeSeconds(timestampUs, kind, index) {
-  return Math.floor(mediaPanelImportTimeUs(timestampUs, kind, index) / 1000000);
-}
-
-function touchFileMtimeUs(file, timeUs) {
-  try {
-    const time = new Date(Math.floor(timeUs / 1000));
-    fs.utimesSync(file, time, time);
-  } catch {
-    // File timestamps are only a sorting hint for Jianying's media panel.
-  }
 }
 
 function toUs(seconds) {
@@ -1008,17 +965,17 @@ function makeOverlayVideoSegments({
   totalUs,
 }) {
   if (sourceSegments.length < 8 || totalUs < 12000000) return [];
-  const desiredCount = Math.min(randomInt(rng, 10, 14), Math.max(2, Math.floor(sourceSegments.length / 2.4)));
+  const desiredCount = Math.min(randomInt(rng, 4, 7), Math.max(1, Math.floor(sourceSegments.length / 4)));
   const candidateIndexes = [];
   for (let index = 2; index < sourceSegments.length - 1; index += 1) {
-    if (index % 2 === 0 || index % 5 === 0) candidateIndexes.push(index);
+    if (index % 3 === 0 || index % 5 === 0) candidateIndexes.push(index);
   }
   const segments = [];
   while (segments.length < desiredCount && candidateIndexes.length) {
     const pickedOffset = randomInt(rng, 0, candidateIndexes.length - 1);
     const [sourceIndex] = candidateIndexes.splice(pickedOffset, 1);
     const source = sourceSegments[sourceIndex];
-    const maxDuration = Math.min(source.target_timerange.duration, Math.round(randomBetween(rng, 800000, 2200000)));
+    const maxDuration = Math.min(source.target_timerange.duration, Math.round(randomBetween(rng, 900000, 1800000)));
     if (maxDuration <= 500000) continue;
     const offsetMax = Math.max(0, source.target_timerange.duration - maxDuration);
     const sourceOffset = Math.round(randomBetween(rng, 0, offsetMax));
@@ -1058,38 +1015,6 @@ function makeOverlayVideoSegments({
 
 function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
-}
-
-function makeAuxiliaryTextTrack({
-  labels,
-  totalUs,
-  rng,
-  textMaterials,
-  scale = 0.12,
-  y = -1.18,
-  color = '#D8B4FE',
-  textSize = 8,
-}) {
-  const segments = [];
-  const safeTotal = Math.max(totalUs, 1);
-  labels.forEach((label, index) => {
-    const duration = Math.min(
-      Math.round(randomBetween(rng, 1800000, 5200000)),
-      Math.max(600000, safeTotal - 100000),
-    );
-    const startMax = Math.max(0, safeTotal - duration);
-    const start = Math.round(randomBetween(rng, 0, startMax));
-    const material = makeTextMaterial({
-      id: uuid(),
-      text: label,
-      textSize,
-      color,
-      alpha: 0.0,
-    });
-    textMaterials.push(material);
-    segments.push(makeTextSegment(material.id, makeTimelineCaption(label, start, duration), index, scale, y));
-  });
-  return segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start);
 }
 
 function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng }) {
@@ -1245,15 +1170,15 @@ function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, t
   meta.tm_draft_modified = timestampUs;
   meta.tm_duration = maxDuration;
   meta.draft_timeline_materials_size_ = totalVideoSize + totalAudioSize;
-  const videoEntries = videoMetas.map((videoMeta, index) => ({
-    create_time: mediaPanelImportTimeSeconds(timestampUs, 'video', index),
+  const videoEntries = videoMetas.map((videoMeta) => ({
+    create_time: Math.floor(timestampUs / 1000000),
     duration: videoMeta.durationUs,
     extra_info: videoMeta.name,
     file_Path: `./Resources/media/${videoMeta.name}`,
     height: videoMeta.height,
     id: videoMeta.localMaterialId,
-    import_time: mediaPanelImportTimeSeconds(timestampUs, 'video', index),
-    import_time_ms: mediaPanelImportTimeUs(timestampUs, 'video', index),
+    import_time: Math.floor(timestampUs / 1000000),
+    import_time_ms: timestampUs,
     item_source: 1,
     md5: '',
     metetype: 'video',
@@ -1262,15 +1187,15 @@ function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, t
     type: 0,
     width: videoMeta.width,
   }));
-  const audioEntries = audioMetas.map((audioMeta, index) => ({
-    create_time: mediaPanelImportTimeSeconds(timestampUs, 'audio', index),
+  const audioEntries = audioMetas.map((audioMeta) => ({
+    create_time: Math.floor(timestampUs / 1000000),
     duration: audioMeta.durationUs,
     extra_info: audioMeta.name,
     file_Path: `./Resources/audio/${audioMeta.name}`,
     height: 0,
     id: audioMeta.localMaterialId,
-    import_time: mediaPanelImportTimeSeconds(timestampUs, 'audio', index),
-    import_time_ms: mediaPanelImportTimeUs(timestampUs, 'audio', index),
+    import_time: Math.floor(timestampUs / 1000000),
+    import_time_ms: timestampUs,
     item_source: 1,
     md5: '',
     metetype: 'audio',
@@ -1296,23 +1221,23 @@ function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
   const store = fs.existsSync(file) ? readJson(file) : { draft_materials: [], draft_virtual_store: [] };
   const materialRows = [
     { creation_time: 0, display_name: '', filter_type: 0, id: '', import_time: 0, import_time_us: 0, sort_sub_type: 0, sort_type: 0 },
-    ...videoMetas.map((videoMeta, index) => ({
-      creation_time: mediaPanelImportTimeSeconds(timestampUs, 'video', index),
+    ...videoMetas.map((videoMeta) => ({
+      creation_time: Math.floor(timestampUs / 1000000),
       display_name: videoMeta.name,
       filter_type: 0,
       id: videoMeta.localMaterialId,
-      import_time: mediaPanelImportTimeSeconds(timestampUs, 'video', index),
-      import_time_us: mediaPanelImportTimeUs(timestampUs, 'video', index),
+      import_time: Math.floor(timestampUs / 1000000),
+      import_time_us: timestampUs,
       sort_sub_type: 0,
       sort_type: 0,
     })),
-    ...audioMetas.map((audioMeta, index) => ({
-      creation_time: mediaPanelImportTimeSeconds(timestampUs, 'audio', index),
+    ...audioMetas.map((audioMeta) => ({
+      creation_time: Math.floor(timestampUs / 1000000),
       display_name: audioMeta.name,
       filter_type: 0,
       id: audioMeta.localMaterialId,
-      import_time: mediaPanelImportTimeSeconds(timestampUs, 'audio', index),
-      import_time_us: mediaPanelImportTimeUs(timestampUs, 'audio', index),
+      import_time: Math.floor(timestampUs / 1000000),
+      import_time_us: timestampUs,
       sort_sub_type: 0,
       sort_type: 0,
     })),
@@ -2889,7 +2814,6 @@ function createProject(args) {
       size: fs.statSync(clip.output).size,
       width: videoInfo.width,
     });
-    touchFileMtimeUs(clip.output, mediaPanelImportTimeUs(timestampUs, 'video', index));
     const extraRefs = makeExtraRefs(draft.materials, baseExtras, videoExtraRefKeys, (key, material) => {
       if (key === 'speeds') {
         material.speed = speed;
@@ -2914,8 +2838,6 @@ function createProject(args) {
     const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
     const materialId = uuid();
     const materialLocalId = localId();
-    const audioSortIndex = audioMetas.length;
-    touchFileMtimeUs(dialogueAudio.output, mediaPanelImportTimeUs(timestampUs, 'audio', audioSortIndex));
     const dialogueMaterial = makeAudioMaterial({
       id: materialId,
       localMaterialId: materialLocalId,
@@ -2960,8 +2882,6 @@ function createProject(args) {
     fs.copyFileSync(file, audioPath);
     const materialId = uuid();
     const materialLocalId = localId();
-    const audioSortIndex = audioMetas.length;
-    touchFileMtimeUs(audioPath, mediaPanelImportTimeUs(timestampUs, 'audio', audioSortIndex));
     const audioMaterial = makeAudioMaterial({
       id: materialId,
       localMaterialId: materialLocalId,
@@ -3021,43 +2941,16 @@ function createProject(args) {
     sourceSegments: videoSegments,
     totalUs: videoInfo.durationUs,
   });
-  const mainVideoTracks = namedSegmentTracks({
-    segments: videoSegments,
-    names: VIDEO_TRACK_NAMES.slice(0, 3),
-    count: Math.min(3, videoSegments.length),
-  });
-  const overlayVideoTracks = overlayVideoSegments.length
-    ? namedSegmentTracks({
-      segments: overlayVideoSegments,
-      names: VIDEO_TRACK_NAMES.slice(3),
-      count: Math.min(2, overlayVideoSegments.length),
-    })
-    : [];
   const videoTracks = [
-    ...mainVideoTracks,
-    ...overlayVideoTracks,
+    { name: VIDEO_TRACK_NAMES[0], segments: videoSegments },
+    ...(overlayVideoSegments.length ? [{ name: VIDEO_TRACK_NAMES[1], segments: overlayVideoSegments }] : []),
   ];
   const subtitleTracks = namedSegmentTracks({
     segments: textSegments,
     names: SUBTITLE_TRACK_NAMES,
     count: 1,
   });
-  const auxTracks = AUX_TEXT_TRACK_NAMES.map((name, trackIndex) => {
-    const labels = AUX_TEXT_LABELS.filter((_, index) => index % AUX_TEXT_TRACK_NAMES.length === trackIndex);
-    return {
-      name,
-      segments: makeAuxiliaryTextTrack({
-        labels,
-        totalUs: videoInfo.durationUs,
-        rng,
-        textMaterials,
-        scale: 0.1,
-        y: trackIndex === 0 ? -1.1 : -1.24,
-        color: trackIndex === 0 ? '#FDE68A' : '#93C5FD',
-        textSize: 7,
-      }),
-    };
-  }).filter((track) => track.segments.length);
+  const auxTracks = [];
   const allAudioTracks = [
     ...(dialogueAudioTrack?.segments.length ? [dialogueAudioTrack] : []),
     ...audioTracks,
@@ -3154,9 +3047,7 @@ function createProject(args) {
     tracks: {
       video_segments: videoSegments.length,
       video_tracks: videoTracks.length,
-      main_video_tracks: mainVideoTracks.length,
       overlay_video_segments: overlayVideoSegments.length,
-      overlay_video_tracks: overlayVideoTracks.length,
       audio_segments: allAudioTracks.reduce((sum, track) => sum + track.segments.length, 0),
       dialogue_audio_segments: dialogueAudioTrack?.segments.length || 0,
       background_audio_segments: audioTracks.reduce((sum, track) => sum + track.segments.length, 0),
