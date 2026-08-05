@@ -1,5 +1,5 @@
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Form, Input, Modal, Switch, Tag, Tooltip } from 'antd';
+import { Alert, Button, Form, Input, Modal, Switch, Tag, Tooltip, Typography } from 'antd';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
@@ -8,11 +8,80 @@ import { appMessage } from '../../shared/appMessage';
 import { apiGetPage, apiPut } from '../../shared/http';
 import type { SystemConfig } from '../../shared/types';
 
+type ConfigHelp = {
+  description: string;
+  values?: string;
+};
+
+const CONFIG_HELP: Record<string, ConfigHelp> = {
+  'openai.provider': {
+    description: 'OpenAI 服务开关。official 使用官方 OpenAI 配置；thirdParty 使用第三方 OpenAI-compatible 配置。',
+    values: '可选值：official、thirdParty。兼容别名：tokenfree、proxy、custom、third-party、third_party。',
+  },
+  'openai.baseUrl': {
+    description: '官方 OpenAI API 地址，仅 openai.provider=official 时使用。',
+    values: '默认值：https://api.openai.com/v1',
+  },
+  'openai.apiKey': {
+    description: '官方 OpenAI API Key，仅 openai.provider=official 时使用。',
+  },
+  'openai.textModel': {
+    description: '官方文本模型，仅 openai.provider=official 时使用。',
+  },
+  'openai.imageModel': {
+    description: '官方图片模型，仅 openai.provider=official 时使用。',
+  },
+  'openai.thirdParty.baseUrl': {
+    description: '第三方 OpenAI-compatible API 地址，仅 openai.provider=thirdParty 时使用。',
+    values: 'tokenfree 当前值：https://tokenfree.biz/v1',
+  },
+  'openai.thirdParty.apiKey': {
+    description: '第三方 OpenAI-compatible API Key，仅 openai.provider=thirdParty 时使用。',
+  },
+  'openai.thirdParty.textModel': {
+    description: '第三方文本模型，仅 openai.provider=thirdParty 时使用。',
+  },
+  'openai.thirdParty.imageModel': {
+    description: '第三方图片模型，仅 openai.provider=thirdParty 时使用。',
+  },
+  'openai.thirdParty.extraHeaders': {
+    description: '第三方接口需要附加的请求头，支持每行一个 Header，格式为 Header-Name: value。',
+    values: 'tokenfree 当前值：x-openai-actor-authorization: local-image-extension',
+  },
+  'openai.thirdParty.disableResponseStorage': {
+    description: '第三方文本请求是否追加 store=false，避免代理侧持久化响应。',
+    values: '可选值：true、false。建议保持 true。',
+  },
+};
+
+function configHelp(key?: string) {
+  if (!key) {
+    return undefined;
+  }
+  return CONFIG_HELP[key.trim()];
+}
+
+function ConfigHelpText({ configKey }: { configKey: string }) {
+  const help = configHelp(configKey);
+  if (!help) {
+    return <Typography.Text type="secondary">-</Typography.Text>;
+  }
+  return (
+    <Tooltip title={help.values ? `${help.description}\n${help.values}` : help.description}>
+      <Typography.Text type="secondary" ellipsis style={{ maxWidth: 440 }}>
+        {help.description}
+      </Typography.Text>
+    </Tooltip>
+  );
+}
+
 export function ConfigsPage() {
   const [version, setVersion] = useState(0);
   const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
+  const editingKey = Form.useWatch('key', form);
+  const editingHelp = configHelp(editingKey);
 
   function showEditor(config?: SystemConfig) {
     form.setFieldsValue(config ?? { secret: false });
@@ -58,6 +127,7 @@ export function ConfigsPage() {
         columns={[
           { title: '配置项', dataIndex: 'key' },
           { title: '值', dataIndex: 'value' },
+          { title: '说明', dataIndex: 'key', render: (key: string) => <ConfigHelpText configKey={key} /> },
           { title: '敏感', dataIndex: 'secret', render: (secret: boolean) => secret ? <Tag color="orange">脱敏</Tag> : <Tag>普通</Tag> },
           {
             title: '操作',
@@ -74,6 +144,15 @@ export function ConfigsPage() {
           <Form.Item name="key" label="配置项" rules={[{ required: true }]}>
             <Input placeholder="baidu.scanRoot" />
           </Form.Item>
+          {editingHelp ? (
+            <Alert
+              showIcon
+              type="info"
+              message={editingHelp.description}
+              description={editingHelp.values}
+              style={{ marginBottom: 16 }}
+            />
+          ) : null}
           <Form.Item name="value" label="配置值" rules={[{ required: true }]}>
             <Input.TextArea rows={4} />
           </Form.Item>
