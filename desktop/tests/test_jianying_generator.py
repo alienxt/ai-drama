@@ -54,8 +54,8 @@ def test_windows_draft_open_matches_legacy_full_description_flow():
     assert "title.GetParentControl()" in helper_source
     assert "draft_card.Click(simulateMove=False)" in helper_source
     assert 'if depth != 2:' in helper_source
-    assert 'if "homepage" in class_name:' in helper_source
-    assert 'if "mainwindow" in class_name:' in helper_source
+    assert 'if "homepage" in lowered_class:' in helper_source
+    assert 'if "mainwindow" in lowered_class:' in helper_source
     assert "python-uia-draft-title-observed" in helper_source
     assert '"uiautomation>=2; sys_platform == \'win32\'"' in pyproject_source
     assert 'hiddenimports=["uiautomation"] if sys.platform.startswith("win") else []' in (
@@ -64,18 +64,32 @@ def test_windows_draft_open_matches_legacy_full_description_flow():
     assert 'if "--jianying-uia-helper" in argv:' in gui_source
     assert "OCR" not in source.upper()
     assert "OCR" not in helper_source.upper()
-    assert "$rootName -eq '剪映专业版' -and $rootClassName -match 'MainWindow'" in editor_check
+    assert "$draftReady" in editor_check
+    assert "jianying-editor-ready" in editor_check
     assert "Click-WindowRatio" not in windows_debug
     assert "winOpenDraftByTitle(appPath, draftName, args.windowsUiaHelperCommand)" in windows_debug
 
 
-def test_jianying_tool_registers_competitor_native_strategy():
+def test_jianying_tool_registers_platform_safe_and_competitor_native_strategies():
     tool = Path(__file__).parents[2] / "scripts" / "jianying" / "create-jianying-project.js"
     source = tool.read_text(encoding="utf-8")
+    platform_safe_config = source.split("id: 'platform-safe-v1'", 1)[1].split(
+        "id: 'layered-proof-v1'", 1
+    )[0]
     competitor_config = source.split("id: 'competitor-native-v1'", 1)[1].split(
         "const DEFAULT_TIMELINE_STRATEGY_ID", 1
     )[0]
 
+    assert "id: 'platform-safe-v1'" in source
+    assert "label: '平台安全工程'" in source
+    assert "const DEFAULT_TIMELINE_STRATEGY_ID = 'platform-safe-v1'" in source
+    assert "sourceClipCount: 12" in platform_safe_config
+    assert "timelineClipCount: 12" in platform_safe_config
+    assert "maxTimelineAudioTracks: 2" in platform_safe_config
+    assert "maxBgmAudioTracks: 1" in platform_safe_config
+    assert "name: '调色'" in platform_safe_config
+    assert "nativeEffectTracks" not in platform_safe_config
+    assert "nativeStickerTracks" not in platform_safe_config
     assert "id: 'competitor-native-v1'" in source
     assert "label: '竞品原生工程'" in source
     assert "sourceClipCount: 5" in source

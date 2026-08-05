@@ -268,6 +268,7 @@ class FakeJianyingGenerator:
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         screenshot_path.write_bytes(b"png")
         strategy_labels = {
+            "platform-safe-v1": "平台安全工程",
             "layered-proof-v1": "标准分轨工程",
             "competitor-native-v1": "竞品原生工程",
         }
@@ -644,16 +645,16 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
         for index, episode in enumerate(range(2, 6), start=1)
     ]
     assert publisher.metadata["jianyingProjectScreenshots"] == screenshots
-    assert publisher.metadata["jianyingProjectStrategy"] == "layered-proof-v1"
-    assert publisher.metadata["jianyingProjectStrategyLabel"] == "标准分轨工程"
+    assert publisher.metadata["jianyingProjectStrategy"] == "platform-safe-v1"
+    assert publisher.metadata["jianyingProjectStrategyLabel"] == "平台安全工程"
     for call in jianying_generator.calls:
         assert call["srt"] is not None
         assert call["srt"].name.endswith("_中文字幕.srt")
         assert call["srt"].parent.name == "subtitles"
-        assert call["strategy"] == "layered-proof-v1"
+        assert call["strategy"] == "platform-safe-v1"
     for screenshot in screenshots:
         assert screenshot in publisher.metadata["buyDramaContractImages"]
-    assert ("生成剪映工程图：神医归来（标准分轨工程，随机 4 集）", "task-1") in progress_events
+    assert ("生成剪映工程图：神医归来（平台安全工程，随机 4 集）", "task-1") in progress_events
     assert ("剪映工程图已生成：神医归来（4 张）", "task-1") in progress_events
 
 
@@ -686,8 +687,14 @@ def test_jianying_project_rejects_cross_drama_source_video(tmp_path):
     assert any("剪映工程素材校验失败" in stage for stage, _ in progress_events)
 
 
-def test_jianying_strategy_registry_includes_competitor_native_version():
-    assert JIANYING_PROJECT_STRATEGIES == ("layered-proof-v1", "competitor-native-v1")
+def test_jianying_strategy_registry_exposes_all_project_strategies():
+    assert JIANYING_PROJECT_STRATEGIES == (
+        "platform-safe-v1",
+        "layered-proof-v1",
+        "competitor-native-v1",
+    )
+    assert JIANYING_PROJECT_STRATEGY_LABELS["platform-safe-v1"] == "平台安全工程"
+    assert JIANYING_PROJECT_STRATEGY_LABELS["layered-proof-v1"] == "标准分轨工程"
     assert JIANYING_PROJECT_STRATEGY_LABELS["competitor-native-v1"] == "竞品原生工程"
 
 

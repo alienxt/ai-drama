@@ -31,6 +31,44 @@ const AUDIO_DISPLAY_STEMS = [
 
 const TIMELINE_STRATEGIES = [
   {
+    id: 'platform-safe-v1',
+    label: '平台安全工程',
+    bgmVolume: 0.26,
+    captionAlpha: 0.0,
+    captionScale: 0.16,
+    captionScaleOverride: 0.16,
+    captionTextSize: 8,
+    sourceClipCount: 12,
+    timelineClipCount: 12,
+    speedChoices: [0.95, 1.05],
+    speedEditProbability: 0.04,
+    videoClipMotionPattern: ['none', 'none', 'zoom', 'none', 'none', 'pan'],
+    videoTrackNames: [
+      '正片画面',
+    ],
+    overlayVideo: false,
+    subtitleTrackNames: [
+      '中文字幕',
+    ],
+    subtitleTrackCount: 1,
+    maxTimelineAudioTracks: 2,
+    maxBgmAudioTracks: 1,
+    dialogueAudioMode: 'source-clips',
+    dialogueAudioTrackName: '原声',
+    hideAudioInMediaPanel: true,
+    bgmAudioTrackNames: [
+      '主音乐',
+    ],
+    nativeFilterTracks: [
+      {
+        name: '调色',
+        items: [
+          { name: '自然', startFraction: 0.06, durationFraction: 0.82, intensity: 0.18 },
+        ],
+      },
+    ],
+  },
+  {
     id: 'layered-proof-v1',
     label: '标准分轨工程',
     bgmVolume: 0.35,
@@ -140,11 +178,16 @@ const TIMELINE_STRATEGIES = [
     ],
   },
 ];
-const DEFAULT_TIMELINE_STRATEGY_ID = 'layered-proof-v1';
+const DEFAULT_TIMELINE_STRATEGY_ID = 'platform-safe-v1';
 const RECOMMENDED_WINDOWS_JIANYING_VERSION = '5.9.0.11632';
 const MAX_UIA_AUTOMATION_JIANYING_MAJOR = 6;
 
 const NATIVE_FILTERS = {
+  自然: {
+    name: '自然',
+    effectId: '7127821314198342943',
+    resourceId: '7127821314198342943',
+  },
   粉瓷: {
     name: '粉瓷',
     effectId: '7127667757998411044',
@@ -3688,11 +3731,28 @@ function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [in
   return $null
 }
 
-function Test-Editor($root) {
+function Test-Editor($root, $process) {
   $rootName = [string]$root.Current.Name
   $rootClassName = [string]$root.Current.ClassName
+  $processName = [string]$process.ProcessName
+  $windowTitle = [string]$process.MainWindowTitle
+  $baseName = Get-AppBaseName
+  $isHome = $rootClassName -match 'HomePage'
+  $classReady = $rootClassName -match 'MainWindow'
+  $nameReady = (
+    $rootName -match '剪映|Jianying|JianyingPro|CapCut|VideoFusion' -or
+    $windowTitle -match '剪映|Jianying|JianyingPro|CapCut|VideoFusion' -or
+    $processName -match 'Jianying|CapCut|VideoFusion' -or
+    ($baseName -and $processName -eq $baseName)
+  )
+  $draftReady = (
+    $draftName -and (
+      ($rootName -and $rootName.Contains($draftName)) -or
+      ($windowTitle -and $windowTitle.Contains($draftName))
+    )
+  )
   return @{
-    ready = [bool]($rootName -eq '剪映专业版' -and $rootClassName -match 'MainWindow')
+    ready = [bool]((-not $isHome) -and (($classReady -and $nameReady) -or $draftReady))
     rootName = $rootName
     rootClassName = $rootClassName
   }
@@ -3707,10 +3767,10 @@ if (-not $p) {
 [Win32EditorCheck]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 Start-Sleep -Milliseconds 500
 $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
-$editor = Test-Editor $root
+$editor = Test-Editor $root $p
 [ordered]@{
   ready = [bool]$editor.ready
-  reason = if ($editor.ready) { 'legacy-main-window-ready' } else { 'legacy-main-window-not-detected' }
+  reason = if ($editor.ready) { 'jianying-editor-ready' } else { 'jianying-editor-not-detected' }
   processName = $p.ProcessName
   title = $p.MainWindowTitle
   rootName = $editor.rootName

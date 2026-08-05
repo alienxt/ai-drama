@@ -79,12 +79,17 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v20-native-above-subtitles"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v21-platform-safe"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_SCREENSHOT_DIRNAME = "剪映工程截图"
 JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图预览"
-JIANYING_PROJECT_STRATEGIES = ("layered-proof-v1", "competitor-native-v1")
+JIANYING_PROJECT_STRATEGIES = (
+    "platform-safe-v1",
+    "layered-proof-v1",
+    "competitor-native-v1",
+)
 JIANYING_PROJECT_STRATEGY_LABELS = {
+    "platform-safe-v1": "平台安全工程",
     "layered-proof-v1": "标准分轨工程",
     "competitor-native-v1": "竞品原生工程",
 }

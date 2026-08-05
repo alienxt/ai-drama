@@ -15,7 +15,7 @@ node scripts/jianying/create-jianying-project.js \
   --bgm "/path/to/bgm.mp3" \
   --name "剧名_第99集_剪辑工程" \
   --template "/path/to/template-draft" \
-  --strategy "competitor-native-v1" \
+  --strategy "platform-safe-v1" \
   --clip-count 24 \
   --overwrite
 ```
@@ -26,11 +26,12 @@ Inputs:
 - `--srt`: optional subtitle file. SRT timestamps become Jianying text segments.
 - `--bgm`: optional BGM file. Can be repeated; files become audio materials and timeline segments.
 - `--template`: optional explicit clean template draft. If omitted, the tool creates a built-in clean seed draft.
-- `--strategy`: optional timeline proof strategy. Built-ins are `layered-proof-v1`（标准分轨工程）and `competitor-native-v1`（竞品原生工程）. If omitted, the desktop runner chooses one strategy per drama and reuses it for all four proof screenshots.
+- `--strategy`: optional timeline proof strategy. Built-ins include `platform-safe-v1`（平台安全工程）, `layered-proof-v1`（标准分轨工程）, and `competitor-native-v1`（竞品原生工程）. The desktop runner exposes all three and chooses one per drama when no specific strategy is requested.
 
 Strategy policy:
 
 - Multiple strategy templates can coexist in the tool.
+- `platform-safe-v1` is the audit-safe default: one main video track, one subtitle track, clip-matched original audio, at most one music bed, one light native color track, and hidden audio cards in the media panel.
 - `competitor-native-v1` mirrors a competitor-style native proof layout: 5 media-pool video clips, 10 V1 timeline cuts, clip-matched original audio, 3 staggered music tracks, hidden imported subtitle text, native filter/effect/sticker tracks, and hidden audio cards in the media panel.
 - Each generated proof draft records `strategy_id` and `strategy_label` in `codex_audit.json` and `jianying_project_result.json`.
 - The desktop runner writes the chosen strategy into `.jianying-project-materials.json`, so cached screenshots are reused only when the capture version and requested strategy match.
@@ -73,7 +74,7 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: requires Jianying 6 or below and recommends `5.9.0.11632`. The Windows desktop package includes the same `uiautomation` library used by pyJianYingDraft. Its hidden helper searches `TextControl` at depth 2, reads property `FullDescription` (`30159`) directly, matches `HomePageDraftTitle:<full draft name>` exactly, clicks the title control's parent card with `simulateMove=False`, and accepts success only after the top-level class changes from `HomePage` to `MainWindow`. Jianying 7 or above is rejected before launch because it no longer exposes the required legacy controls. There is no OCR, truncated-title, or fixed-coordinate fallback.
+- Windows: requires Jianying 6 or below and recommends `5.9.0.11632`. The Windows desktop package includes the same `uiautomation` library used by pyJianYingDraft. Its hidden helper waits for the Jianying window, recognizes it by process path/name, title, or known Jianying/CapCut tokens, searches `TextControl` at depth 2, reads property `FullDescription` (`30159`) directly, matches `HomePageDraftTitle:<full draft name>` exactly, clicks the title control's parent card with `simulateMove=False`, and accepts editor success by a MainWindow class or a draft-title window match. Jianying 7 or above is rejected before launch because it no longer exposes the required legacy controls. There is no OCR, truncated-title, or fixed-coordinate fallback.
 
 Configure the legacy Windows executable with `--jianying-app`, `JIANYING_APP`, or the desktop client's “剪映程序地址” setting. Versioned Jianying installations under common `Apps/<version>` directories are detected automatically, with `5.9.0.11632` preferred.
 
