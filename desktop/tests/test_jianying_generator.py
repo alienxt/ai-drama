@@ -33,6 +33,11 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     assert "LegacyIAccessiblePattern" in windows_open
     assert "SelectionItemPattern" in windows_open
     assert "--force-renderer-accessibility=complete" in windows_launch
+    assert "AutomationProperty]::LookupById(30159)" in windows_open
+    assert "function Get-ElementFullDescription" in windows_open
+    assert "GetCurrentPropertyValue($property, $true)" in windows_open
+    assert "return Get-ElementFullDescription $element" in windows_open
+    assert "Test-UiaTreeUsable $root 250 1" in windows_open
     assert "PropertyCondition]::new" in windows_open
     assert ".FindFirst(" in windows_open
     assert "Find-ExactNamedElementInTargetWindow $root $draftNames" in windows_open

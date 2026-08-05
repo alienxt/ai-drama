@@ -2090,21 +2090,48 @@ function Get-WindowSnapshot {
   }
 }
 
+function Get-UiaFullDescriptionProperty {
+  try { return [System.Windows.Automation.AutomationProperty]::LookupById(30159) } catch { return $null }
+}
+
+function Get-ElementFullDescription($element) {
+  try {
+    $property = Get-UiaFullDescriptionProperty
+    if (-not $property) { return '' }
+    $value = $element.GetCurrentPropertyValue($property, $true)
+    if ([object]::ReferenceEquals($value, [System.Windows.Automation.AutomationElement]::NotSupported)) {
+      return ''
+    }
+    return [string]$value
+  } catch {
+    return ''
+  }
+}
+
 function Get-ElementName($element) {
-  try { return [string]$element.Current.Name } catch { return '' }
+  try {
+    $name = [string]$element.Current.Name
+    if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
+  } catch {}
+  return Get-ElementFullDescription $element
 }
 
 function Find-NativeExactNamedElement($root, [string[]]$names) {
+  $properties = @([System.Windows.Automation.AutomationElement]::NameProperty)
+  $fullDescriptionProperty = Get-UiaFullDescriptionProperty
+  if ($fullDescriptionProperty) { $properties += $fullDescriptionProperty }
   foreach ($candidate in $names) {
     if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-    try {
-      $condition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::NameProperty,
-        [string]$candidate
-      )
-      $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-      if ($element) { return $element }
-    } catch {}
+    foreach ($property in $properties) {
+      try {
+        $condition = [System.Windows.Automation.PropertyCondition]::new(
+          $property,
+          [string]$candidate
+        )
+        $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($element) { return $element }
+      } catch {}
+    }
   }
   return $null
 }
@@ -2332,7 +2359,7 @@ function Test-UiaTreeUsable($root, [int]$maxNodes = 250, [int]$requiredNamed = 5
 function Wait-UiaTreeUsable($root, [int]$seconds = 8) {
   $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
   while ((Get-Date) -lt $deadline) {
-    if (Test-UiaTreeUsable $root 250 5) {
+    if (Test-UiaTreeUsable $root 250 1) {
       Write-ProgressLine 'stage=uia-tree-ready'
       return $true
     }
