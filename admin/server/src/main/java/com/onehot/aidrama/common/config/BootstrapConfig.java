@@ -132,6 +132,7 @@ public class BootstrapConfig {
     }
 
     private void bootstrapOpenAiConfig(SystemConfigService configService) {
+        configService.putIfAbsent("openai.provider", "official", false);
         configService.putIfAbsent("openai.baseUrl", "https://api.openai.com/v1", false);
         configService.putIfAbsent("openai.apiKey", "", true);
         configService.putIfAbsent("openai.textModel", "gpt-5.5", false);
@@ -142,6 +143,20 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.imageOutputFormat", "jpeg", false);
         configService.putIfAbsent("openai.connectTimeoutSeconds", "30", false);
         configService.putIfAbsent("openai.readTimeoutSeconds", "300", false);
+        configService.putIfAbsent("openai.thirdParty.baseUrl", "https://tokenfree.biz/v1", false);
+        configService.putIfAbsent("openai.thirdParty.apiKey", "", true);
+        configService.putIfAbsent("openai.thirdParty.textModel", "gpt-5.5", false);
+        configService.putIfAbsent("openai.thirdParty.imageModel", "gpt-image-2", false);
+        configService.putIfAbsent("openai.thirdParty.imageSize", "1024x1536", false);
+        configService.putIfAbsent("openai.thirdParty.videoCoverImageSize", "1536x1024", false);
+        configService.putIfAbsent("openai.thirdParty.imageQuality", "medium", false);
+        configService.putIfAbsent("openai.thirdParty.imageOutputFormat", "jpeg", false);
+        configService.putIfAbsent(
+                "openai.thirdParty.extraHeaders",
+                "x-openai-actor-authorization: local-image-extension",
+                false
+        );
+        configService.putIfAbsent("openai.thirdParty.disableResponseStorage", "true", false);
         putDefaultTitlePrompt(configService);
         putDefaultSummaryPrompt(configService);
         putDefaultMetadataPrompt(configService);
