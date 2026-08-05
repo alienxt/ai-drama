@@ -5,7 +5,7 @@ from pathlib import Path
 from aidrama_desktop.jianying.generator import JianyingProjectGenerator
 
 
-def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
+def test_windows_draft_open_matches_legacy_full_description_flow():
     tool = Path(__file__).parents[2] / "scripts" / "jianying" / "create-jianying-project.js"
     source = tool.read_text(encoding="utf-8")
     windows_open = source.split("function winOpenDraftByTitle", 1)[1].split(
@@ -13,6 +13,10 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     )[0]
     windows_launch = source.split("function openJianying", 1)[1].split(
         "function sleep", 1
+    )[0]
+    legacy_open = windows_open.split("function Wait-LegacyWindowClass", 1)[1]
+    editor_check = source.split("function windowsJianyingEditorReady", 1)[1].split(
+        "function postCreateAutomation", 1
     )[0]
     windows_debug = source.split("function debugWindowsOpen", 1)[1].split(
         "function createProject", 1
@@ -29,29 +33,29 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     assert "execPowerShellScript(script" in windows_open
     assert "'-Command', script" not in windows_open
     assert "function Write-ProgressLine" in windows_open
-    assert "InvokePattern" in windows_open
-    assert "LegacyIAccessiblePattern" in windows_open
-    assert "SelectionItemPattern" in windows_open
-    assert "--force-renderer-accessibility=complete" in windows_launch
+    assert "assertWindowsJianyingAutomationCompatible(appPath)" in windows_launch
+    assert "spawn(appPath, []," in windows_launch
+    assert "--force-renderer-accessibility=complete" not in source
+    assert "RECOMMENDED_WINDOWS_JIANYING_VERSION = '5.9.0.11632'" in source
+    assert "MAX_UIA_AUTOMATION_JIANYING_MAJOR = 6" in source
+    assert "Jianying 7 or above is not supported" in source
     assert "AutomationProperty]::LookupById(30159)" in windows_open
     assert "function Get-ElementFullDescription" in windows_open
     assert "GetCurrentPropertyValue($property, $true)" in windows_open
-    assert "return Get-ElementFullDescription $element" in windows_open
-    assert "Test-UiaTreeUsable $root 250 1" in windows_open
+    assert '$targetDescription = "HomePageDraftTitle:$draftName"' in legacy_open
     assert "PropertyCondition]::new" in windows_open
-    assert ".FindFirst(" in windows_open
-    assert "Find-ExactNamedElementInTargetWindow $root $draftNames" in windows_open
-    assert "function Test-EllipsizedDraftTitleMatch" in windows_open
-    assert "targetTitle.StartsWith($prefix) -and $targetTitle.EndsWith($suffix)" in windows_open
-    assert "Find-UniqueEllipsizedDraftTitleElement $root $draftName 1200" in windows_open
-    assert "draft-title-ellipsis-ambiguous" in windows_open
-    assert "Find-ExactNamedElementInTargetWindow $initialRoot $initialDraftNames" in windows_open
-    assert "-not $initialDraftElement -and -not (Wait-UiaTreeUsable $initialRoot 8)" in windows_open
-    assert "uia-tree-unavailable-after-accessibility-launch" in windows_open
-    assert "Write-UiaTreeSummary (Get-RootElement) 500 60" in windows_open
-    assert "Try-OpenFirstDraftByHomeLayout" not in windows_open
-    assert "Click-WindowRatio" not in windows_open
-    assert "XRatio" not in windows_open
+    assert "function Find-ExactLegacyDraftTitle" in legacy_open
+    assert "$levelOne = $walker.GetFirstChild($root)" in legacy_open
+    assert "$levelTwo = $walker.GetFirstChild($levelOne)" in legacy_open
+    assert "$levelTwo.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text" in legacy_open
+    assert "(Get-ElementFullDescription $levelTwo) -eq $targetDescription" in legacy_open
+    assert "TreeWalker]::ControlViewWalker.GetParent($titleElement)" in legacy_open
+    assert "Click-Element $draftCard 1" in legacy_open
+    assert "Wait-LegacyWindowClass 'MainWindow' 35" in legacy_open
+    assert "Find-UniqueEllipsizedDraftTitleElement" not in legacy_open
+    assert "Try-OpenFromDraftDetail" not in legacy_open
+    assert "OCR" not in source.upper()
+    assert "$rootName -eq '剪映专业版' -and $rootClassName -match 'MainWindow'" in editor_check
     assert "Click-WindowRatio" not in windows_debug
     assert "winOpenDraftByTitle(appPath, draftName)" in windows_debug
 

@@ -64,7 +64,9 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: launches Jianying/CapCut with Chromium/CEF renderer accessibility enabled and first locates the exact `HomePageDraftTitle:<draft name>` element with a native UI Automation `NameProperty` condition. If the client exposes only a visually truncated title, an ellipsis-aware fallback requires both the visible prefix and suffix to match the generated draft name and rejects matches at multiple card locations. It prefers `InvokePattern`, `LegacyIAccessiblePattern`, or `SelectionItemPattern` before using coordinates derived from the matched element. Fixed window-ratio guesses are not used; failures include a bounded UIA tree summary for diagnosis.
+- Windows: requires Jianying 6 or below and recommends `5.9.0.11632`. The tool matches UIA property `FullDescription` (`30159`) exactly against `HomePageDraftTitle:<full draft name>`, clicks that title control's parent draft card, and accepts success only after the top-level class changes from `HomePage` to `MainWindow`. Jianying 7 or above is rejected before launch because it no longer exposes the required legacy controls. There is no OCR, truncated-title, or fixed-coordinate fallback.
+
+Configure the legacy Windows executable with `--jianying-app`, `JIANYING_APP`, or the desktop client's “剪映程序地址” setting. Versioned Jianying installations under common `Apps/<version>` directories are detected automatically, with `5.9.0.11632` preferred.
 
 Pass `--full-screen-capture` only when you intentionally need the entire desktop screenshot.
 
