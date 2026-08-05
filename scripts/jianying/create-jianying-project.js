@@ -98,6 +98,24 @@ function fail(message) {
   throw new Error(message);
 }
 
+function execPowerShellScript(script, options = {}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-drama-jianying-powershell-'));
+  const scriptPath = path.join(tempDir, 'script.ps1');
+  fs.writeFileSync(scriptPath, `\uFEFF${String(script)}`, 'utf8');
+  try {
+    return execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scriptPath,
+    ], options);
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function normalizeKey(key) {
   return key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 }
@@ -2986,7 +3004,7 @@ try {
 throw "Could not open the named Jianying draft through UI Automation: $draftName"
 `;
   try {
-    return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    return execPowerShellScript(script, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 135000,
@@ -3155,7 +3173,7 @@ $bmp.Save(${psSingle(output)}, [System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose()
 $bmp.Dispose()
 `;
-    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { stdio: 'ignore' });
+    execPowerShellScript(script, { stdio: 'ignore' });
     return output;
   }
   fail(`Screenshot capture is not implemented for platform: ${process.platform}`);
@@ -3389,7 +3407,7 @@ $result | ConvertTo-Json -Depth 12
 `;
 
   try {
-    const stdout = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    const stdout = execPowerShellScript(script, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
@@ -3955,7 +3973,7 @@ $editor = Test-Editor $root
 } | ConvertTo-Json -Compress
 `;
   try {
-    const output = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    const output = execPowerShellScript(script, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 20000,

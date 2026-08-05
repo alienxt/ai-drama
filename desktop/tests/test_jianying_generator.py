@@ -17,8 +17,17 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     windows_debug = source.split("function debugWindowsOpen", 1)[1].split(
         "function createProject", 1
     )[0]
+    powershell_runner = source.split("function execPowerShellScript", 1)[1].split(
+        "function normalizeKey", 1
+    )[0]
 
     assert "Write-Output" not in windows_open
+    assert "'-File'" in powershell_runner
+    assert "mkdtempSync" in powershell_runner
+    assert "\\uFEFF" in powershell_runner
+    assert "rmSync" in powershell_runner
+    assert "execPowerShellScript(script" in windows_open
+    assert "'-Command', script" not in windows_open
     assert "function Write-ProgressLine" in windows_open
     assert "InvokePattern" in windows_open
     assert "LegacyIAccessiblePattern" in windows_open
