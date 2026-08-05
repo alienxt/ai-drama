@@ -64,7 +64,7 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: launches Jianying/CapCut, maximizes and brings the window forward with PowerShell/User32, clicks candidate draft-card positions inside the Jianying/CapCut window, verifies the window title when possible, then captures only the Jianying/CapCut main window rectangle.
+- Windows: launches Jianying/CapCut, locates the exact `HomePageDraftTitle:<draft name>` element with UI Automation, and prefers `InvokePattern`, `LegacyIAccessiblePattern`, or `SelectionItemPattern` before using coordinates derived from that matched element. It validates stable editor-only UI signals before capturing the Jianying/CapCut window. Fixed window-ratio draft-card guesses are not used by the production path.
 
 Pass `--full-screen-capture` only when you intentionally need the entire desktop screenshot.
 
@@ -80,7 +80,7 @@ node scripts\jianying\create-jianying-project.js `
   --jianying-app "C:\Users\Administrator\AppData\Local\JianyingPro\JianyingPro.exe"
 ```
 
-It does not create a draft and does not require `--video`. It writes `windows_open_debug.json`, `before-open.png`, and `after-open.png` to `--output-dir`, including the Jianying window rectangle, each clicked coordinate, window titles before/after clicks, and the final screenshot. If `--name` is omitted, it tries to use the newest draft from `--draft-root` / `JIANYING_DRAFT_ROOT`.
+It does not create a draft and does not require `--video`. It reuses the production named-draft UI Automation path and writes `windows_open_debug.json`, `before-open.png`, and `after-open.png` to `--output-dir`. The report includes the UIA action log, editor-detection signals, process/window snapshots, and screenshots. If `--name` is omitted, it tries to use the newest draft from `--draft-root` / `JIANYING_DRAFT_ROOT`.
 
 ## App overrides
 

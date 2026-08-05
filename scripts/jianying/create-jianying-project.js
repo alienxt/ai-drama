@@ -76,7 +76,7 @@ Common options:
 
 Proof/screenshot options:
   --open                  Launch Jianying after creating the draft.
-  --open-draft            Best-effort UI automation: open the newest draft card.
+  --open-draft            Best-effort UI automation: open the generated draft by name.
   --capture               Save a desktop screenshot after the optional open/open-draft step.
   --screenshot <file>     Screenshot path. Implies --capture.
   --capture-delay <sec>   Extra wait before screenshot. Default: 2.
@@ -1929,6 +1929,10 @@ function winOpenDraftByTitle(appPath, draftName) {
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+function Write-ProgressLine([object]$message) {
+  [Console]::Out.WriteLine([string]$message)
+  [Console]::Out.Flush()
+}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
@@ -2017,12 +2021,12 @@ function Wait-TargetProcess([int]$seconds = 60) {
   while ((Get-Date) -lt $deadline) {
     $p = Get-TargetProcess
     if ($p) {
-      Write-Output ("stage=window-found pid={0} name={1} title={2}" -f $p.Id, $p.ProcessName, $p.MainWindowTitle)
+      Write-ProgressLine ("stage=window-found pid={0} name={1} title={2}" -f $p.Id, $p.ProcessName, $p.MainWindowTitle)
       return $p
     }
     Start-Sleep -Milliseconds 700
   }
-  Write-Output ("stage=window-not-found appPath={0} baseName={1} visibleWindows={2}" -f $appPath, (Get-AppBaseName), (Format-VisibleWindowCandidates))
+  Write-ProgressLine ("stage=window-not-found appPath={0} baseName={1} visibleWindows={2}" -f $appPath, (Get-AppBaseName), (Format-VisibleWindowCandidates))
   throw 'Jianying/CapCut process window not found'
 }
 
@@ -2125,6 +2129,52 @@ function Get-ControlTypeName($element) {
   try { return [string]$element.Current.ControlType.ProgrammaticName } catch { return '' }
 }
 
+function Get-SupportedPatternNames($element) {
+  try {
+    $names = @($element.GetSupportedPatterns() | ForEach-Object {
+      ([string]$_.ProgrammaticName).Replace('PatternIdentifiers.Pattern', 'Pattern')
+    })
+    if ($names.Count) { return ($names -join ',') }
+  } catch {}
+  return 'none'
+}
+
+function Format-ElementDiagnostics($element, [string]$label, [int]$depth) {
+  if (-not $element) { return ("stage=uia-element label={0} depth={1} missing=true" -f $label, $depth) }
+  try {
+    $rect = $element.Current.BoundingRectangle
+    $bounds = if ($rect.IsEmpty) {
+      'empty'
+    } else {
+      ('{0},{1},{2}x{3}' -f [int]$rect.Left, [int]$rect.Top, [int]$rect.Width, [int]$rect.Height)
+    }
+    return ("stage=uia-element label={0} depth={1} name={2} automationId={3} className={4} frameworkId={5} controlType={6} enabled={7} offscreen={8} focusable={9} bounds={10} patterns={11}" -f
+      $label,
+      $depth,
+      (Get-ElementName $element),
+      [string]$element.Current.AutomationId,
+      [string]$element.Current.ClassName,
+      [string]$element.Current.FrameworkId,
+      (Get-ControlTypeName $element),
+      [bool]$element.Current.IsEnabled,
+      [bool]$element.Current.IsOffscreen,
+      [bool]$element.Current.IsKeyboardFocusable,
+      $bounds,
+      (Get-SupportedPatternNames $element))
+  } catch {
+    return ("stage=uia-element label={0} depth={1} error={2}" -f $label, $depth, $_.Exception.Message)
+  }
+}
+
+function Write-ElementDiagnostics($element, [string]$label, [int]$maxDepth = 6) {
+  $current = $element
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  for ($depth = 0; $depth -le $maxDepth -and $current; $depth += 1) {
+    Write-ProgressLine (Format-ElementDiagnostics $current $label $depth)
+    try { $current = $walker.GetParent($current) } catch { $current = $null }
+  }
+}
+
 function Element-HasInvokePattern($element) {
   try {
     $invokePattern = $null
@@ -2132,6 +2182,20 @@ function Element-HasInvokePattern($element) {
   } catch {
     return $false
   }
+}
+
+function Element-HasSemanticPattern($element) {
+  if (Element-HasInvokePattern $element) { return $true }
+  foreach ($patternId in @(
+    [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+    [System.Windows.Automation.SelectionItemPattern]::Pattern
+  )) {
+    try {
+      $pattern = $null
+      if ($element.TryGetCurrentPattern($patternId, [ref]$pattern)) { return $true }
+    } catch {}
+  }
+  return $false
 }
 
 function Find-ClickableNamedElement($root, [string[]]$names, [bool]$allowContains, [int]$timeoutMs, [int]$maxNodes) {
@@ -2164,7 +2228,7 @@ function Find-ClickableNamedElement($root, [string[]]$names, [bool]$allowContain
           $matched = ($name -eq $candidate) -or ($allowContains -and $name.Contains($candidate))
           if ($matched) {
             $controlType = Get-ControlTypeName $element
-            if ((Element-HasInvokePattern $element) -or $allowedControlTypes -contains $controlType) {
+            if ((Element-HasSemanticPattern $element) -or $allowedControlTypes -contains $controlType) {
               return $element
             }
           }
@@ -2193,13 +2257,14 @@ function Find-ClickableAncestor($element, [int]$maxDepth = 5) {
     'ControlType.Pane',
     'ControlType.Custom'
   )
+  $fallbackAncestor = $null
   foreach ($walker in $walkers) {
     $current = $element
     for ($depth = 0; $depth -lt $maxDepth; $depth += 1) {
       try { $current = $walker.GetParent($current) } catch { $current = $null }
       if (-not $current) { break }
       $controlType = Get-ControlTypeName $current
-      if ((Element-HasInvokePattern $current) -or $allowedControlTypes -contains $controlType) {
+      if ((Element-HasSemanticPattern $current) -or $allowedControlTypes -contains $controlType) {
         try {
           $rect = $current.Current.BoundingRectangle
           $windowRect = Get-WindowRect
@@ -2207,13 +2272,14 @@ function Find-ClickableAncestor($element, [int]$maxDepth = 5) {
           $maxHeight = [Math]::Min(360, [Math]::Max(120, $windowRect.Height * 0.45))
           $usableBounds = (-not $rect.IsEmpty) -and $rect.Width -ge 80 -and $rect.Height -ge 40 -and $rect.Width -le $maxWidth -and $rect.Height -le $maxHeight
           if ($usableBounds) {
-            return $current
+            if (Element-HasSemanticPattern $current) { return $current }
+            if (-not $fallbackAncestor) { $fallbackAncestor = $current }
           }
         } catch {}
       }
     }
   }
-  return $null
+  return $fallbackAncestor
 }
 
 function Find-FirstElementWithNamePrefix($root, [string]$prefix, [int]$timeoutMs, [int]$maxNodes) {
@@ -2248,6 +2314,9 @@ function Find-FirstElementWithNamePrefix($root, [string]$prefix, [int]$timeoutMs
 }
 
 function Test-Editor($root) {
+  try {
+    if (Test-HomePage $root) { return $false }
+  } catch {}
   $hasTimelineSignal = [bool](Find-ContainsNamedElement $root @(
     'VETreeMainCellItem:',
     'VETreeSubCellItem:',
@@ -2292,15 +2361,15 @@ function Test-EditorAfterClick($before) {
     $after = Get-WindowSnapshot
     if (-not $after) { return $false }
     if ($after.Title -and $draftName -and $after.Title.Contains($draftName)) {
-      Write-Output ("stage=editor-signal title-contains-draft title={0}" -f $after.Title)
+      Write-ProgressLine ("stage=editor-signal title-contains-draft title={0}" -f $after.Title)
       return $false
     }
     if ($before -and $before.Handle -and $after.Handle -ne $before.Handle -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
-      Write-Output ("stage=editor-signal handle-changed title={0}" -f $after.Title)
+      Write-ProgressLine ("stage=editor-signal handle-changed title={0}" -f $after.Title)
       return $false
     }
     if ($before -and $before.Title -and $after.Title -and $after.Title -ne $before.Title -and $after.Title -match 'JianyingPro|CapCut|VideoFusion') {
-      Write-Output ("stage=editor-signal title-changed title={0}" -f $after.Title)
+      Write-ProgressLine ("stage=editor-signal title-changed title={0}" -f $after.Title)
       return $false
     }
   } catch {}
@@ -2331,18 +2400,18 @@ function Try-GoHome {
   try {
     $root = Get-RootElement
     if (Test-HomePage $root) {
-      Write-Output 'stage=home-ready'
+      Write-ProgressLine 'stage=home-ready'
       return $true
     }
     $home = Find-ClickableNamedElement $root @('首页', 'Home') $true 1500 900
     if ($home) {
-      Write-Output ("stage=click-home-ui name={0} controlType={1}" -f (Get-ElementName $home), (Get-ControlTypeName $home))
+      Write-ProgressLine ("stage=click-home-ui name={0} controlType={1}" -f (Get-ElementName $home), (Get-ControlTypeName $home))
       Click-Element $home 1
       Start-Sleep -Milliseconds 1800
       return [bool](Test-CurrentHomePage)
     }
   } catch {}
-  Write-Output 'stage=home-ui-not-found'
+  Write-ProgressLine 'stage=home-ui-not-found'
   return $false
 }
 
@@ -2361,7 +2430,7 @@ function Log-NonHomeDraftPageAfterClick($before, [string]$label = '') {
       $hasDraftSignal = [bool](Find-ContainsNamedElement $root @($draftName) 1000 700)
     }
     if ($hasDraftSignal) {
-      Write-Output ("stage=non-home-draft-page-detected label={0} title={1}" -f $label, $after.Title)
+      Write-ProgressLine ("stage=non-home-draft-page-detected label={0} title={1}" -f $label, $after.Title)
     }
   } catch {}
 }
@@ -2378,7 +2447,27 @@ function Click-Element($element, [int]$clickCount) {
   if ($clickCount -le 1) {
     try {
       if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
+        Write-ProgressLine ("stage=uia-action action=invoke name={0} controlType={1}" -f (Get-ElementName $element), (Get-ControlTypeName $element))
         $invokePattern.Invoke()
+        return
+      }
+    } catch {}
+    $legacyPattern = $null
+    try {
+      if ($element.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$legacyPattern)) {
+        Write-ProgressLine ("stage=uia-action action=legacy-default name={0} defaultAction={1}" -f (Get-ElementName $element), [string]$legacyPattern.Current.DefaultAction)
+        $legacyPattern.DoDefaultAction()
+        return
+      }
+    } catch {}
+    $selectionPattern = $null
+    try {
+      if ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$selectionPattern)) {
+        Write-ProgressLine ("stage=uia-action action=selection-enter name={0}" -f (Get-ElementName $element))
+        $selectionPattern.Select()
+        try { $element.SetFocus() } catch {}
+        Start-Sleep -Milliseconds 200
+        Press-EnterKey
         return
       }
     } catch {}
@@ -2408,24 +2497,73 @@ function Press-EnterKey {
   Start-Sleep -Milliseconds 260
 }
 
-function Click-WindowRatio([double]$xRatio, [double]$yRatio, [int]$clickCount) {
-  $rect = Get-WindowRect
-  $x = [int]($rect.Left + ($rect.Width * $xRatio))
-  $y = [int]($rect.Top + ($rect.Height * $yRatio))
-  Click-Point $x $y $clickCount
-}
-
 function Try-FocusAndEnter($element, [string]$label, [int]$seconds = 18) {
   try {
     $before = Get-WindowSnapshot
-    Write-Output ("stage=focus-enter label={0} name={1} controlType={2}" -f $label, (Get-ElementName $element), (Get-ControlTypeName $element))
+    Write-ProgressLine ("stage=focus-enter label={0} name={1} controlType={2}" -f $label, (Get-ElementName $element), (Get-ControlTypeName $element))
     try { $element.SetFocus(); Start-Sleep -Milliseconds 300 } catch {}
     Press-EnterKey
     if (Wait-ForEditorAfterClick $before $seconds) { return $true }
     if (Try-OpenFromDraftDetail 6) { return $true }
   } catch {
-    Write-Output ("stage=focus-enter-failed label={0} error={1}" -f $label, $_.Exception.Message)
+    Write-ProgressLine ("stage=focus-enter-failed label={0} error={1}" -f $label, $_.Exception.Message)
   }
+  return $false
+}
+
+function Try-SemanticOpen($element, [string]$label, [int]$seconds = 18) {
+  $script:lastSemanticActionAttempted = $false
+  if (-not $element) { return $false }
+  $before = Get-WindowSnapshot
+  Write-ElementDiagnostics $element $label 6
+  $action = ''
+  $invokePattern = $null
+  try {
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
+      $action = 'invoke'
+      $invokePattern.Invoke()
+    }
+  } catch {
+    $action = ''
+    Write-ProgressLine ("stage=uia-action-failed label={0} action=invoke error={1}" -f $label, $_.Exception.Message)
+  }
+  if (-not $action) {
+    $legacyPattern = $null
+    try {
+      if ($element.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$legacyPattern)) {
+        $action = 'legacy-default'
+        Write-ProgressLine ("stage=uia-legacy-default label={0} defaultAction={1}" -f $label, [string]$legacyPattern.Current.DefaultAction)
+        $legacyPattern.DoDefaultAction()
+      }
+    } catch {
+      $action = ''
+      Write-ProgressLine ("stage=uia-action-failed label={0} action=legacy-default error={1}" -f $label, $_.Exception.Message)
+    }
+  }
+  if (-not $action) {
+    $selectionPattern = $null
+    try {
+      if ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$selectionPattern)) {
+        $action = 'selection-enter'
+        $selectionPattern.Select()
+        try { $element.SetFocus() } catch {}
+        Start-Sleep -Milliseconds 200
+        Press-EnterKey
+      }
+    } catch {
+      $action = ''
+      Write-ProgressLine ("stage=uia-action-failed label={0} action=selection-enter error={1}" -f $label, $_.Exception.Message)
+    }
+  }
+  if (-not $action) {
+    Write-ProgressLine ("stage=uia-no-semantic-action label={0}" -f $label)
+    return $false
+  }
+  $script:lastSemanticActionAttempted = $true
+  Write-ProgressLine ("stage=uia-action label={0} action={1}" -f $label, $action)
+  if (Wait-ForEditorAfterClick $before $seconds) { return $true }
+  if (Try-OpenFromDraftDetail 6) { return $true }
+  Write-ProgressLine ("stage=uia-action-did-not-open label={0} action={1}" -f $label, $action)
   return $false
 }
 
@@ -2441,12 +2579,14 @@ function Open-DraftElement($element) {
   if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {
     throw 'Draft title UI element has no usable screen bounds'
   }
-  Write-Output ("stage=open-draft-title name={0} bounds={1},{2},{3}x{4}" -f (Get-ElementName $element), [int]$rect.Left, [int]$rect.Top, [int]$rect.Width, [int]$rect.Height)
-  if (Try-FocusAndEnter $element 'title-element' 18) { return $true }
+  Write-ProgressLine ("stage=open-draft-title name={0} bounds={1},{2},{3}x{4}" -f (Get-ElementName $element), [int]$rect.Left, [int]$rect.Top, [int]$rect.Width, [int]$rect.Height)
+  if (Try-SemanticOpen $element 'title-element' 18) { return $true }
+  if (-not $script:lastSemanticActionAttempted -and (Try-FocusAndEnter $element 'title-element' 18)) { return $true }
   $ancestor = Find-ClickableAncestor $element
   if ($ancestor) {
-    Write-Output ("stage=title-clickable-ancestor name={0} controlType={1}" -f (Get-ElementName $ancestor), (Get-ControlTypeName $ancestor))
-    if (Try-FocusAndEnter $ancestor 'title-ancestor' 18) { return $true }
+    Write-ProgressLine ("stage=title-clickable-ancestor name={0} controlType={1}" -f (Get-ElementName $ancestor), (Get-ControlTypeName $ancestor))
+    if (Try-SemanticOpen $ancestor 'title-ancestor' 18) { return $true }
+    if (-not $script:lastSemanticActionAttempted -and (Try-FocusAndEnter $ancestor 'title-ancestor' 18)) { return $true }
     $before = Get-WindowSnapshot
     Click-Element $ancestor 1
     if (Wait-ForEditorAfterClick $before 18) { return $true }
@@ -2462,7 +2602,7 @@ function Open-DraftElement($element) {
   )
   foreach ($point in $clickPoints) {
     $before = Get-WindowSnapshot
-    Write-Output ("stage=title-click-point label={0} x={1} y={2}" -f $point.Label, $point.X, $point.Y)
+    Write-ProgressLine ("stage=title-click-point label={0} x={1} y={2}" -f $point.Label, $point.X, $point.Y)
     Click-Point ([int]$point.X) ([int]$point.Y) ([int]$point.Count)
     Start-Sleep -Milliseconds 1200
     if (Wait-ForEditorAfterClick $before 18) { return $true }
@@ -2472,7 +2612,7 @@ function Open-DraftElement($element) {
     if (Try-OpenFromDraftDetail 5) { return $true }
     Log-NonHomeDraftPageAfterClick $before $point.Label
     if (-not (Test-CurrentHomePage)) {
-      Write-Output ("stage=not-homepage-stop-after-title-click label={0}" -f $point.Label)
+      Write-ProgressLine ("stage=not-homepage-stop-after-title-click label={0}" -f $point.Label)
       return $false
     }
   }
@@ -2506,14 +2646,14 @@ function Try-OpenFromDraftDetail([int]$seconds = 8) {
     $root = Get-RootElement
     $button = Find-ClickableNamedElement $root $buttonNames $true 1500 900
     if ($button) {
-      Write-Output ("stage=detail-open-candidate name={0} controlType={1}" -f (Get-ElementName $button), (Get-ControlTypeName $button))
+      Write-ProgressLine ("stage=detail-open-candidate name={0} controlType={1}" -f (Get-ElementName $button), (Get-ControlTypeName $button))
       $before = Get-WindowSnapshot
       Click-Element $button 1
       if (Wait-ForEditorAfterClick $before 25) { return $true }
       return $false
     }
     if (-not $sentEnterFallback -and -not (Test-HomePage $root)) {
-      Write-Output 'stage=detail-enter-fallback'
+      Write-ProgressLine 'stage=detail-enter-fallback'
       $before = Get-WindowSnapshot
       Press-EnterKey
       $sentEnterFallback = $true
@@ -2529,15 +2669,14 @@ function Wait-ForDraftTitle([int]$seconds) {
   $draftNames = @("HomePageDraftTitle:$draftName", $draftName)
   while ((Get-Date) -lt $deadline) {
     $root = Get-RootElement
-    $element = Find-NamedElement $root $draftNames $true
+    $element = Find-BoundedNamedElement $root $draftNames $false 2500 1200
     if ($element) {
-      Write-Output ("stage=draft-title-matched name={0}" -f (Get-ElementName $element))
+      Write-ProgressLine ("stage=draft-title-matched name={0}" -f (Get-ElementName $element))
       return $element
     }
     $element = Find-FirstElementWithNamePrefix $root 'HomePageDraftTitle:' 1500 1200
     if ($element) {
-      Write-Output ("stage=draft-title-first-card name={0}" -f (Get-ElementName $element))
-      return $element
+      Write-ProgressLine ("stage=draft-title-target-not-found firstVisible={0} target={1}" -f (Get-ElementName $element), $draftName)
     }
     Start-Sleep -Milliseconds 500
   }
@@ -2553,6 +2692,21 @@ function Wait-ForEditor([int]$seconds = 12) {
   return $false
 }
 
+function Wait-ForStableEditor([int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
+  $hits = 0
+  while ((Get-Date) -lt $deadline) {
+    if (Test-EditorReady) {
+      $hits += 1
+      if ($hits -ge 2) { return $true }
+    } else {
+      $hits = 0
+    }
+    Start-Sleep -Milliseconds 800
+  }
+  return $false
+}
+
 function Wait-ForEditorAfterClick($before, [int]$seconds = 45) {
   $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
   while ((Get-Date) -lt $deadline) {
@@ -2562,41 +2716,8 @@ function Wait-ForEditorAfterClick($before, [int]$seconds = 45) {
   return $false
 }
 
-function Try-OpenFirstDraftByHomeLayout {
-  if (-not (Test-CurrentHomePage)) {
-    Write-Output 'stage=home-layout-fallback-skipped-not-home'
-    return $false
-  }
-  $points = @(
-    @{ Label = 'first-card-cover-center'; XRatio = 0.187; YRatio = 0.410; Count = 2 },
-    @{ Label = 'first-card-title-center'; XRatio = 0.187; YRatio = 0.480; Count = 2 }
-  )
-  foreach ($point in $points) {
-    $before = Get-WindowSnapshot
-    $rect = Get-WindowRect
-    $x = [int]($rect.Left + ($rect.Width * [double]$point.XRatio))
-    $y = [int]($rect.Top + ($rect.Height * [double]$point.YRatio))
-    Write-Output ("stage=home-layout-first-card-click label={0} x={1} y={2} rect={3},{4},{5}x{6} dpi={7} scale={8}" -f $point.Label, $x, $y, $rect.Left, $rect.Top, $rect.Width, $rect.Height, $rect.Dpi, $rect.Scale)
-    Click-Point $x $y 1
-    Start-Sleep -Milliseconds 300
-    Press-EnterKey
-    if (Wait-ForEditorAfterClick $before 16) { return $true }
-    if (Try-OpenFromDraftDetail 6) { return $true }
-    Click-Point $x $y ([int]$point.Count)
-    Start-Sleep -Milliseconds 900
-    if (Wait-ForEditorAfterClick $before 18) { return $true }
-    if (Try-OpenFromDraftDetail 6) { return $true }
-    Log-NonHomeDraftPageAfterClick $before $point.Label
-    if (-not (Test-CurrentHomePage)) {
-      Write-Output ("stage=home-layout-fallback-stopped-not-home label={0}" -f $point.Label)
-      return $false
-    }
-  }
-  return $false
-}
-
-function Try-OpenNewestDraftByWindowClick {
-  Write-Output 'stage=window-click-fallback'
+function Try-OpenNamedDraftByUia {
+  Write-ProgressLine ("stage=uia-open-start target={0}" -f $draftName)
   [void](Get-RootElement)
   if (Wait-ForEditor 1) { return $true }
   [void](Try-GoHome)
@@ -2604,39 +2725,47 @@ function Try-OpenNewestDraftByWindowClick {
   if (Wait-ForEditor 2) { return $true }
   $titleElement = Wait-ForDraftTitle 8
   if ($titleElement) {
-    Write-Output 'stage=title-draft-found'
+    Write-ProgressLine 'stage=title-draft-found'
     $before = Get-WindowSnapshot
     if (Open-DraftElement $titleElement) { return $true }
     if (Wait-ForEditorAfterClick $before 45) { return $true }
     if (Try-OpenFromDraftDetail 8) { return $true }
     Log-NonHomeDraftPageAfterClick $before 'title-final'
-    return [bool](Try-OpenFirstDraftByHomeLayout)
+    return $false
   }
-  Write-Output 'stage=title-draft-not-found'
+  Write-ProgressLine 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
   if (Try-OpenFromDraftDetail 4) { return $true }
-  if (Try-OpenFirstDraftByHomeLayout) { return $true }
-  Write-Output 'stage=draft-title-ui-not-found-or-home-layout-fallback-failed'
+  Write-ProgressLine ("stage=draft-title-ui-not-found target={0}" -f $draftName)
   return $false
 }
 
 $root = Get-RootElement
 try {
   $snapshot = Get-WindowSnapshot
-  Write-Output ("stage=window-ready title={0} rect={1},{2},{3}x{4} dpi={5} scale={6}" -f $snapshot.Title, $snapshot.Rect.Left, $snapshot.Rect.Top, $snapshot.Rect.Width, $snapshot.Rect.Height, $snapshot.Rect.Dpi, $snapshot.Rect.Scale)
+  Write-ProgressLine ("stage=window-ready title={0} rect={1},{2},{3}x{4} dpi={5} scale={6}" -f $snapshot.Title, $snapshot.Rect.Left, $snapshot.Rect.Top, $snapshot.Rect.Width, $snapshot.Rect.Height, $snapshot.Rect.Dpi, $snapshot.Rect.Scale)
 } catch {
-  Write-Output 'stage=window-ready'
+  Write-ProgressLine 'stage=window-ready'
 }
-if (Try-OpenNewestDraftByWindowClick) {
-  Write-Output 'opened-by-window-click'
+if (Try-OpenNamedDraftByUia) {
+  Start-Sleep -Milliseconds 1200
+  if (-not (Wait-ForStableEditor 8)) {
+    Write-ProgressLine 'stage=open-returned-true-but-final-editor-check-failed'
+    try {
+      $p = Get-TargetProcess
+      Write-ProgressLine ("stage=final-window-title {0}" -f $p.MainWindowTitle)
+    } catch {}
+    throw "Jianying draft open returned success but editor UI was not detected: $draftName"
+  }
+  Write-ProgressLine 'opened-by-uia'
   exit 0
 }
-Write-Output 'stage=window-click-fallback-not-opened'
+Write-ProgressLine 'stage=uia-open-not-opened'
 try {
   $p = Get-TargetProcess
-  Write-Output ("stage=window-title {0}" -f $p.MainWindowTitle)
+  Write-ProgressLine ("stage=window-title {0}" -f $p.MainWindowTitle)
 } catch {}
-throw "Could not open Jianying draft by window click fallback: $draftName"
+throw "Could not open the named Jianying draft through UI Automation: $draftName"
 `;
   try {
     return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
@@ -2650,7 +2779,7 @@ throw "Could not open Jianying draft by window click fallback: $draftName"
     const stderr = String(error.stderr || '').trim();
     const message = String(error.message || '').trim();
     const details = [];
-    if (timedOut) details.push('Windows Jianying draft opening timed out while clicking the draft card inside the app window.');
+    if (timedOut) details.push('Windows Jianying draft opening timed out while locating and opening the named draft through UI Automation.');
     if (stderr) details.push(`PowerShell error:\n${stderr}`);
     if (stdout) details.push(`PowerShell progress:\n${stdout}`);
     if (!timedOut && message) details.push(message);
@@ -2696,7 +2825,15 @@ function openFirstDraftCard(appPath, draftName = '') {
   }
   if (process.platform === 'win32') {
     activateJianying(appPath);
-    winOpenDraftByTitle(appPath, draftName);
+    const progress = winOpenDraftByTitle(appPath, draftName);
+    const editorCheck = windowsJianyingEditorReady(appPath, draftName);
+    if (!editorCheck.ready) {
+      fail([
+        `Jianying draft editor did not open after Windows automation: ${draftName}`,
+        `Editor check: ${JSON.stringify(editorCheck)}`,
+        `PowerShell progress:\n${progress || '(empty)'}`,
+      ].join('\n'));
+    }
     return true;
   }
   return false;
@@ -2896,7 +3033,6 @@ $result = [ordered]@{
   startedAt = (Get-Date).ToString('o')
   processCandidates = @()
   snapshots = @()
-  clicks = @()
   opened = $false
   openedStage = $null
   error = $null
@@ -2913,8 +3049,6 @@ public class Win32DebugDraftOpen {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
@@ -3024,76 +3158,10 @@ public class Win32DebugDraftOpen {
     return $true
   }
 
-  function Click-Point([int]$x, [int]$y, [int]$clickCount) {
-    [Win32DebugDraftOpen]::SetCursorPos($x, $y) | Out-Null
-    for ($i = 0; $i -lt [Math]::Max(1, $clickCount); $i++) {
-      [Win32DebugDraftOpen]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-      [Win32DebugDraftOpen]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-      Start-Sleep -Milliseconds 160
-    }
-  }
-
-  function Click-WindowRatio([string]$label, [double]$xRatio, [double]$yRatio, [int]$clickCount) {
-    $before = Add-Snapshot "$label-before"
-    if (-not $before.found) { throw 'Jianying/CapCut process window not found' }
-    $rect = $before.rect
-    $x = [int]($rect.left + ($rect.width * $xRatio))
-    $y = [int]($rect.top + ($rect.height * $yRatio))
-    Click-Point $x $y $clickCount
-    Start-Sleep -Milliseconds 900
-    $after = Add-Snapshot "$label-after"
-    $opened = [bool](
-      $after.titleContainsDraft -or
-      ($after.handle -ne $before.handle -and $after.title -match 'JianyingPro|CapCut|VideoFusion') -or
-      ($after.title -match 'JianyingPro|CapCut|VideoFusion' -and $after.title -ne $before.title)
-    )
-    $click = [ordered]@{
-      label = $label
-      ratioX = $xRatio
-      ratioY = $yRatio
-      x = $x
-      y = $y
-      clickCount = $clickCount
-      titleBefore = $before.title
-      titleAfter = $after.title
-      opened = $opened
-    }
-    $result.clicks += $click
-    if ($click.opened) {
-      $result.opened = $true
-      $result.openedStage = $label
-    }
-    return $click.opened
-  }
-
   $initial = Add-Snapshot 'initial'
   if (-not $initial.found) { throw 'Jianying/CapCut process window not found' }
   Save-WindowScreenshot $beforeScreenshot 'before-screenshot' | Out-Null
-
-  $homePoints = @(
-    @(0.033, 0.182),
-    @(0.055, 0.182),
-    @(0.040, 0.176)
-  )
-  for ($i = 0; $i -lt $homePoints.Count; $i++) {
-    $point = $homePoints[$i]
-    Click-WindowRatio ("home-{0}" -f ($i + 1)) ([double]$point[0]) ([double]$point[1]) 1 | Out-Null
-  }
-  Start-Sleep -Milliseconds 3500
-
-  $draftPoints = @(
-    @(0.153, 0.331),
-    @(0.153, 0.382)
-  )
-  for ($i = 0; $i -lt $draftPoints.Count; $i++) {
-    $point = $draftPoints[$i]
-    if (Click-WindowRatio ("draft-{0}" -f ($i + 1)) ([double]$point[0]) ([double]$point[1]) 2) {
-      break
-    }
-  }
-
-  Save-WindowScreenshot $afterScreenshot 'after-screenshot' | Out-Null
-  $result.finalSnapshot = Add-Snapshot 'final'
+  $result.finalSnapshot = Add-Snapshot 'before-uia-open'
   $result.success = $true
 } catch {
   $result.error = $_.Exception.Message
@@ -3109,7 +3177,22 @@ $result | ConvertTo-Json -Depth 12
       timeout: 120000,
     });
     Object.assign(result, parseJsonFromOutput(stdout));
+    result.success = false;
+    result.uia_progress = winOpenDraftByTitle(appPath, draftName);
+    result.editor_check = windowsJianyingEditorReady(appPath, draftName);
+    result.opened = Boolean(result.editor_check.ready);
+    result.openedStage = result.opened ? 'named-draft-uia' : null;
+    try {
+      result.after_screenshot = captureScreenshot(afterScreenshot, { appPath, draftName });
+    } catch (error) {
+      result.warnings.push(`After-open screenshot failed: ${error.message}`);
+    }
+    result.success = result.opened;
+    if (!result.opened) {
+      result.error = `UI Automation completed but editor UI was not detected: ${JSON.stringify(result.editor_check)}`;
+    }
   } catch (error) {
+    result.success = false;
     result.error = error.message || 'Windows debug open command failed.';
     result.stdout = String(error.stdout || '').trim();
     result.stderr = String(error.stderr || '').trim();
@@ -3591,6 +3674,14 @@ function Find-ContainsNamedElement($root, [string[]]$names, [int]$timeoutMs, [in
 }
 
 function Test-Editor($root) {
+  $hasHomePageSignal = [bool](Find-ContainsNamedElement $root @(
+    'HomePageDraftTitle:',
+    'HomePageStart',
+    '开始创作',
+    '最近删除',
+    'Recently deleted',
+    'Start creating'
+  ) 1200 700)
   $hasTimelineSignal = [bool](Find-ContainsNamedElement $root @(
     'VETreeMainCellItem:',
     'VETreeSubCellItem:',
@@ -3616,7 +3707,8 @@ function Test-Editor($root) {
     'Subtitles'
   ) 1200 700)
   return @{
-    ready = [bool]($hasToolTabs -and ($hasEditorChrome -or $hasTimelineSignal))
+    ready = [bool]((-not $hasHomePageSignal) -and $hasToolTabs -and ($hasEditorChrome -or $hasTimelineSignal))
+    hasHomePageSignal = $hasHomePageSignal
     hasTimelineSignal = $hasTimelineSignal
     hasEditorChrome = $hasEditorChrome
     hasToolTabs = $hasToolTabs
@@ -3638,6 +3730,7 @@ $editor = Test-Editor $root
   reason = if ($editor.ready) { 'editor-ready' } else { 'editor-ui-not-detected' }
   processName = $p.ProcessName
   title = $p.MainWindowTitle
+  hasHomePageSignal = [bool]$editor.hasHomePageSignal
   hasTimelineSignal = [bool]$editor.hasTimelineSignal
   hasEditorChrome = [bool]$editor.hasEditorChrome
   hasToolTabs = [bool]$editor.hasToolTabs
