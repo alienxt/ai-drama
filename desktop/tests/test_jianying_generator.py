@@ -7,57 +7,66 @@ from aidrama_desktop.jianying.generator import JianyingProjectGenerator
 
 def test_windows_draft_open_matches_legacy_full_description_flow():
     tool = Path(__file__).parents[2] / "scripts" / "jianying" / "create-jianying-project.js"
+    helper = (
+        Path(__file__).parents[1]
+        / "src"
+        / "aidrama_desktop"
+        / "jianying"
+        / "windows_uia_helper.py"
+    )
+    pyproject = Path(__file__).parents[1] / "pyproject.toml"
+    pyinstaller_spec = (
+        Path(__file__).parents[1] / "packaging" / "pyinstaller" / "ai-drama-desktop.spec"
+    )
+    gui_app = Path(__file__).parents[1] / "src" / "aidrama_desktop" / "gui" / "app.py"
     source = tool.read_text(encoding="utf-8")
-    windows_open = source.split("function winOpenDraftByTitle", 1)[1].split(
+    helper_source = helper.read_text(encoding="utf-8")
+    pyproject_source = pyproject.read_text(encoding="utf-8")
+    pyinstaller_source = pyinstaller_spec.read_text(encoding="utf-8")
+    gui_source = gui_app.read_text(encoding="utf-8")
+    windows_open = source.split("function runWindowsUiaHelper", 1)[1].split(
         "function openFirstDraftCard", 1
     )[0]
     windows_launch = source.split("function openJianying", 1)[1].split(
         "function sleep", 1
     )[0]
-    legacy_open = windows_open.split("function Wait-LegacyWindowClass", 1)[1]
     editor_check = source.split("function windowsJianyingEditorReady", 1)[1].split(
         "function postCreateAutomation", 1
     )[0]
     windows_debug = source.split("function debugWindowsOpen", 1)[1].split(
         "function createProject", 1
     )[0]
-    powershell_runner = source.split("function execPowerShellScript", 1)[1].split(
-        "function normalizeKey", 1
-    )[0]
-
-    assert "Write-Output" not in windows_open
-    assert "'-File'" in powershell_runner
-    assert "mkdtempSync" in powershell_runner
-    assert "\\uFEFF" in powershell_runner
-    assert "rmSync" in powershell_runner
-    assert "execPowerShellScript(script" in windows_open
-    assert "'-Command', script" not in windows_open
-    assert "function Write-ProgressLine" in windows_open
     assert "assertWindowsJianyingAutomationCompatible(appPath)" in windows_launch
     assert "spawn(appPath, []," in windows_launch
     assert "--force-renderer-accessibility=complete" not in source
     assert "RECOMMENDED_WINDOWS_JIANYING_VERSION = '5.9.0.11632'" in source
     assert "MAX_UIA_AUTOMATION_JIANYING_MAJOR = 6" in source
     assert "Jianying 7 or above is not supported" in source
-    assert "AutomationProperty]::LookupById(30159)" in windows_open
-    assert "function Get-ElementFullDescription" in windows_open
-    assert "GetCurrentPropertyValue($property, $true)" in windows_open
-    assert '$targetDescription = "HomePageDraftTitle:$draftName"' in legacy_open
-    assert "PropertyCondition]::new" in windows_open
-    assert "function Find-ExactLegacyDraftTitle" in legacy_open
-    assert "$levelOne = $walker.GetFirstChild($root)" in legacy_open
-    assert "$levelTwo = $walker.GetFirstChild($levelOne)" in legacy_open
-    assert "$levelTwo.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text" in legacy_open
-    assert "(Get-ElementFullDescription $levelTwo) -eq $targetDescription" in legacy_open
-    assert "TreeWalker]::ControlViewWalker.GetParent($titleElement)" in legacy_open
-    assert "Click-Element $draftCard 1" in legacy_open
-    assert "Wait-LegacyWindowClass 'MainWindow' 35" in legacy_open
-    assert "Find-UniqueEllipsizedDraftTitleElement" not in legacy_open
-    assert "Try-OpenFromDraftDetail" not in legacy_open
+    assert "runWindowsUiaHelper(helperCommandJson, appPath, draftName)" in windows_open
+    assert "--progress-file" in windows_open
+    assert "Bundled Python uiautomation helper" in windows_open
+    assert "execPowerShellScript" not in windows_open
+    assert "LookupById(30159)" not in source
+    assert 'importlib.import_module("uiautomation")' in helper_source
+    assert 'target_description = f"HomePageDraftTitle:{draft_name}"' in helper_source
+    assert "app.TextControl(searchDepth=2, Compare=compare)" in helper_source
+    assert "control.GetPropertyValue(30159)" in helper_source
+    assert "title.GetParentControl()" in helper_source
+    assert "draft_card.Click(simulateMove=False)" in helper_source
+    assert 'if depth != 2:' in helper_source
+    assert 'if "homepage" in class_name:' in helper_source
+    assert 'if "mainwindow" in class_name:' in helper_source
+    assert "python-uia-draft-title-observed" in helper_source
+    assert '"uiautomation>=2; sys_platform == \'win32\'"' in pyproject_source
+    assert 'hiddenimports=["uiautomation"] if sys.platform.startswith("win") else []' in (
+        pyinstaller_source
+    )
+    assert 'if "--jianying-uia-helper" in argv:' in gui_source
     assert "OCR" not in source.upper()
+    assert "OCR" not in helper_source.upper()
     assert "$rootName -eq '剪映专业版' -and $rootClassName -match 'MainWindow'" in editor_check
     assert "Click-WindowRatio" not in windows_debug
-    assert "winOpenDraftByTitle(appPath, draftName)" in windows_debug
+    assert "winOpenDraftByTitle(appPath, draftName, args.windowsUiaHelperCommand)" in windows_debug
 
 
 def test_jianying_tool_registers_competitor_native_strategy():
@@ -117,6 +126,10 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
         )
 
     monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aidrama_desktop.jianying.generator._windows_uia_helper_command",
+        lambda: ["AI Drama Desktop.exe", "--jianying-uia-helper"],
+    )
 
     generator = JianyingProjectGenerator(
         ffmpeg_path="/opt/homebrew/bin/ffmpeg",
@@ -136,6 +149,8 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     assert command[command.index("--ffmpeg") + 1] == "/opt/homebrew/bin/ffmpeg"
     assert command[command.index("--ffprobe") + 1] == "/opt/homebrew/bin/ffprobe"
     assert command[command.index("--jianying-app") + 1] == str(jianying_app)
+    helper_command = json.loads(command[command.index("--windows-uia-helper-command") + 1])
+    assert helper_command == ["AI Drama Desktop.exe", "--jianying-uia-helper"]
 
 
 def test_jianying_generator_passes_strategy_to_tool(monkeypatch, tmp_path):

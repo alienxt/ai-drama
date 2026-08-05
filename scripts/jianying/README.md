@@ -73,7 +73,7 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: requires Jianying 6 or below and recommends `5.9.0.11632`. The tool matches UIA property `FullDescription` (`30159`) exactly against `HomePageDraftTitle:<full draft name>`, clicks that title control's parent draft card, and accepts success only after the top-level class changes from `HomePage` to `MainWindow`. Jianying 7 or above is rejected before launch because it no longer exposes the required legacy controls. There is no OCR, truncated-title, or fixed-coordinate fallback.
+- Windows: requires Jianying 6 or below and recommends `5.9.0.11632`. The Windows desktop package includes the same `uiautomation` library used by pyJianYingDraft. Its hidden helper searches `TextControl` at depth 2, reads property `FullDescription` (`30159`) directly, matches `HomePageDraftTitle:<full draft name>` exactly, clicks the title control's parent card with `simulateMove=False`, and accepts success only after the top-level class changes from `HomePage` to `MainWindow`. Jianying 7 or above is rejected before launch because it no longer exposes the required legacy controls. There is no OCR, truncated-title, or fixed-coordinate fallback.
 
 Configure the legacy Windows executable with `--jianying-app`, `JIANYING_APP`, or the desktop client's “剪映程序地址” setting. Versioned Jianying installations under common `Apps/<version>` directories are detected automatically, with `5.9.0.11632` preferred.
 
@@ -81,7 +81,13 @@ Pass `--full-screen-capture` only when you intentionally need the entire desktop
 
 ## Windows open diagnostics
 
-Use this standalone mode on a Windows desktop session when the draft is created but the editor does not open:
+The packaged Windows desktop supplies its bundled Python UIA helper automatically. When running this script directly from the source tree, first point it at a Python environment that contains `uiautomation`:
+
+```powershell
+$env:AIDRAMA_JIANYING_UIA_HELPER_COMMAND='["C:\\path\\to\\python.exe","-m","aidrama_desktop.gui.app","--jianying-uia-helper"]'
+```
+
+Then use this standalone mode on a Windows desktop session when the draft is created but the editor does not open:
 
 ```powershell
 node scripts\jianying\create-jianying-project.js `

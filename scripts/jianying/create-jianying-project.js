@@ -224,6 +224,8 @@ Proof/screenshot options:
   --full-screen-capture   Capture the whole screen instead of the Jianying/CapCut window.
   --close-existing        Close existing Jianying process before opening.
   --jianying-app <path>   App path override. Useful on Windows installs.
+  --windows-uia-helper-command <json>
+                          Internal Windows helper command supplied by the desktop client.
   --ffmpeg <path>         FFmpeg command/path.
   --ffprobe <path>        FFprobe command/path. Defaults to sibling of --ffmpeg.
 
@@ -273,6 +275,7 @@ function parseArgs(argv) {
     open: false,
     openDraft: false,
     overwrite: false,
+    windowsUiaHelperCommand: process.env.AIDRAMA_JIANYING_UIA_HELPER_COMMAND || '',
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -2615,352 +2618,56 @@ if ${count} > 1 {
   execFileSync('swift', ['-e', swift], { stdio: 'ignore' });
 }
 
-function winOpenDraftByTitle(appPath, draftName) {
-  if (!draftName) fail('Draft name is required for Windows draft opening.');
-  const script = `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-function Write-ProgressLine([object]$message) {
-  [Console]::Out.WriteLine([string]$message)
-  [Console]::Out.Flush()
-}
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32DraftOpen {
-  [StructLayout(LayoutKind.Sequential)]
-  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint flags);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(UInt32 dwFlags, UInt32 dx, UInt32 dy, UInt32 dwData, UIntPtr dwExtraInfo);
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
-  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
-}
-"@
-
-function Enable-DpiAwareness {
-  $enabled = $false
-  try { $enabled = [Win32DraftOpen]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
-  if (-not $enabled) {
-    try { [Win32DraftOpen]::SetProcessDPIAware() | Out-Null } catch {}
-  }
-}
-
-function Get-WindowDpi($handle) {
+function runWindowsUiaHelper(commandJson, appPath, draftName) {
+  let command;
   try {
-    $dpi = [int]([Win32DraftOpen]::GetDpiForWindow($handle))
-    if ($dpi -gt 0) { return $dpi }
-  } catch {}
-  return 96
-}
-
-Enable-DpiAwareness
-
-$draftName = ${psSingle(draftName)}
-$appPath = ${psSingle(appPath || '')}
-
-function Get-AppBaseName {
-  $baseName = ''
-  if ($appPath) {
-    try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+    command = JSON.parse(String(commandJson || ''));
+  } catch (error) {
+    fail(`Invalid Windows Jianying UIA helper command: ${error.message}`);
   }
-  return $baseName
-}
-
-function Get-CandidateProcesses {
-  $baseName = Get-AppBaseName
-  return @(Get-Process | Where-Object {
-    $_.MainWindowHandle -ne 0 -and (
-      $_.ProcessName -match 'Jianying|CapCut|VideoFusion|剪映' -or
-      ($_.MainWindowTitle -and $_.MainWindowTitle -match 'Jianying|CapCut|VideoFusion|剪映') -or
-      ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
-      ($baseName -and $_.ProcessName -eq $baseName)
-    )
-  } | Sort-Object Id)
-}
-
-function Format-VisibleWindowCandidates {
-  $windows = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Sort-Object ProcessName, Id | Select-Object -First 18)
-  if (-not $windows.Count) { return 'none' }
-  return (($windows | ForEach-Object {
-    ('pid={0},name={1},title="{2}"' -f $_.Id, $_.ProcessName, $_.MainWindowTitle)
-  }) -join ' | ')
-}
-
-function Get-TargetProcess {
-  $baseName = Get-AppBaseName
-  $processes = @(Get-CandidateProcesses)
-  if ($draftName) {
-    $draftWindow = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
-    if ($draftWindow) { return $draftWindow }
+  if (!Array.isArray(command) || !command.length || command.some((item) => typeof item !== 'string' || !item)) {
+    fail('Windows Jianying UIA helper command must be a non-empty JSON string array.');
   }
-  if ($baseName) {
-    $exact = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
-    if ($exact) { return $exact }
-  }
-  return $processes | Select-Object -First 1
-}
 
-function Wait-TargetProcess([int]$seconds = 60) {
-  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
-  while ((Get-Date) -lt $deadline) {
-    $p = Get-TargetProcess
-    if ($p) {
-      Write-ProgressLine ("stage=window-found pid={0} name={1} title={2}" -f $p.Id, $p.ProcessName, $p.MainWindowTitle)
-      return $p
-    }
-    Start-Sleep -Milliseconds 700
-  }
-  Write-ProgressLine ("stage=window-not-found appPath={0} baseName={1} visibleWindows={2}" -f $appPath, (Get-AppBaseName), (Format-VisibleWindowCandidates))
-  throw 'Jianying/CapCut process window not found'
-}
-
-function Get-RootElement {
-  $p = Wait-TargetProcess 60
-  [Win32DraftOpen]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
-  [Win32DraftOpen]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
-  [Win32DraftOpen]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0001 -bor 0x0002 -bor 0x0010) | Out-Null
-  Start-Sleep -Milliseconds 500
-  return [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
-}
-
-function Get-WindowRect {
-  $p = Get-TargetProcess
-  if (-not $p) { throw 'Jianying/CapCut process window not found' }
-  $rect = New-Object Win32DraftOpen+RECT
-  if (-not [Win32DraftOpen]::GetWindowRect($p.MainWindowHandle, [ref]$rect)) {
-    throw 'Jianying/CapCut window bounds unavailable'
-  }
-  $dpi = Get-WindowDpi $p.MainWindowHandle
-  return @{
-    Left = $rect.Left
-    Top = $rect.Top
-    Width = [Math]::Max(1, $rect.Right - $rect.Left)
-    Height = [Math]::Max(1, $rect.Bottom - $rect.Top)
-    Dpi = $dpi
-    Scale = [Math]::Round($dpi / 96.0, 2)
-  }
-}
-
-function Get-WindowSnapshot {
-  $p = Get-TargetProcess
-  if (-not $p) { return $null }
-  $rect = Get-WindowRect
-  return [pscustomobject]@{
-    Id = $p.Id
-    ProcessName = $p.ProcessName
-    Title = [string]$p.MainWindowTitle
-    Handle = $p.MainWindowHandle.ToInt64()
-    Rect = $rect
-  }
-}
-
-function Get-UiaFullDescriptionProperty {
-  try { return [System.Windows.Automation.AutomationProperty]::LookupById(30159) } catch { return $null }
-}
-
-function Get-ElementFullDescription($element) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-drama-jianying-uia-helper-'));
+  const progressPath = path.join(tempDir, 'progress.log');
   try {
-    $property = Get-UiaFullDescriptionProperty
-    if (-not $property) { return '' }
-    $value = $element.GetCurrentPropertyValue($property, $true)
-    if ([object]::ReferenceEquals($value, [System.Windows.Automation.AutomationElement]::NotSupported)) {
-      return ''
-    }
-    return [string]$value
-  } catch {
-    return ''
-  }
-}
-
-function Get-ElementName($element) {
-  try {
-    $name = [string]$element.Current.Name
-    if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
-  } catch {}
-  return Get-ElementFullDescription $element
-}
-
-
-function Get-ControlTypeName($element) {
-  try { return [string]$element.Current.ControlType.ProgrammaticName } catch { return '' }
-}
-
-
-function Click-Element($element, [int]$clickCount) {
-  $scrollPattern = $null
-  try {
-    if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollPattern)) {
-      $scrollPattern.ScrollIntoView()
-      Start-Sleep -Milliseconds 200
-    }
-  } catch {}
-  $rect = $element.Current.BoundingRectangle
-  if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0 -or $element.Current.IsOffscreen) {
-    throw 'Target UI element has no usable screen bounds'
-  }
-  $x = [int]($rect.Left + ($rect.Width / 2))
-  $y = [int]($rect.Top + ($rect.Height / 2))
-  Write-ProgressLine ("stage=legacy-uia-bounds-click name={0} controlType={1} x={2} y={3}" -f (Get-ElementName $element), (Get-ControlTypeName $element), $x, $y)
-  Click-Point $x $y $clickCount
-}
-
-function Click-Point([int]$x, [int]$y, [int]$clickCount) {
-  [Win32DraftOpen]::SetCursorPos($x, $y) | Out-Null
-  for ($i = 0; $i -lt [Math]::Max(1, $clickCount); $i++) {
-    [Win32DraftOpen]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    [Win32DraftOpen]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 160
-  }
-}
-
-
-function Wait-LegacyWindowClass([string]$className, [int]$seconds) {
-  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
-  while ((Get-Date) -lt $deadline) {
-    try {
-      $root = Get-RootElement
-      $rootName = [string]$root.Current.Name
-      $rootClassName = [string]$root.Current.ClassName
-      if ($rootName -eq '剪映专业版' -and $rootClassName -match [regex]::Escape($className)) {
-        Write-ProgressLine ("stage=legacy-window-ready name={0} className={1}" -f $rootName, $rootClassName)
-        return $root
-      }
-    } catch {}
-    Start-Sleep -Milliseconds 700
-  }
-  return $null
-}
-
-function Switch-ToLegacyHome {
-  $root = Get-RootElement
-  $rootClassName = [string]$root.Current.ClassName
-  if ($rootClassName -match 'HomePage') { return $root }
-  if ($rootClassName -notmatch 'MainWindow') {
-    throw "Expected Jianying HomePage or MainWindow, got '$rootClassName'. Use Jianying 6 or below."
-  }
-
-  $condition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ClassNameProperty,
-    'TitleBarButton'
-  )
-  $buttons = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
-  if ($buttons.Count -lt 3) {
-    throw "Could not find Jianying's third TitleBarButton for returning to the home page."
-  }
-  Write-ProgressLine 'stage=legacy-return-home buttonIndex=3'
-  Click-Element $buttons.Item(2) 1
-  Start-Sleep -Seconds 2
-  $homeRoot = Wait-LegacyWindowClass 'HomePage' 15
-  if (-not $homeRoot) { throw 'Jianying did not return to HomePage.' }
-  return $homeRoot
-}
-
-function Find-ExactLegacyDraftTitle($root, [string]$targetDescription) {
-  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-  $levelOne = $walker.GetFirstChild($root)
-  while ($levelOne) {
-    $levelTwo = $walker.GetFirstChild($levelOne)
-    while ($levelTwo) {
-      try {
-        if (
-          $levelTwo.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and
-          (Get-ElementFullDescription $levelTwo) -eq $targetDescription
-        ) {
-          return $levelTwo
-        }
-      } catch {}
-      $levelTwo = $walker.GetNextSibling($levelTwo)
-    }
-    $levelOne = $walker.GetNextSibling($levelOne)
-  }
-  return $null
-}
-
-function Wait-ExactLegacyDraftTitle([int]$seconds) {
-  if (-not (Get-UiaFullDescriptionProperty)) {
-    throw 'Windows UI Automation FullDescription property 30159 is unavailable.'
-  }
-  $targetDescription = "HomePageDraftTitle:$draftName"
-  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
-  while ((Get-Date) -lt $deadline) {
-    $root = Wait-LegacyWindowClass 'HomePage' 2
-    if ($root) {
-      $element = Find-ExactLegacyDraftTitle $root $targetDescription
-      if ($element -and (Get-ElementFullDescription $element) -eq $targetDescription) {
-        Write-ProgressLine ("stage=legacy-draft-title-exact-match fullDescription={0}" -f $targetDescription)
-        return $element
-      }
-    }
-    Start-Sleep -Milliseconds 500
-  }
-  throw "Could not find exact Jianying draft FullDescription '$targetDescription'."
-}
-
-function Try-OpenNamedDraftByUia {
-  Write-ProgressLine ("stage=legacy-uia-open-start target={0}" -f $draftName)
-  [void](Switch-ToLegacyHome)
-  $titleElement = Wait-ExactLegacyDraftTitle 20
-  $draftCard = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($titleElement)
-  if (-not $draftCard) {
-    $draftCard = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($titleElement)
-  }
-  if (-not $draftCard) { throw 'The exact draft title has no parent draft card.' }
-  Write-ProgressLine ("stage=legacy-draft-card-click name={0} controlType={1}" -f (Get-ElementName $draftCard), (Get-ControlTypeName $draftCard))
-  Click-Element $draftCard 1
-  Start-Sleep -Seconds 10
-  if (-not (Wait-LegacyWindowClass 'MainWindow' 35)) {
-    throw "Jianying did not enter MainWindow after clicking the exact draft card: $draftName"
-  }
-  return $true
-}
-
-$root = Get-RootElement
-try {
-  $snapshot = Get-WindowSnapshot
-  Write-ProgressLine ("stage=window-ready title={0} rect={1},{2},{3}x{4} dpi={5} scale={6}" -f $snapshot.Title, $snapshot.Rect.Left, $snapshot.Rect.Top, $snapshot.Rect.Width, $snapshot.Rect.Height, $snapshot.Rect.Dpi, $snapshot.Rect.Scale)
-} catch {
-  Write-ProgressLine 'stage=window-ready'
-}
-if (Try-OpenNamedDraftByUia) {
-  Write-ProgressLine 'opened-by-legacy-full-description-uia'
-  exit 0
-}
-Write-ProgressLine 'stage=uia-open-not-opened'
-try {
-  $p = Get-TargetProcess
-  Write-ProgressLine ("stage=window-title {0}" -f $p.MainWindowTitle)
-} catch {}
-throw "Could not open the named Jianying draft through legacy FullDescription UI Automation: $draftName"
-`;
-  try {
-    return execPowerShellScript(script, {
+    execFileSync(command[0], [
+      ...command.slice(1),
+      '--app-path',
+      String(appPath || ''),
+      '--draft-name',
+      draftName,
+      '--progress-file',
+      progressPath,
+    ], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 135000,
-    }).trim();
+      timeout: 90000,
+    });
+    return fs.existsSync(progressPath) ? fs.readFileSync(progressPath, 'utf8').trim() : '';
   } catch (error) {
-    const timedOut = error.killed || error.signal || /timed out|timeout|ETIMEDOUT/i.test(String(error.message || ''));
-    const stdout = String(error.stdout || '').trim();
+    const progress = fs.existsSync(progressPath) ? fs.readFileSync(progressPath, 'utf8').trim() : '';
     const stderr = String(error.stderr || '').trim();
-    const message = String(error.message || '').trim();
-    const details = [];
-    if (timedOut) details.push('Windows Jianying draft opening timed out while locating and opening the named draft through UI Automation.');
-    if (stderr) details.push(`PowerShell error:\n${stderr}`);
-    if (stdout) details.push(`PowerShell progress:\n${stdout}`);
-    if (!timedOut && message) details.push(message);
-    fail(details.join('\n') || 'Windows Jianying draft opening failed.');
+    const details = ['Bundled Python uiautomation helper could not open the Jianying draft.'];
+    if (progress) details.push(`UIA helper progress:\n${progress}`);
+    if (stderr) details.push(`UIA helper stderr:\n${stderr}`);
+    if (!progress && !stderr) details.push(String(error.message || error));
+    fail(details.join('\n'));
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
   }
 }
 
-function openFirstDraftCard(appPath, draftName = '') {
+function winOpenDraftByTitle(appPath, draftName, helperCommandJson = '') {
+  if (!draftName) fail('Draft name is required for Windows draft opening.');
+  if (!helperCommandJson) {
+    fail('Bundled Python uiautomation helper is required for Windows Jianying draft opening.');
+  }
+  return runWindowsUiaHelper(helperCommandJson, appPath, draftName);
+}
+
+function openFirstDraftCard(appPath, draftName = '', windowsUiaHelperCommand = '') {
   if (process.platform === 'darwin') {
     activateJianying(appPath);
     macDismissJianyingStartupDialogs(appPath);
@@ -2998,13 +2705,13 @@ function openFirstDraftCard(appPath, draftName = '') {
   }
   if (process.platform === 'win32') {
     activateJianying(appPath);
-    const progress = winOpenDraftByTitle(appPath, draftName);
+    const progress = winOpenDraftByTitle(appPath, draftName, windowsUiaHelperCommand);
     const editorCheck = windowsJianyingEditorReady(appPath, draftName);
     if (!editorCheck.ready) {
       fail([
         `Jianying draft editor did not open after Windows automation: ${draftName}`,
         `Editor check: ${JSON.stringify(editorCheck)}`,
-        `PowerShell progress:\n${progress || '(empty)'}`,
+        `Python UIA helper progress:\n${progress || '(empty)'}`,
       ].join('\n'));
     }
     return true;
@@ -3351,7 +3058,7 @@ $result | ConvertTo-Json -Depth 12
     });
     Object.assign(result, parseJsonFromOutput(stdout));
     result.success = false;
-    result.uia_progress = winOpenDraftByTitle(appPath, draftName);
+    result.uia_progress = winOpenDraftByTitle(appPath, draftName, args.windowsUiaHelperCommand);
     result.editor_check = windowsJianyingEditorReady(appPath, draftName);
     result.opened = Boolean(result.editor_check.ready);
     result.openedStage = result.opened ? 'named-draft-uia' : null;
@@ -4039,7 +3746,7 @@ function postCreateAutomation(args, audit) {
   if (args.open || args.openDraft) sleep(Number(args.homepageDelay ?? DEFAULTS.homepageDelay));
   if (args.openDraft) {
     try {
-      openFirstDraftCard(appPath, audit.draft_name);
+      openFirstDraftCard(appPath, audit.draft_name, args.windowsUiaHelperCommand);
       draftOpened = true;
       sleep(Number(args.editorDelay ?? DEFAULTS.editorDelay));
     } catch (error) {

@@ -4814,6 +4814,11 @@ def app_icon() -> QIcon:
 
 
 def handle_non_gui_args(argv: list[str]) -> bool:
+    if "--jianying-uia-helper" in argv:
+        index = argv.index("--jianying-uia-helper")
+        from aidrama_desktop.jianying.windows_uia_helper import run
+
+        raise SystemExit(run(argv[index + 1 :]))
     if "--version" in argv:
         print(__version__)
         return True

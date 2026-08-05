@@ -99,6 +99,11 @@ class JianyingProjectGenerator:
             command.extend(["--draft-root", str(self.draft_root)])
         if self.jianying_app:
             command.extend(["--jianying-app", str(self.jianying_app)])
+        helper_command = _windows_uia_helper_command()
+        if helper_command:
+            command.extend(
+                ["--windows-uia-helper-command", json.dumps(helper_command, ensure_ascii=False)]
+            )
 
         try:
             completed = subprocess.run(
@@ -205,3 +210,11 @@ def _source_tree_tool_candidates() -> list[Path]:
         candidates.append(parent / "scripts" / "jianying" / "create-jianying-project.js")
         candidates.append(parent.parent / "scripts" / "jianying" / "create-jianying-project.js")
     return candidates
+
+
+def _windows_uia_helper_command() -> list[str] | None:
+    if sys.platform != "win32":
+        return None
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--jianying-uia-helper"]
+    return [sys.executable, "-m", "aidrama_desktop.gui.app", "--jianying-uia-helper"]

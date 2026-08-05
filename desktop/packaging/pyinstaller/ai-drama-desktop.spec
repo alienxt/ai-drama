@@ -26,7 +26,7 @@ a = Analysis(
         (str(assets_dir), "aidrama_desktop/assets"),
         (str(jianying_tool), "aidrama_desktop/tools/jianying"),
     ],
-    hiddenimports=[],
+    hiddenimports=["uiautomation"] if sys.platform.startswith("win") else [],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
