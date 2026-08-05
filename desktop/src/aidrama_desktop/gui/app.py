@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -82,6 +83,9 @@ from aidrama_desktop.local_agent import create_local_agent_server
 from aidrama_desktop.platforms.registry import get_publisher
 from aidrama_desktop.storyboard import StoryboardGenerator
 from aidrama_desktop.tasks.runner import (
+    JIANYING_PROJECT_PREVIEW_DIRNAME,
+    JIANYING_PROJECT_STRATEGIES,
+    JIANYING_PROJECT_STRATEGY_LABELS,
     VIDEO_REASSEMBLY_DIRNAME,
     TaskRunner,
     drama_directory_name,
@@ -371,6 +375,7 @@ class DesktopWindow(QMainWindow):
         self.auto_task_enabled = False
         self.auto_task_busy = False
         self.manual_publish_busy = False
+        self.jianying_preview_busy = False
         self.current_task_id: str | None = None
         self.current_task_snapshot: dict[str, Any] | None = None
         self.current_media_account_id: str | None = None
@@ -1053,7 +1058,7 @@ class DesktopWindow(QMainWindow):
         self.task_history_table.setColumnWidth(4, 380)
         self.task_history_table.setColumnWidth(6, 150)
         self.task_history_table.setColumnWidth(7, 150)
-        self.task_history_table.setColumnWidth(8, 220)
+        self.task_history_table.setColumnWidth(8, 300)
         self.align_table_header_left(self.task_history_table)
         self.task_history_table.itemSelectionChanged.connect(self.on_task_history_selection_changed)
         history_layout.addWidget(self.task_history_table, 1)
@@ -1973,8 +1978,121 @@ class DesktopWindow(QMainWindow):
         force_stop.setEnabled(self.is_task_force_stoppable(task))
         force_stop.clicked.connect(lambda _=False, item=task: self.force_stop_distribution_task(item))
         layout.addWidget(force_stop)
+        jianying_preview = QPushButton("剪映图")
+        has_reassembled = self.has_local_reassembled_cache(task)
+        jianying_preview.setEnabled(
+            has_reassembled
+            and not self.jianying_preview_busy
+            and not self.manual_publish_busy
+            and not self.auto_task_busy
+        )
+        if has_reassembled:
+            jianying_preview.setToolTip(f"从 processed/reassembled 生成到 {JIANYING_PROJECT_PREVIEW_DIRNAME}-策略名")
+        else:
+            jianying_preview.setToolTip("本机 processed/reassembled 未找到可用重组视频")
+        jianying_preview.clicked.connect(lambda _=False, item=task: self.generate_jianying_preview_for_task(item))
+        layout.addWidget(jianying_preview)
         layout.addStretch(1)
         return wrapper
+
+    def has_local_reassembled_cache(self, task: dict[str, Any]) -> bool:
+        if str(task.get("platform") or "WECHAT_VIDEO") != "WECHAT_VIDEO":
+            return False
+        processed_dir = getattr(self.settings, "processed_dir", None)
+        if not processed_dir:
+            return False
+        for drama_dir in self.contract_drama_dir_candidates(Path(processed_dir), task):
+            reassembled_dir = drama_dir / VIDEO_REASSEMBLY_DIRNAME
+            if not reassembled_dir.is_dir():
+                continue
+            try:
+                if any(
+                    path.is_file()
+                    and path.suffix.lower() in {".mp4", ".mov", ".m4v"}
+                    and not path.name.startswith(".")
+                    and not path.name.endswith(".part")
+                    for path in reassembled_dir.iterdir()
+                ):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def generate_jianying_preview_for_task(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            QMessageBox.warning(self, "剪映工程图", "任务 ID 为空，无法生成剪映工程图。")
+            return
+        if self.manual_publish_busy or self.auto_task_busy or self.jianying_preview_busy:
+            QMessageBox.information(self, "剪映工程图", "当前已有任务在执行，请等待完成后再生成剪映工程图。")
+            return
+        strategy = self.choose_jianying_project_strategy()
+        if strategy is None:
+            return
+        self.jianying_preview_busy = True
+        self.update_task_progress("正在生成剪映工程图预览", task_id, task)
+        self.load_task_history(page=self.task_history_page, silent=True)
+        self.run_async(
+            "生成剪映工程图预览",
+            lambda: self.runner().generate_jianying_project_preview_from_cache(task, strategy=strategy or None),
+            self.handle_jianying_preview_done,
+            log_result=False,
+            on_failed=self.handle_jianying_preview_failed,
+        )
+
+    def choose_jianying_project_strategy(self) -> str | None:
+        options = [("随机选择", "")]
+        options.extend(
+            (f"{JIANYING_PROJECT_STRATEGY_LABELS.get(strategy, strategy)}（{strategy}）", strategy)
+            for strategy in JIANYING_PROJECT_STRATEGIES
+        )
+        labels = [label for label, _strategy in options]
+        selected, ok = QInputDialog.getItem(
+            self,
+            "剪映工程图",
+            "选择工程策略",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        return dict(options).get(selected, "")
+
+    def handle_jianying_preview_done(self, metadata: dict[str, object]) -> None:
+        self.jianying_preview_busy = False
+        output_dir = self.jianying_preview_output_dir(metadata)
+        screenshots = [
+            Path(str(path))
+            for path in metadata.get("jianyingProjectScreenshots", [])
+            if path
+        ] if isinstance(metadata, dict) else []
+        strategy_label = str(metadata.get("jianyingProjectStrategyLabel") or "默认工程")
+        if output_dir:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
+        self.load_task_history(page=self.task_history_page, silent=True)
+        QMessageBox.information(
+            self,
+            "剪映工程图",
+            f"已生成 {len(screenshots)} 张剪映工程图（{strategy_label}）。\n{output_dir or ''}",
+        )
+
+    def handle_jianying_preview_failed(self, error: str) -> None:
+        self.jianying_preview_busy = False
+        self.load_task_history(page=self.task_history_page, silent=True)
+        QMessageBox.critical(self, "剪映工程图", self.clean_error_message(error))
+
+    @staticmethod
+    def jianying_preview_output_dir(metadata: dict[str, object]) -> Path | None:
+        if not isinstance(metadata, dict):
+            return None
+        output_dir = str(metadata.get("jianyingProjectOutputDir") or "").strip()
+        if output_dir:
+            return Path(output_dir)
+        screenshots = metadata.get("jianyingProjectScreenshots")
+        if isinstance(screenshots, list) and screenshots:
+            return Path(str(screenshots[0])).parent
+        return None
 
     def force_stop_distribution_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")

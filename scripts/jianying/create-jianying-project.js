@@ -20,9 +20,6 @@ const DEFAULTS = {
   draftCardClickYRatio: 0.34,
 };
 
-const RECOMMENDED_WINDOWS_JIANYING_VERSION = '5.9.0.11632';
-const MAX_UIA_AUTOMATION_JIANYING_MAJOR = 6;
-
 const AUDIO_DISPLAY_STEMS = [
   '回忆_轻快_叙事',
   '节拍_甜美_欢喜',
@@ -32,22 +29,161 @@ const AUDIO_DISPLAY_STEMS = [
   '推进_鼓点_情绪',
 ];
 
-const VIDEO_TRACK_NAMES = [
-  'V1 正片画面',
-  'V2 补画面/转场层',
+const TIMELINE_STRATEGIES = [
+  {
+    id: 'layered-proof-v1',
+    label: '标准分轨工程',
+    bgmVolume: 0.35,
+    captionScale: 0.18,
+    captionTextSize: 8,
+    clipCount: 24,
+    speedChoices: [0.9, 1.1, 1.2],
+    speedEditProbability: 0.16,
+    videoTrackNames: [
+      'V1 正片画面',
+      'V2 补画面/转场层',
+    ],
+    overlayVideoTrackCount: 1,
+    subtitleTrackNames: [
+      'ST1 中文对白字幕',
+    ],
+    subtitleTrackCount: 1,
+    maxTimelineAudioTracks: 2,
+    dialogueAudioTrackName: 'A1 原声对白',
+    bgmAudioTrackNames: [
+      'A2 背景音乐/音效',
+      'A3 环境氛围',
+    ],
+    auxiliaryTextTracks: [
+      {
+        name: 'FX1 转场/特效标记',
+        labels: ['转场', '滤镜', '变速', '特效'],
+        count: 4,
+        color: '#FFEFD5',
+        durationRange: [900000, 1800000],
+        scale: 0.12,
+        y: -0.56,
+      },
+    ],
+  },
+  {
+    id: 'competitor-native-v1',
+    label: '竞品原生工程',
+    bgmVolume: 0.32,
+    bgmVolumeOverride: 0.32,
+    captionAlpha: 0.0,
+    captionScale: 0.16,
+    captionScaleOverride: 0.16,
+    captionTextSize: 8,
+    sourceClipCount: 5,
+    timelineClipCount: 10,
+    timelinePartsPattern: [2, 2, 2, 3, 1],
+    speedPattern: [1.0, 1.0, 0.9, 1.2, 0.9, 1.2, 1.0, 1.0, 1.0, 1.0],
+    videoClipMotionPattern: ['zoom', 'none', 'tilt', 'pan', 'zoom', 'none', 'zoom', 'none', 'none', 'none'],
+    videoTrackNames: [
+      '正片画面',
+    ],
+    overlayVideo: false,
+    subtitleTrackNames: [
+      '中文字幕',
+    ],
+    subtitleTrackCount: 1,
+    maxTimelineAudioTracks: 4,
+    maxBgmAudioTracks: 3,
+    dialogueAudioMode: 'source-clips',
+    dialogueAudioTrackName: '原声',
+    hideAudioInMediaPanel: true,
+    bgmPlan: 'staggered-beds',
+    bgmSegmentDurationRange: [8000000, 11000000],
+    bgmStartFractions: [0.12, 0.45, 0.78],
+    bgmAudioTrackNames: [
+      '轻音乐铺底',
+      '舒缓氛围',
+      '浪漫情绪',
+    ],
+    nativeFilterTracks: [
+      {
+        name: '滤镜',
+        items: [
+          { name: '粉瓷', startFraction: 58 / 2005, durationFraction: 342 / 2005, intensity: 0.0 },
+          { name: '浓郁日落', startFraction: 459 / 2005, durationFraction: 325 / 2005, intensity: 0.0 },
+          { name: '鲜美', startFraction: 813 / 2005, durationFraction: 374 / 2005, intensity: 0.0 },
+          { name: '深沉', startFraction: 1290 / 2005, durationFraction: 301 / 2005, intensity: 0.0 },
+          { name: '高清润白', startFraction: 1621 / 2005, durationFraction: 381 / 2005, intensity: 0.0 },
+        ],
+      },
+    ],
+    nativeEffectTracks: [
+      {
+        name: '特效',
+        items: [
+          { name: '星火炸开', startFraction: 1142 / 2005, durationFraction: 340 / 2005 },
+        ],
+      },
+    ],
+    nativeStickerTracks: [
+      {
+        name: '贴纸',
+        items: [
+          {
+            name: '现场直击直播文字',
+            resourceId: '7390244654698040588',
+            startFraction: 846 / 2005,
+            durationFraction: 863 / 2005,
+            x: -0.13076823486088118,
+            y: 0.020319414945572545,
+            scale: 0.01,
+            rotation: 6.889571980551551,
+          },
+        ],
+      },
+    ],
+  },
 ];
+const DEFAULT_TIMELINE_STRATEGY_ID = 'layered-proof-v1';
+const RECOMMENDED_WINDOWS_JIANYING_VERSION = '5.9.0.11632';
+const MAX_UIA_AUTOMATION_JIANYING_MAJOR = 6;
 
-const SUBTITLE_TRACK_NAMES = [
-  'ST1 中文对白字幕',
-];
+const NATIVE_FILTERS = {
+  粉瓷: {
+    name: '粉瓷',
+    effectId: '7127667757998411044',
+    resourceId: '7127667757998411044',
+  },
+  浓郁日落: {
+    name: '浓郁日落',
+    effectId: '7591499629557075251',
+    resourceId: '7591499629557075251',
+  },
+  鲜美: {
+    name: '鲜美',
+    effectId: '7330581892510649636',
+    resourceId: '7330581892510649636',
+  },
+  深沉: {
+    name: '深沉',
+    effectId: '7414897963752770828',
+    resourceId: '7414897963752770828',
+  },
+  高清润白: {
+    name: '高清润白',
+    effectId: '7404503340576410906',
+    resourceId: '7404503340576410906',
+  },
+};
 
-const MAX_TIMELINE_AUDIO_TRACKS = 2;
-const DIALOGUE_AUDIO_TRACK_NAME = 'A1 原声对白';
-
-const BGM_AUDIO_TRACK_NAMES = [
-  'A2 背景音乐/音效',
-  'A3 环境氛围',
-];
+const NATIVE_VIDEO_EFFECTS = {
+  星火炸开: {
+    name: '星火炸开',
+    effectId: '703243',
+    resourceId: '6808838081420988942',
+    effectType: 'video_effect',
+    params: [
+      { name: 'effects_adjust_speed', defaultValue: 0.33, minValue: 0.0, maxValue: 1.0 },
+      { name: 'effects_adjust_background_animation', defaultValue: 1.0, minValue: 0.0, maxValue: 1.0 },
+    ],
+  },
+};
 
 const HELP = `
 Create a Jianying/CapCut desktop draft from local video, SRT and BGM files.
@@ -68,6 +204,8 @@ Common options:
   --audio <file>          Alias of --bgm for backward compatibility.
   --template <dir>        Optional explicit template draft dir. If omitted, uses
                           the built-in clean seed.
+  --strategy <id>         Timeline proof strategy. Built-ins:
+                          ${TIMELINE_STRATEGIES.map((strategy) => strategy.id).join(', ')}.
   --allow-draft-template-fallback
                           Unsafe fallback: use a normal Jianying draft as template when
                           AI_DRAMA_TEMPLATE_DRAFT is missing. Disabled by default.
@@ -204,6 +342,16 @@ function randomInt(rng, min, max) {
 
 function pick(rng, values) {
   return values[Math.min(values.length - 1, Math.floor(rng() * values.length))];
+}
+
+function resolveTimelineStrategy(strategyId) {
+  const requested = String(strategyId || DEFAULT_TIMELINE_STRATEGY_ID).trim() || DEFAULT_TIMELINE_STRATEGY_ID;
+  const normalized = requested === 'default' ? DEFAULT_TIMELINE_STRATEGY_ID : requested;
+  const strategy = TIMELINE_STRATEGIES.find((item) => item.id === normalized);
+  if (!strategy) {
+    fail(`Unknown Jianying timeline strategy: ${requested}. Available: ${TIMELINE_STRATEGIES.map((item) => item.id).join(', ')}`);
+  }
+  return strategy;
 }
 
 function readJson(file) {
@@ -730,12 +878,18 @@ function splitRanges(totalUs, count, rng = Math.random) {
   return ranges;
 }
 
-function speedForClip(index, rng) {
+function speedForClip(index, rng, strategy = null) {
+  if (Array.isArray(strategy?.speedPattern) && index < strategy.speedPattern.length) {
+    const patternedSpeed = Number(strategy.speedPattern[index]);
+    return patternedSpeed > 0 ? patternedSpeed : 1.0;
+  }
+  const choices = strategy?.speedChoices?.length ? strategy.speedChoices : [0.9, 1.1, 1.2];
   const rhythm = index % 7;
-  if (rhythm === 2) return 0.9;
-  if (rhythm === 4) return 1.1;
-  if (rhythm === 6) return 1.2;
-  return rng() > 0.84 ? pick(rng, [0.9, 1.1, 1.2]) : 1.0;
+  if (rhythm === 2) return choices[0] || 0.9;
+  if (rhythm === 4) return choices[1] || choices[0] || 1.1;
+  if (rhythm === 6) return choices[2] || choices[choices.length - 1] || 1.2;
+  const probability = Number(strategy?.speedEditProbability ?? 0.16);
+  return rng() > 1 - probability ? pick(rng, choices) : 1.0;
 }
 
 function mediaBaseNameForDraft(draftName, source) {
@@ -763,10 +917,93 @@ function splitVideo({ source, outputDir, ranges, ffmpegBin, nameBase }) {
   });
 }
 
-function extractDialogueAudio({ source, outputDir, ffmpegBin, nameBase }) {
-  const baseName = sanitizeName(nameBase || path.basename(source, path.extname(source))) || 'clip';
-  const fileName = `${baseName}-原声对白.wav`;
-  const output = path.join(outputDir, fileName);
+function timelinePartsForSourceClips(clipCount, targetCount, pattern = null) {
+  if (
+    Array.isArray(pattern)
+    && pattern.length === clipCount
+    && pattern.reduce((sum, item) => sum + Math.max(1, Math.round(Number(item) || 1)), 0) === targetCount
+  ) {
+    return pattern.map((item) => Math.max(1, Math.round(Number(item) || 1)));
+  }
+  const parts = Array.from({ length: clipCount }, () => 1);
+  let remaining = Math.max(0, targetCount - clipCount);
+  let index = 0;
+  while (remaining > 0) {
+    parts[index % clipCount] += 1;
+    index += 1;
+    remaining -= 1;
+  }
+  return parts;
+}
+
+function splitDurationIntoParts(totalUs, count, rng) {
+  const partCount = Math.max(1, Math.round(Number(count) || 1));
+  if (partCount === 1) return [totalUs];
+  const minDuration = Math.max(250000, Math.min(900000, Math.floor(totalUs / (partCount * 3))));
+  const weights = Array.from({ length: partCount }, (_, index) => (
+    index % 2 === 0 ? randomBetween(rng, 0.9, 1.35) : randomBetween(rng, 0.65, 1.1)
+  ));
+  const weightTotal = weights.reduce((sum, item) => sum + item, 0);
+  let durations = weights.map((weight) => Math.max(minDuration, Math.round((totalUs * weight) / weightTotal)));
+  let drift = durations.reduce((sum, duration) => sum + duration, 0) - totalUs;
+  while (drift > 0) {
+    const index = durations.findIndex((duration) => duration > minDuration);
+    if (index < 0) break;
+    const delta = Math.min(drift, durations[index] - minDuration);
+    durations[index] -= delta;
+    drift -= delta;
+  }
+  if (drift < 0) durations[durations.length - 1] += -drift;
+  return durations;
+}
+
+function makeVideoTimelinePlans({ splitClips, totalUs, strategy, rng }) {
+  if (!splitClips.length) return [];
+  const requestedTargetCount = Math.max(
+    splitClips.length,
+    Math.round(Number(strategy?.timelineClipCount || splitClips.length)),
+  );
+  const durationBasedLimit = Math.max(splitClips.length, Math.floor(fromUs(totalUs) / 1.1));
+  const targetCount = Math.min(requestedTargetCount, durationBasedLimit);
+  const partsByClip = timelinePartsForSourceClips(
+    splitClips.length,
+    targetCount,
+    strategy?.timelinePartsPattern,
+  );
+  const plans = [];
+  let targetStart = 0;
+  splitClips.forEach((clip, clipIndex) => {
+    const partDurations = splitDurationIntoParts(clip.duration, partsByClip[clipIndex], rng);
+    let sourceStart = 0;
+    partDurations.forEach((duration, partIndex) => {
+      const isLastPart = partIndex === partDurations.length - 1;
+      const safeDuration = isLastPart ? Math.max(0, clip.duration - sourceStart) : duration;
+      if (safeDuration <= 0) return;
+      plans.push({
+        clipIndex,
+        duration: safeDuration,
+        partIndex,
+        sourceDuration: safeDuration,
+        sourceGlobalStart: clip.start + sourceStart,
+        sourceStart,
+        targetStart,
+      });
+      sourceStart += safeDuration;
+      targetStart += safeDuration;
+    });
+  });
+  const drift = totalUs - targetStart;
+  if (plans.length && drift !== 0) {
+    const last = plans[plans.length - 1];
+    last.duration = Math.max(100000, last.duration + drift);
+    last.sourceDuration = Math.max(100000, last.sourceDuration + drift);
+  }
+  return plans;
+}
+
+function extractAudioFile({ source, outputDir, ffmpegBin, fileName }) {
+  const safeName = sanitizeName(fileName || path.basename(source, path.extname(source))) || 'audio';
+  const output = path.join(outputDir, `${safeName}.wav`);
   execFileSync(ffmpegBin, [
     '-y',
     '-i', source,
@@ -776,7 +1013,17 @@ function extractDialogueAudio({ source, outputDir, ffmpegBin, nameBase }) {
     '-c:a', 'pcm_s16le',
     output,
   ], { stdio: 'ignore' });
-  return { fileName, output };
+  return { fileName: path.basename(output), output };
+}
+
+function extractDialogueAudio({ source, outputDir, ffmpegBin, nameBase }) {
+  const baseName = sanitizeName(nameBase || path.basename(source, path.extname(source))) || 'clip';
+  return extractAudioFile({
+    source,
+    outputDir,
+    ffmpegBin,
+    fileName: `${baseName}-原声对白`,
+  });
 }
 
 function defaultClip(scale = 1.0, x = 0.0, y = 0.0) {
@@ -787,6 +1034,23 @@ function defaultClip(scale = 1.0, x = 0.0, y = 0.0) {
     scale: { x: scale, y: scale },
     transform: { x, y },
   };
+}
+
+function motionClipForTimelineSegment(index, rng, strategy = null) {
+  const pattern = Array.isArray(strategy?.videoClipMotionPattern) ? strategy.videoClipMotionPattern : [];
+  const motion = pattern.length ? String(pattern[index % pattern.length] || 'none') : 'none';
+  if (motion === 'zoom') {
+    return defaultClip(randomBetween(rng, 1.02, 1.05), 0.0, 0.0);
+  }
+  if (motion === 'pan') {
+    return defaultClip(1.04, randomBetween(rng, -0.018, 0.018), 0.0);
+  }
+  if (motion === 'tilt') {
+    const clip = defaultClip(1.03, 0.0, 0.0);
+    clip.rotation = randomBetween(rng, -0.45, 0.45);
+    return clip;
+  }
+  return null;
 }
 
 function makeTrack(type, segments, name = '') {
@@ -805,7 +1069,10 @@ function makeVideoSegment(baseSegment, materialId, targetRange, index, extraRefs
   const segment = clone(baseSegment);
   segment.id = uuid();
   segment.material_id = materialId;
-  segment.source_timerange = { start: options.sourceStart || 0, duration: targetRange.duration };
+  segment.source_timerange = {
+    start: options.sourceStart || 0,
+    duration: options.sourceDuration || targetRange.duration,
+  };
   segment.target_timerange = targetRange;
   delete segment.render_timerange;
   segment.render_index = index;
@@ -846,7 +1113,7 @@ function makeAudioMaterial({ id, localMaterialId, fileName, durationUs, filePath
   };
 }
 
-function makeAudioSegment(materialId, sourceStartUs, startUs, durationUs, extraRefs, volume) {
+function makeAudioSegment(materialId, sourceStartUs, startUs, durationUs, extraRefs, volume, speed = 1.0, options = {}) {
   return {
     cartoon: false,
     clip: null,
@@ -862,8 +1129,8 @@ function makeAudioSegment(materialId, sourceStartUs, startUs, durationUs, extraR
     material_id: materialId,
     render_index: 0,
     reverse: false,
-    source_timerange: { start: sourceStartUs, duration: durationUs },
-    speed: 1.0,
+    source_timerange: { start: sourceStartUs, duration: options.sourceDuration || durationUs },
+    speed,
     target_timerange: { start: startUs, duration: durationUs },
     template_id: '',
     track_render_index: 0,
@@ -953,6 +1220,235 @@ function makeTextSegment(materialId, caption, index, scale, y = -0.78) {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function makeNativeTargetRange(totalUs, item, index, count, rng) {
+  const fallbackSlot = totalUs / Math.max(1, count + 1);
+  const fallbackDurationRange = Array.isArray(item.durationRange) ? item.durationRange : [900000, 1800000];
+  const fallbackDuration = Math.round(randomBetween(
+    rng,
+    Math.max(300000, Number(fallbackDurationRange[0] || 900000)),
+    Math.max(300000, Number(fallbackDurationRange[1] || 1800000)),
+  ));
+  const rawDuration = item.durationUs != null
+    ? Number(item.durationUs)
+    : item.durationFraction != null
+      ? Math.round(totalUs * Number(item.durationFraction))
+      : fallbackDuration;
+  const duration = clamp(Math.round(rawDuration), 300000, Math.max(300000, totalUs));
+  const rawStart = item.startUs != null
+    ? Number(item.startUs)
+    : item.startFraction != null
+      ? Math.round(totalUs * Number(item.startFraction))
+      : Math.round((index + 1) * fallbackSlot);
+  const start = clamp(Math.round(rawStart), 0, Math.max(0, totalUs - duration));
+  return { start, duration };
+}
+
+function makeNativeBaseSegment(materialId, targetRange, index) {
+  return {
+    common_keyframes: [],
+    enable_adjust: true,
+    enable_color_correct_adjust: false,
+    enable_color_curves: true,
+    enable_color_match_adjust: false,
+    enable_color_wheels: true,
+    enable_lut: true,
+    enable_smart_color_adjust: false,
+    group_id: '',
+    id: uuid(),
+    is_placeholder: false,
+    keyframe_refs: [],
+    last_nonzero_volume: 1.0,
+    material_id: materialId,
+    render_index: index,
+    reverse: false,
+    target_timerange: targetRange,
+    template_id: '',
+    track_attribute: 0,
+    track_render_index: 0,
+    visible: true,
+  };
+}
+
+function makeNativeFilterMaterial(item, id) {
+  const meta = NATIVE_FILTERS[item.name] || item;
+  if (!meta.effectId || !meta.resourceId) {
+    fail(`Missing native Jianying filter metadata for "${item.name}"`);
+  }
+  return {
+    adjust_params: [],
+    algorithm_artifact_path: '',
+    apply_target_type: Number(item.applyTargetType ?? 0),
+    bloom_params: null,
+    category_id: '',
+    category_name: '',
+    color_match_info: {
+      source_feature_path: '',
+      target_feature_path: '',
+      target_image_path: '',
+    },
+    effect_id: meta.effectId,
+    enable_skin_tone_correction: false,
+    exclusion_group: [],
+    face_adjust_params: [],
+    formula_id: '',
+    id,
+    intensity_key: '',
+    multi_language_current: '',
+    name: meta.name || item.name,
+    panel_id: '',
+    platform: 'all',
+    resource_id: meta.resourceId,
+    source_platform: Number(item.sourcePlatform ?? 1),
+    sub_type: 'none',
+    time_range: null,
+    type: 'filter',
+    value: Number(item.intensity ?? 0.0),
+    version: '',
+  };
+}
+
+function makeNativeEffectAdjustParams(meta, item) {
+  const overrides = Array.isArray(item.params) ? item.params : [];
+  return (meta.params || []).map((param, index) => {
+    const defaultValue = Number(param.defaultValue ?? 0.0);
+    const minValue = Number(param.minValue ?? 0.0);
+    const maxValue = Number(param.maxValue ?? 1.0);
+    const override = overrides[index];
+    const value = override == null
+      ? defaultValue
+      : minValue + ((maxValue - minValue) * clamp(Number(override), 0, 100) / 100.0);
+    return {
+      default_value: defaultValue,
+      max_value: maxValue,
+      min_value: minValue,
+      name: param.name,
+      parameterIndex: index,
+      portIndex: 0,
+      value,
+    };
+  });
+}
+
+function makeNativeVideoEffectMaterial(item, id) {
+  const meta = NATIVE_VIDEO_EFFECTS[item.name] || item;
+  if (!meta.effectId || !meta.resourceId) {
+    fail(`Missing native Jianying effect metadata for "${item.name}"`);
+  }
+  return {
+    adjust_params: makeNativeEffectAdjustParams(meta, item),
+    apply_target_type: Number(item.applyTargetType ?? 2),
+    apply_time_range: null,
+    category_id: '',
+    category_name: '',
+    common_keyframes: [],
+    disable_effect_faces: [],
+    effect_id: meta.effectId,
+    formula_id: '',
+    id,
+    name: meta.name || item.name,
+    platform: 'all',
+    render_index: Number(item.renderIndex ?? 11000),
+    resource_id: meta.resourceId,
+    source_platform: Number(item.sourcePlatform ?? 0),
+    time_range: null,
+    track_render_index: 0,
+    type: meta.effectType || 'video_effect',
+    value: Number(item.value ?? 1.0),
+    version: '',
+  };
+}
+
+function makeNativeStickerMaterial(item, id) {
+  if (!item.resourceId) fail(`Missing native Jianying sticker resource_id for "${item.name || 'unnamed'}"`);
+  return {
+    id,
+    name: item.name || '',
+    resource_id: item.resourceId,
+    source_platform: Number(item.sourcePlatform ?? 1),
+    sticker_id: item.resourceId,
+    type: 'sticker',
+  };
+}
+
+function makeNativeStickerSegment(materialId, targetRange, index, item) {
+  const segment = makeNativeBaseSegment(materialId, targetRange, index);
+  segment.clip = defaultClip(
+    Number(item.scale ?? 0.01),
+    Number(item.x ?? 0.0),
+    Number(item.y ?? 0.0),
+  );
+  segment.clip.rotation = Number(item.rotation ?? 0.0);
+  segment.extra_material_refs = [];
+  segment.is_tone_modify = false;
+  segment.source_timerange = null;
+  segment.speed = 1.0;
+  segment.uniform_scale = { on: true, value: 1.0 };
+  segment.volume = 1.0;
+  return segment;
+}
+
+function makeNativeVisualTracks({ strategy, totalUs, rng }) {
+  if (totalUs <= 500000) {
+    return {
+      effectMaterials: [],
+      effectTracks: [],
+      filterMaterials: [],
+      filterTracks: [],
+      stickerMaterials: [],
+      stickerTracks: [],
+    };
+  }
+  const buildTracks = (configs, makeMaterial, makeSegment) => {
+    const materials = [];
+    const tracks = [];
+    for (const config of configs || []) {
+      const items = Array.isArray(config.items) ? config.items : [];
+      if (!items.length) continue;
+      const segments = [];
+      items.forEach((item, index) => {
+        const materialId = uuid();
+        const targetRange = makeNativeTargetRange(totalUs, item, index, items.length, rng);
+        materials.push(makeMaterial(item, materialId));
+        segments.push(makeSegment(materialId, targetRange, index, item));
+      });
+      if (segments.length) {
+        tracks.push({
+          name: config.name || '',
+          segments: segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start),
+        });
+      }
+    }
+    return { materials, tracks };
+  };
+  const filter = buildTracks(
+    strategy.nativeFilterTracks,
+    makeNativeFilterMaterial,
+    (materialId, targetRange, index) => makeNativeBaseSegment(materialId, targetRange, index),
+  );
+  const effect = buildTracks(
+    strategy.nativeEffectTracks,
+    makeNativeVideoEffectMaterial,
+    (materialId, targetRange, index) => makeNativeBaseSegment(materialId, targetRange, index),
+  );
+  const sticker = buildTracks(
+    strategy.nativeStickerTracks,
+    makeNativeStickerMaterial,
+    makeNativeStickerSegment,
+  );
+  return {
+    effectMaterials: effect.materials,
+    effectTracks: effect.tracks,
+    filterMaterials: filter.materials,
+    filterTracks: filter.tracks,
+    stickerMaterials: sticker.materials,
+    stickerTracks: sticker.tracks,
+  };
+}
+
 function distributeSegmentsAcrossTracks(segments, trackCount) {
   const count = Math.max(1, Math.min(trackCount, segments.length || 1));
   const tracks = Array.from({ length: count }, () => []);
@@ -1038,6 +1534,57 @@ function makeTimelineCaption(text, start, duration) {
   return { text, start, duration };
 }
 
+function makeAuxiliaryTextTracks({
+  strategy,
+  totalUs,
+  rng,
+  textMaterials,
+  captionTextSize,
+}) {
+  const configs = strategy?.auxiliaryTextTracks || [];
+  if (!configs.length || totalUs <= 2500000) return [];
+  return configs.map((config) => {
+    const requestedCount = Math.max(0, Number(config.count || 0));
+    const durationBasedLimit = Math.max(1, Math.floor(fromUs(totalUs) / 3));
+    const count = Math.min(requestedCount, durationBasedLimit);
+    const durationRange = Array.isArray(config.durationRange) ? config.durationRange : [900000, 1800000];
+    const minDuration = Math.max(300000, Number(durationRange[0] || 900000));
+    const maxDuration = Math.max(minDuration, Number(durationRange[1] || 1800000));
+    const labels = config.labels?.length ? config.labels : [config.name || '标记'];
+    const segments = [];
+    const slot = totalUs / Math.max(1, count + 1);
+    for (let index = 0; index < count; index += 1) {
+      const duration = Math.min(
+        totalUs,
+        Math.round(randomBetween(rng, minDuration, maxDuration)),
+      );
+      const centered = Math.round(slot * (index + 1));
+      const drift = Math.round(randomBetween(rng, -slot * 0.22, slot * 0.22));
+      const start = Math.max(0, Math.min(totalUs - duration, centered + drift));
+      const label = pick(rng, labels);
+      const material = makeTextMaterial({
+        id: uuid(),
+        text: label,
+        textSize: Number(config.textSize || Math.max(6, captionTextSize * 0.85)),
+        color: config.color || '#FFFFFF',
+        alpha: Number(config.alpha ?? 0.9),
+      });
+      textMaterials.push(material);
+      segments.push(makeTextSegment(
+        material.id,
+        makeTimelineCaption(label, start, duration),
+        index,
+        Number(config.scale || 0.12),
+        Number(config.y ?? -0.55),
+      ));
+    }
+    return {
+      name: config.name || 'FX 辅助标记',
+      segments: segments.sort((left, right) => left.target_timerange.start - right.target_timerange.start),
+    };
+  }).filter((track) => track.segments.length);
+}
+
 function audioPlansOverlap(left, right, gapUs = 180000) {
   const leftEnd = left.start + left.duration + gapUs;
   const rightEnd = right.start + right.duration + gapUs;
@@ -1051,9 +1598,45 @@ function pushNonOverlappingPlan(track, plan) {
   return true;
 }
 
-function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng, trackLimit = 2 }) {
+function makeStaggeredBgmPlan({ bgmFiles, audioInfos, totalUs, rng, trackCount, strategy }) {
+  const plans = Array.from({ length: trackCount }, () => []);
+  const startFractions = Array.isArray(strategy?.bgmStartFractions) && strategy.bgmStartFractions.length
+    ? strategy.bgmStartFractions
+    : [0.12, 0.45, 0.78];
+  const durationRange = Array.isArray(strategy?.bgmSegmentDurationRange)
+    ? strategy.bgmSegmentDurationRange
+    : [8000000, 12000000];
+  const minDuration = Math.max(500000, Number(durationRange[0] || 8000000));
+  const maxDuration = Math.max(minDuration, Number(durationRange[1] || 12000000));
+  for (let index = 0; index < trackCount; index += 1) {
+    const audioIndex = index % bgmFiles.length;
+    const audioDuration = audioInfos[audioIndex].durationUs;
+    const desired = Math.min(
+      audioDuration,
+      Math.round(randomBetween(rng, minDuration, maxDuration)),
+      Math.max(500000, Math.round(totalUs * 0.35)),
+    );
+    if (desired <= 500000) continue;
+    const fraction = Number(startFractions[index % startFractions.length] ?? 0.5);
+    const start = Math.max(0, Math.min(totalUs - desired, Math.round(totalUs * fraction)));
+    const sourceStartMax = Math.max(0, audioDuration - desired);
+    plans[index].push({
+      audioIndex,
+      duration: desired,
+      sourceStart: Math.round(randomBetween(rng, 0, sourceStartMax)),
+      start,
+    });
+  }
+  return plans.map((track) => track.sort((left, right) => left.start - right.start));
+}
+
+function makeAudioPlan({ bgmFiles, audioInfos, totalUs, rng, trackLimit = 2, strategy = null }) {
   if (!bgmFiles.length || trackLimit <= 0) return [];
-  const trackCount = Math.max(1, Math.min(2, Math.round(Number(trackLimit) || 2)));
+  const maxBgmTracks = Math.max(1, Math.min(6, Math.round(Number(strategy?.maxBgmAudioTracks ?? 2))));
+  const trackCount = Math.max(1, Math.min(maxBgmTracks, Math.round(Number(trackLimit) || 2)));
+  if (strategy?.bgmPlan === 'staggered-beds') {
+    return makeStaggeredBgmPlan({ bgmFiles, audioInfos, totalUs, rng, trackCount, strategy });
+  }
   const plans = Array.from({ length: trackCount }, () => []);
   const makePlan = ({ audioIndex, start, duration }) => {
     const audioDuration = audioInfos[audioIndex].durationUs;
@@ -1193,11 +1776,12 @@ function upsertRootEntry(rootFile, entry, overwrite) {
   writeJson(rootFile, root);
 }
 
-function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs) {
+function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs, options = {}) {
   const file = path.join(draftDir, 'draft_meta_info.json');
   const meta = readJson(file);
   const totalVideoSize = videoMetas.reduce((sum, item) => sum + item.size, 0);
   const totalAudioSize = audioMetas.reduce((sum, item) => sum + item.size, 0);
+  const visibleAudioMetas = options.hideAudioInMediaPanel ? [] : audioMetas;
   const maxDuration = videoMetas.reduce((sum, item) => sum + item.durationUs, 0);
   meta.draft_cover = 'draft_cover.jpg';
   meta.draft_fold_path = draftDir;
@@ -1225,7 +1809,7 @@ function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, t
     type: 0,
     width: videoMeta.width,
   }));
-  const audioEntries = audioMetas.map((audioMeta) => ({
+  const audioEntries = visibleAudioMetas.map((audioMeta) => ({
     create_time: Math.floor(timestampUs / 1000000),
     duration: audioMeta.durationUs,
     extra_info: audioMeta.name,
@@ -1236,7 +1820,7 @@ function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, t
     import_time_ms: timestampUs,
     item_source: 1,
     md5: '',
-    metetype: 'audio',
+    metetype: 'none',
     roughcut_time_range: { duration: audioMeta.durationUs, start: 0 },
     sub_time_range: { duration: -1, start: -1 },
     type: 1,
@@ -1254,9 +1838,10 @@ function updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, t
   writeJson(file, meta);
 }
 
-function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
+function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs, options = {}) {
   const file = path.join(draftDir, 'draft_virtual_store.json');
   const store = fs.existsSync(file) ? readJson(file) : { draft_materials: [], draft_virtual_store: [] };
+  const visibleAudioMetas = options.hideAudioInMediaPanel ? [] : audioMetas;
   const materialRows = [
     { creation_time: 0, display_name: '', filter_type: 0, id: '', import_time: 0, import_time_us: 0, sort_sub_type: 0, sort_type: 0 },
     ...videoMetas.map((videoMeta) => ({
@@ -1269,7 +1854,7 @@ function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
       sort_sub_type: 0,
       sort_type: 0,
     })),
-    ...audioMetas.map((audioMeta) => ({
+    ...visibleAudioMetas.map((audioMeta) => ({
       creation_time: Math.floor(timestampUs / 1000000),
       display_name: audioMeta.name,
       filter_type: 0,
@@ -1286,7 +1871,7 @@ function updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs) {
       type: 1,
       value: [
         ...videoMetas.map((videoMeta) => ({ parent_id: '', child_id: videoMeta.localMaterialId })),
-        ...audioMetas.map((audioMeta) => ({ parent_id: '', child_id: audioMeta.localMaterialId })),
+        ...visibleAudioMetas.map((audioMeta) => ({ parent_id: '', child_id: audioMeta.localMaterialId })),
       ],
     },
     { type: 2, value: [] },
@@ -2792,6 +3377,7 @@ $result | ConvertTo-Json -Depth 12
 function createProject(args) {
   const ffmpegBin = args.ffmpeg || 'ffmpeg';
   const ffprobeBin = args.ffprobe || ffprobePathForFfmpeg(ffmpegBin);
+  const strategy = resolveTimelineStrategy(args.strategy);
   const video = resolveExistingFile(args.video, 'Video');
   const srt = args.srt ? resolveExistingFile(args.srt, 'SRT') : null;
   const bgmFiles = args.bgm.map((file, index) => resolveExistingFile(file, `BGM #${index + 1}`));
@@ -2830,7 +3416,7 @@ function createProject(args) {
   const videoInfo = mediaInfo(video, ffprobeBin);
   if (!videoInfo.width || !videoInfo.height || !videoInfo.durationUs) fail(`Video has no readable video stream: ${video}`);
   const materialBaseName = mediaBaseNameForDraft(draftName, video);
-  const rng = createRng(`${draftName}|${video}|${videoInfo.durationUs}|${videoInfo.width}x${videoInfo.height}`);
+  const rng = createRng(`${strategy.id}|${draftName}|${video}|${videoInfo.durationUs}|${videoInfo.width}x${videoInfo.height}`);
   const captions = parseSrt(srt, videoInfo.durationUs);
   const useSeparateDialogueAudio = videoInfo.hasAudio && captions.length > 0;
   const draftInfoFile = path.join(draftDir, 'draft_info.json');
@@ -2854,7 +3440,8 @@ function createProject(args) {
     'vocal_separations',
   ]);
 
-  const ranges = splitRanges(videoInfo.durationUs, Number(args.clipCount || DEFAULTS.clipCount), rng);
+  const sourceClipCount = Number(strategy.sourceClipCount || args.clipCount || strategy.clipCount || DEFAULTS.clipCount);
+  const ranges = splitRanges(videoInfo.durationUs, sourceClipCount, rng);
   const splitClips = splitVideo({ source: video, outputDir: resourceMediaDir, ranges, ffmpegBin, nameBase: materialBaseName });
   const videoMaterials = [];
   const videoMetas = [];
@@ -2867,14 +3454,11 @@ function createProject(args) {
       'loudnesses',
       'vocal_separations',
     ];
-  let speedEditCount = 0;
-  const videoSegments = splitClips.map((clip, index) => {
+  splitClips.forEach((clip) => {
     const materialId = uuid();
     const materialLocalId = localId();
     const clipInfo = mediaInfo(clip.output, ffprobeBin);
     const durationUs = clip.duration;
-    const speed = speedForClip(index, rng);
-    if (speed !== 1.0) speedEditCount += 1;
     const videoMaterial = {
       ...baseVideo,
       duration: clipInfo.durationUs || durationUs,
@@ -2887,6 +3471,8 @@ function createProject(args) {
       path: clip.output,
       width: videoInfo.width,
     };
+    clip.materialId = materialId;
+    clip.materialLocalId = materialLocalId;
     videoMaterials.push(videoMaterial);
     videoMetas.push({
       durationUs,
@@ -2896,6 +3482,20 @@ function createProject(args) {
       size: fs.statSync(clip.output).size,
       width: videoInfo.width,
     });
+  });
+
+  const timelinePlans = makeVideoTimelinePlans({
+    splitClips,
+    totalUs: videoInfo.durationUs,
+    strategy,
+    rng,
+  });
+  const timelinePlanSpeeds = timelinePlans.map((_plan, index) => speedForClip(index, rng, strategy));
+  let speedEditCount = 0;
+  const videoSegments = timelinePlans.map((plan, index) => {
+    const clip = splitClips[plan.clipIndex];
+    const speed = timelinePlanSpeeds[index] || 1.0;
+    if (speed !== 1.0) speedEditCount += 1;
     const extraRefs = makeExtraRefs(draft.materials, baseExtras, videoExtraRefKeys, (key, material) => {
       if (key === 'speeds') {
         material.speed = speed;
@@ -2903,58 +3503,122 @@ function createProject(args) {
         material.curve_speed = null;
       }
     });
-    return makeVideoSegment(baseSegment, materialId, {
-      start: clip.start,
-      duration: clip.duration,
-    }, index, extraRefs, speed);
+    return makeVideoSegment(baseSegment, clip.materialId, {
+      start: plan.targetStart,
+      duration: plan.duration,
+    }, index, extraRefs, speed, {
+      clip: motionClipForTimelineSegment(index, rng, strategy),
+      sourceDuration: plan.sourceDuration,
+      sourceStart: plan.sourceStart,
+    });
   });
 
-  const bgmVolume = Number(args.bgmVolume ?? DEFAULTS.bgmVolume);
+  const bgmVolume = Number(strategy.bgmVolumeOverride ?? args.bgmVolume ?? strategy.bgmVolume ?? DEFAULTS.bgmVolume);
   const audioMaterials = [];
   const bgmAudioMaterials = [];
   const audioMetas = [];
   const audioInfos = [];
   let dialogueAudioTrack = null;
   if (useSeparateDialogueAudio) {
-    const dialogueAudio = extractDialogueAudio({ source: video, outputDir: resourceAudioDir, ffmpegBin, nameBase: materialBaseName });
-    const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
-    const materialId = uuid();
-    const materialLocalId = localId();
-    const dialogueMaterial = makeAudioMaterial({
-      id: materialId,
-      localMaterialId: materialLocalId,
-      fileName: dialogueAudio.fileName,
-      durationUs: dialogueInfo.durationUs || videoInfo.durationUs,
-      filePath: dialogueAudio.output,
-    });
-    audioMaterials.push(dialogueMaterial);
-    audioMetas.push({
-      durationUs: dialogueMaterial.duration,
-      localMaterialId: materialLocalId,
-      name: dialogueAudio.fileName,
-      size: fs.statSync(dialogueAudio.output).size,
-    });
-    dialogueAudioTrack = {
-      name: DIALOGUE_AUDIO_TRACK_NAME,
-      segments: captions.map((caption) => {
-        const duration = Math.min(caption.duration, Math.max(0, dialogueMaterial.duration - caption.start));
-        if (duration <= 0) return null;
-        const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
-          'speeds',
-          'sound_channel_mappings',
-          'loudnesses',
-          'vocal_separations',
-        ]);
-        return makeAudioSegment(
-          dialogueMaterial.id,
-          caption.start,
-          caption.start,
-          duration,
-          extraRefs,
-          1.0,
-        );
-      }).filter(Boolean),
-    };
+    if (strategy.dialogueAudioMode === 'source-clips') {
+      const dialogueMaterialsByClip = splitClips.map((clip, index) => {
+        const dialogueAudio = extractAudioFile({
+          source: clip.output,
+          outputDir: resourceAudioDir,
+          ffmpegBin,
+          fileName: `原声-${index + 1}`,
+        });
+        const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
+        const materialId = uuid();
+        const materialLocalId = localId();
+        const dialogueMaterial = makeAudioMaterial({
+          id: materialId,
+          localMaterialId: materialLocalId,
+          fileName: dialogueAudio.fileName,
+          durationUs: dialogueInfo.durationUs || clip.duration,
+          filePath: dialogueAudio.output,
+        });
+        audioMaterials.push(dialogueMaterial);
+        audioMetas.push({
+          durationUs: dialogueMaterial.duration,
+          localMaterialId: materialLocalId,
+          name: dialogueAudio.fileName,
+          size: fs.statSync(dialogueAudio.output).size,
+        });
+        return dialogueMaterial;
+      });
+      dialogueAudioTrack = {
+        name: strategy.dialogueAudioTrackName || 'A1 原声对白',
+        segments: timelinePlans.map((plan, index) => {
+          const dialogueMaterial = dialogueMaterialsByClip[plan.clipIndex];
+          if (!dialogueMaterial) return null;
+          const duration = Math.min(plan.duration, Math.max(0, dialogueMaterial.duration - plan.sourceStart));
+          if (duration <= 0) return null;
+          const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
+            'speeds',
+            'sound_channel_mappings',
+            'loudnesses',
+            'vocal_separations',
+          ], (key, material) => {
+            if (key === 'speeds') {
+              material.speed = timelinePlanSpeeds[index] || 1.0;
+              material.mode = 0;
+              material.curve_speed = null;
+            }
+          });
+          return makeAudioSegment(
+            dialogueMaterial.id,
+            plan.sourceStart,
+            plan.targetStart,
+            duration,
+            extraRefs,
+            1.0,
+            timelinePlanSpeeds[index] || 1.0,
+            { sourceDuration: plan.sourceDuration },
+          );
+        }).filter(Boolean),
+      };
+    } else {
+      const dialogueAudio = extractDialogueAudio({ source: video, outputDir: resourceAudioDir, ffmpegBin, nameBase: materialBaseName });
+      const dialogueInfo = mediaInfo(dialogueAudio.output, ffprobeBin);
+      const materialId = uuid();
+      const materialLocalId = localId();
+      const dialogueMaterial = makeAudioMaterial({
+        id: materialId,
+        localMaterialId: materialLocalId,
+        fileName: dialogueAudio.fileName,
+        durationUs: dialogueInfo.durationUs || videoInfo.durationUs,
+        filePath: dialogueAudio.output,
+      });
+      audioMaterials.push(dialogueMaterial);
+      audioMetas.push({
+        durationUs: dialogueMaterial.duration,
+        localMaterialId: materialLocalId,
+        name: dialogueAudio.fileName,
+        size: fs.statSync(dialogueAudio.output).size,
+      });
+      dialogueAudioTrack = {
+        name: strategy.dialogueAudioTrackName || 'A1 原声对白',
+        segments: captions.map((caption) => {
+          const duration = Math.min(caption.duration, Math.max(0, dialogueMaterial.duration - caption.start));
+          if (duration <= 0) return null;
+          const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
+            'speeds',
+            'sound_channel_mappings',
+            'loudnesses',
+            'vocal_separations',
+          ]);
+          return makeAudioSegment(
+            dialogueMaterial.id,
+            caption.start,
+            caption.start,
+            duration,
+            extraRefs,
+            1.0,
+          );
+        }).filter(Boolean),
+      };
+    }
   }
   bgmFiles.forEach((file, index) => {
     const info = mediaInfo(file, ffprobeBin);
@@ -2981,17 +3645,19 @@ function createProject(args) {
     });
   });
   const dialogueTrackCount = dialogueAudioTrack?.segments.length ? 1 : 0;
-  const bgmTrackLimit = Math.max(0, MAX_TIMELINE_AUDIO_TRACKS - dialogueTrackCount);
+  const maxAudioTracks = Math.max(0, Number(strategy.maxTimelineAudioTracks ?? 2));
+  const bgmTrackLimit = Math.max(0, maxAudioTracks - dialogueTrackCount);
   const audioPlans = makeAudioPlan({
     bgmFiles,
     audioInfos,
     totalUs: videoInfo.durationUs,
     rng,
     trackLimit: bgmTrackLimit,
+    strategy,
   });
   const audioTracks = audioPlans
     .map((plans, trackIndex) => ({
-      name: BGM_AUDIO_TRACK_NAMES[trackIndex] || `A${trackIndex + 2} 情绪配乐`,
+      name: strategy.bgmAudioTrackNames?.[trackIndex] || `A${trackIndex + 2} 情绪配乐`,
       segments: plans.map((plan, index) => {
         const extraRefs = makeExtraRefs(draft.materials, baseExtras, [
           'speeds',
@@ -3011,19 +3677,33 @@ function createProject(args) {
     }))
     .filter((track) => track.segments.length);
 
-  const captionScale = Number(args.captionScale ?? DEFAULTS.captionScale);
-  const captionTextSize = Number(args.captionTextSize ?? DEFAULTS.captionTextSize);
+  const captionScale = Number(strategy.captionScaleOverride ?? args.captionScale ?? strategy.captionScale ?? DEFAULTS.captionScale);
+  const captionTextSize = Number(args.captionTextSize ?? strategy.captionTextSize ?? DEFAULTS.captionTextSize);
+  const captionAlpha = Number(args.captionAlpha ?? strategy.captionAlpha ?? 1.0);
   const textMaterials = [];
   const textSegments = captions.map((caption, index) => {
     const material = makeTextMaterial({
       id: uuid(),
       text: caption.text,
       textSize: captionTextSize,
+      alpha: captionAlpha,
     });
     textMaterials.push(material);
     return makeTextSegment(material.id, caption, index, captionScale);
   });
-  const overlayVideoSegments = makeOverlayVideoSegments({
+  const auxTracks = makeAuxiliaryTextTracks({
+    strategy,
+    totalUs: videoInfo.durationUs,
+    rng,
+    textMaterials,
+    captionTextSize,
+  });
+  const nativeVisualTracks = makeNativeVisualTracks({
+    strategy,
+    totalUs: videoInfo.durationUs,
+    rng,
+  });
+  const overlayVideoSegments = strategy.overlayVideo === false ? [] : makeOverlayVideoSegments({
     baseSegment,
     baseExtras,
     draftMaterials: draft.materials,
@@ -3031,16 +3711,20 @@ function createProject(args) {
     sourceSegments: videoSegments,
     totalUs: videoInfo.durationUs,
   });
+  const overlayVideoTracks = namedSegmentTracks({
+    segments: overlayVideoSegments,
+    names: strategy.videoTrackNames?.slice(1) || [],
+    count: Math.max(1, Number(strategy.overlayVideoTrackCount || 1)),
+  });
   const videoTracks = [
-    { name: VIDEO_TRACK_NAMES[0], segments: videoSegments },
-    ...(overlayVideoSegments.length ? [{ name: VIDEO_TRACK_NAMES[1], segments: overlayVideoSegments }] : []),
+    { name: strategy.videoTrackNames?.[0] || 'V1 正片画面', segments: videoSegments },
+    ...overlayVideoTracks,
   ];
   const subtitleTracks = namedSegmentTracks({
     segments: textSegments,
-    names: SUBTITLE_TRACK_NAMES,
-    count: 1,
+    names: strategy.subtitleTrackNames || ['ST1 中文对白字幕'],
+    count: Math.max(1, Number(strategy.subtitleTrackCount || 1)),
   });
-  const auxTracks = [];
   const allAudioTracks = [
     ...(dialogueAudioTrack?.segments.length ? [dialogueAudioTrack] : []),
     ...audioTracks,
@@ -3053,6 +3737,9 @@ function createProject(args) {
   draft.duration = videoInfo.durationUs;
   draft.materials.videos = videoMaterials;
   draft.materials.audios = audioMaterials;
+  draft.materials.effects = nativeVisualTracks.filterMaterials;
+  draft.materials.video_effects = nativeVisualTracks.effectMaterials;
+  draft.materials.stickers = nativeVisualTracks.stickerMaterials;
   draft.materials.texts = textMaterials;
   const draftTracks = [];
   videoTracks.forEach((track, index) => {
@@ -3070,6 +3757,15 @@ function createProject(args) {
     draftTracks.push(makeTrack('text', assignTrackRenderIndex(track.segments, textTrackRenderIndex), track.name));
     textTrackRenderIndex += 1;
   });
+  nativeVisualTracks.filterTracks.forEach((track, index) => {
+    draftTracks.push(makeTrack('filter', assignTrackRenderIndex(track.segments, index), track.name));
+  });
+  nativeVisualTracks.effectTracks.forEach((track, index) => {
+    draftTracks.push(makeTrack('effect', assignTrackRenderIndex(track.segments, index), track.name));
+  });
+  nativeVisualTracks.stickerTracks.forEach((track, index) => {
+    draftTracks.push(makeTrack('sticker', assignTrackRenderIndex(track.segments, index), track.name));
+  });
   draft.tracks = draftTracks;
   draft.relationships = [];
   const missingRefs = validateRefs(draft);
@@ -3077,8 +3773,11 @@ function createProject(args) {
   writeJson(draftInfoFile, draft);
   writeJson(draftContentFile, draft);
 
-  updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs);
-  updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs);
+  const mediaPanelOptions = {
+    hideAudioInMediaPanel: strategy.hideAudioInMediaPanel === true,
+  };
+  updateDraftMeta(draftDir, draftName, draftId, videoMetas, audioMetas, timestampUs, mediaPanelOptions);
+  updateVirtualStore(draftDir, videoMetas, audioMetas, timestampUs, mediaPanelOptions);
   const resourceProblems = collectDraftResourceReferenceProblems(draftDir);
   if (resourceProblems.length) {
     const preview = resourceProblems
@@ -3130,6 +3829,12 @@ function createProject(args) {
     bgm: bgmFiles,
     output_dir: outputDir,
     result_path: path.join(outputDir, 'jianying_project_result.json'),
+    strategy: {
+      id: strategy.id,
+      label: strategy.label,
+    },
+    strategy_id: strategy.id,
+    strategy_label: strategy.label,
     duration_microseconds: videoInfo.durationUs,
     width: videoInfo.width,
     height: videoInfo.height,
@@ -3144,6 +3849,12 @@ function createProject(args) {
       text_segments: textSegments.length,
       subtitle_text_tracks: subtitleTracks.length,
       auxiliary_text_segments: auxTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      native_filter_segments: nativeVisualTracks.filterTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      native_filter_tracks: nativeVisualTracks.filterTracks.length,
+      native_effect_segments: nativeVisualTracks.effectTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      native_effect_tracks: nativeVisualTracks.effectTracks.length,
+      native_sticker_segments: nativeVisualTracks.stickerTracks.reduce((sum, track) => sum + track.segments.length, 0),
+      native_sticker_tracks: nativeVisualTracks.stickerTracks.length,
       audio_tracks: allAudioTracks.length,
       auxiliary_text_tracks: auxTracks.length,
       total_tracks: draft.tracks.length,
@@ -3151,13 +3862,22 @@ function createProject(args) {
     materials: {
       videos: videoMaterials.length,
       audios: audioMaterials.length,
+      effects: nativeVisualTracks.filterMaterials.length,
+      stickers: nativeVisualTracks.stickerMaterials.length,
       texts: textMaterials.length,
+      video_effects: nativeVisualTracks.effectMaterials.length,
+    },
+    media_panel: {
+      audio_hidden: mediaPanelOptions.hideAudioInMediaPanel,
+      indexed_audio_materials: mediaPanelOptions.hideAudioInMediaPanel ? 0 : audioMetas.length,
+      indexed_video_materials: videoMetas.length,
     },
     edits: {
       speed_edits: speedEditCount,
       uneven_video_segments: true,
     },
     caption: {
+      alpha: captionAlpha,
       scale: captionScale,
       text_size: captionTextSize,
     },

@@ -79,8 +79,15 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v13-source-guard"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v20-native-above-subtitles"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
+JIANYING_PROJECT_SCREENSHOT_DIRNAME = "剪映工程截图"
+JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图预览"
+JIANYING_PROJECT_STRATEGIES = ("layered-proof-v1", "competitor-native-v1")
+JIANYING_PROJECT_STRATEGY_LABELS = {
+    "layered-proof-v1": "标准分轨工程",
+    "competitor-native-v1": "竞品原生工程",
+}
 JIANYING_PROJECT_MUSIC_DIR_ENV_KEY = "AIDRAMA_JIANYING_MUSIC_DIR"
 JIANYING_PROJECT_MUSIC_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 JIANYING_PROJECT_SUBTITLE_DIRNAME = "subtitles"
@@ -88,7 +95,12 @@ JIANYING_PROJECT_SOURCE_TITLE_RE = re.compile(
     r"^(.+?)(?:[-_\s]*策略1)?[-_\s]*第\d+(?:[-_~到至]\d+)?集",
     re.IGNORECASE,
 )
-MATERIAL_METADATA_STRING_KEYS = ("jianyingProjectCaptureVersion",)
+MATERIAL_METADATA_STRING_KEYS = (
+    "jianyingProjectCaptureVersion",
+    "jianyingProjectStrategy",
+    "jianyingProjectStrategyLabel",
+    "jianyingProjectOutputDir",
+)
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
     "purchaseContractDocx",
     "costContractDocx",
@@ -275,6 +287,47 @@ class TaskRunner:
 
     def refill_task_form_from_cache(self, task: dict | None) -> str:
         return self.execute_task_from_upload_cache(task)
+
+    def generate_jianying_project_preview_from_cache(
+        self,
+        task: dict | None,
+        *,
+        strategy: str | None = None,
+    ) -> dict[str, object]:
+        if not task:
+            raise RuntimeError("任务为空，无法生成剪映工程图。")
+        task_id = str(task.get("id") or "").strip()
+        drama_id = str(task.get("dramaId") or "").strip()
+        if not task_id or not drama_id:
+            raise RuntimeError("任务缺少 ID 或短剧 ID，无法生成剪映工程图。")
+        platform = self._task_platform(task)
+        if platform != "WECHAT_VIDEO":
+            raise RuntimeError("剪映工程图预览当前只支持视频号任务。")
+        if self.jianying_generator is None:
+            raise RuntimeError("剪映工程生成器未配置，请先检查 Node.js、剪映草稿目录和剪映程序地址。")
+
+        download_plan = self.api.get(f"/desktop/dramas/{drama_id}/download-plan")
+        drama_title = self._drama_title(download_plan, task)
+        preview_strategy = self._normalize_jianying_project_strategy(strategy or "random")
+        task_with_title = {**task, "dramaTitle": drama_title}
+        self._notify(f"准备剪映工程图预览：{drama_title}", task_id, task_with_title)
+        upload_items = self._cached_reassembled_upload_items(download_plan, platform)
+        if not upload_items:
+            raise RuntimeError("没有找到 processed/reassembled 里的可用重组视频，请先完整完成下载和重组处理。")
+        effective_download_plan = self._effective_download_plan(download_plan, upload_items)
+        metadata = self._prepare_jianying_project_materials(
+            upload_items,
+            task_id,
+            drama_title,
+            platform=platform,
+            download_plan=effective_download_plan,
+            strategy=preview_strategy,
+            output_dir=self._jianying_project_preview_output_dir(task_id, drama_title, preview_strategy),
+        )
+        screenshots = metadata.get("jianyingProjectScreenshots") if isinstance(metadata, dict) else None
+        if not screenshots:
+            raise RuntimeError("剪映工程图未生成，请查看运行日志。")
+        return metadata
 
     def _execute_task(self, task: dict | None) -> str:
         if not task:
@@ -726,6 +779,8 @@ class TaskRunner:
         *,
         platform: str,
         download_plan: dict[str, Any] | None = None,
+        strategy: str | None = None,
+        output_dir: Path | None = None,
     ) -> dict[str, object]:
         if not JIANYING_PROJECT_MATERIALS_ENABLED:
             return {}
@@ -734,17 +789,25 @@ class TaskRunner:
         generator = self.jianying_generator
         if generator is None:
             return {}
-        output_dir = self._jianying_project_output_dir(task_id, drama_title)
+        output_dir = output_dir or self._jianying_project_output_dir(task_id, drama_title)
+        requested_strategy = self._normalize_jianying_project_strategy(strategy) if strategy else None
         cached_metadata = self._cached_material_metadata(
             output_dir / JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME,
             required_keys=("jianyingProjectScreenshots",),
         )
         if cached_metadata:
             if cached_metadata.get("jianyingProjectCaptureVersion") == JIANYING_PROJECT_CAPTURE_VERSION:
-                screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
-                self._notify(f"复用剪映工程图：{drama_title}（{len(screenshots)} 张）", task_id)
-                return cached_metadata
+                cached_strategy = str(cached_metadata.get("jianyingProjectStrategy") or "")
+                if requested_strategy and cached_strategy != requested_strategy:
+                    cached_metadata = {}
+                else:
+                    screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
+                    strategy_label = self._jianying_project_strategy_label(cached_strategy)
+                    self._notify(f"复用剪映工程图：{drama_title}（{strategy_label}，{len(screenshots)} 张）", task_id)
+                    return cached_metadata
 
+        strategy = requested_strategy or self._select_jianying_project_strategy()
+        strategy_label = self._jianying_project_strategy_label(strategy)
         selected_items = self._select_jianying_project_episode_items(
             upload_items,
             JIANYING_PROJECT_SCREENSHOT_COUNT,
@@ -753,7 +816,7 @@ class TaskRunner:
             return {}
 
         screenshots: list[Path] = []
-        self._notify(f"生成剪映工程图：{drama_title}（随机 {len(selected_items)} 集）", task_id)
+        self._notify(f"生成剪映工程图：{drama_title}（{strategy_label}，随机 {len(selected_items)} 集）", task_id)
         for position, item in enumerate(selected_items, start=1):
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._validate_jianying_project_source_item(item, download_plan or {}, drama_title, task_id)
@@ -772,12 +835,15 @@ class TaskRunner:
                 )
             result = generator.generate_project_screenshot(
                 video=item.file,
-                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑工程"),
+                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_{strategy_label}_剪辑工程"),
                 output_dir=episode_output_dir,
                 screenshot_path=screenshot_path,
                 srt=srt_path,
                 bgm_files=self._jianying_project_bgm_files_for_item(item),
+                strategy=strategy,
             )
+            strategy = str(getattr(result, "strategy_id", None) or strategy)
+            strategy_label = str(getattr(result, "strategy_label", None) or strategy_label)
             screenshot = Path(getattr(result, "screenshot_path", screenshot_path))
             if not self._is_ready_material_file(screenshot):
                 raise RuntimeError(f"剪映工程图未生成：{screenshot}")
@@ -786,6 +852,9 @@ class TaskRunner:
 
         metadata: dict[str, object] = {
             "jianyingProjectCaptureVersion": JIANYING_PROJECT_CAPTURE_VERSION,
+            "jianyingProjectStrategy": strategy,
+            "jianyingProjectStrategyLabel": strategy_label,
+            "jianyingProjectOutputDir": str(output_dir),
             "jianyingProjectScreenshots": screenshots,
         }
         self._write_material_metadata_manifest(
@@ -810,6 +879,15 @@ class TaskRunner:
         if not screenshots:
             return contract_metadata
         merged = dict(contract_metadata)
+        for key in (
+            "jianyingProjectCaptureVersion",
+            "jianyingProjectStrategy",
+            "jianyingProjectStrategyLabel",
+            "jianyingProjectOutputDir",
+        ):
+            value = jianying_metadata.get(key)
+            if isinstance(value, str) and value:
+                merged[key] = value
         merged["jianyingProjectScreenshots"] = append_unique_paths(
             merged.get("jianyingProjectScreenshots"),
             screenshots,
@@ -821,7 +899,33 @@ class TaskRunner:
         return merged
 
     def _jianying_project_output_dir(self, task_id: str, drama_title: str) -> Path:
-        return self._contract_output_dir(task_id, drama_title) / "剪映工程截图"
+        return self._contract_output_dir(task_id, drama_title) / JIANYING_PROJECT_SCREENSHOT_DIRNAME
+
+    def _jianying_project_preview_output_dir(self, task_id: str, drama_title: str, strategy: str) -> Path:
+        strategy_label = safe_contract_filename(self._jianying_project_strategy_label(strategy)) or strategy
+        return self._contract_output_dir(task_id, drama_title) / f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-{strategy_label}"
+
+    @staticmethod
+    def _select_jianying_project_strategy() -> str:
+        return random.SystemRandom().choice(JIANYING_PROJECT_STRATEGIES)
+
+    @staticmethod
+    def _normalize_jianying_project_strategy(strategy: str) -> str:
+        strategy = str(strategy or "").strip()
+        if not strategy or strategy == "random":
+            return TaskRunner._select_jianying_project_strategy()
+        if strategy not in JIANYING_PROJECT_STRATEGIES:
+            options = "、".join(
+                f"{item}（{TaskRunner._jianying_project_strategy_label(item)}）"
+                for item in JIANYING_PROJECT_STRATEGIES
+            )
+            raise RuntimeError(f"未知剪映工程策略：{strategy}。可选：{options}")
+        return strategy
+
+    @staticmethod
+    def _jianying_project_strategy_label(strategy: str) -> str:
+        strategy = str(strategy or "").strip()
+        return JIANYING_PROJECT_STRATEGY_LABELS.get(strategy, strategy or "默认工程")
 
     @staticmethod
     def _select_jianying_project_episode_items(
@@ -2638,6 +2742,25 @@ class TaskRunner:
             if platform == "TIKTOK" and not self._all_items_satisfy_tiktok_upload_rules(media_items):
                 continue
             return media_items
+        return []
+
+    def _cached_reassembled_upload_items(self, download_plan: dict, platform: str) -> list[EpisodeMediaFile]:
+        if platform != "WECHAT_VIDEO":
+            return []
+        for processed_dir in self._drama_dir_candidates(self.output_dir(), download_plan):
+            directory = processed_dir / VIDEO_REASSEMBLY_DIRNAME
+            files = self._cached_video_files(directory)
+            if not files:
+                continue
+            media_items = self._cached_episode_media_files(
+                download_plan,
+                files,
+                platform,
+                require_manifest=True,
+            )
+            media_items = self._valid_cached_reassembled_items(media_items)
+            if media_items:
+                return media_items
         return []
 
     def _valid_cached_reassembled_items(self, media_items: list[EpisodeMediaFile]) -> list[EpisodeMediaFile]:

@@ -60,6 +60,35 @@ def test_windows_draft_open_matches_legacy_full_description_flow():
     assert "winOpenDraftByTitle(appPath, draftName)" in windows_debug
 
 
+def test_jianying_tool_registers_competitor_native_strategy():
+    tool = Path(__file__).parents[2] / "scripts" / "jianying" / "create-jianying-project.js"
+    source = tool.read_text(encoding="utf-8")
+    competitor_config = source.split("id: 'competitor-native-v1'", 1)[1].split(
+        "const DEFAULT_TIMELINE_STRATEGY_ID", 1
+    )[0]
+
+    assert "id: 'competitor-native-v1'" in source
+    assert "label: '竞品原生工程'" in source
+    assert "sourceClipCount: 5" in source
+    assert "timelineClipCount: 10" in source
+    assert "dialogueAudioMode: 'source-clips'" in source
+    assert "hideAudioInMediaPanel: true" in competitor_config
+    assert "bgmPlan: 'staggered-beds'" in source
+    assert "metetype: 'none'" in source
+    assert "auxiliaryTextTracks" not in competitor_config
+    assert "nativeFilterTracks" in competitor_config
+    assert "nativeEffectTracks" in competitor_config
+    assert "nativeStickerTracks" in competitor_config
+    assert "NATIVE_FILTERS" in source
+    assert "NATIVE_VIDEO_EFFECTS" in source
+    assert "type: 'filter'" in source
+    assert "type: meta.effectType || 'video_effect'" in source
+    assert "type: 'sticker'" in source
+    assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.filterTracks.forEach")
+    assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.effectTracks.forEach")
+    assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.stickerTracks.forEach")
+
+
 def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path):
     video = tmp_path / "episode.mp4"
     tool = tmp_path / "create-jianying-project.js"
@@ -107,6 +136,51 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     assert command[command.index("--ffmpeg") + 1] == "/opt/homebrew/bin/ffmpeg"
     assert command[command.index("--ffprobe") + 1] == "/opt/homebrew/bin/ffprobe"
     assert command[command.index("--jianying-app") + 1] == str(jianying_app)
+
+
+def test_jianying_generator_passes_strategy_to_tool(monkeypatch, tmp_path):
+    video = tmp_path / "episode.mp4"
+    tool = tmp_path / "create-jianying-project.js"
+    screenshot = tmp_path / "proof.png"
+    video.write_text("video")
+    tool.write_text("tool")
+    commands: list[list[str]] = []
+
+    def fake_run(command, check=False, capture_output=False, text=False, timeout=None, **kwargs):
+        commands.append(command)
+        screenshot.write_bytes(b"png")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "screenshot_path": str(screenshot),
+                    "strategy_id": "competitor-native-v1",
+                    "strategy_label": "竞品原生工程",
+                    "warnings": [],
+                }
+            ),
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    generator = JianyingProjectGenerator(
+        node_path="/opt/homebrew/bin/node",
+        tool_path=tool,
+    )
+
+    result = generator.generate_project_screenshot(
+        video=video,
+        draft_name="测试工程",
+        output_dir=tmp_path,
+        screenshot_path=screenshot,
+        strategy="competitor-native-v1",
+    )
+
+    command = commands[0]
+    assert command[command.index("--strategy") + 1] == "competitor-native-v1"
+    assert result.strategy_id == "competitor-native-v1"
+    assert result.strategy_label == "竞品原生工程"
 
 
 def test_jianying_generator_reads_result_file_when_stdout_is_empty(monkeypatch, tmp_path):

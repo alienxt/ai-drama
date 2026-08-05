@@ -11,6 +11,9 @@ import pytest
 
 from aidrama_desktop.tasks.runner import (
     EpisodeMediaFile,
+    JIANYING_PROJECT_PREVIEW_DIRNAME,
+    JIANYING_PROJECT_STRATEGIES,
+    JIANYING_PROJECT_STRATEGY_LABELS,
     TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON,
     TaskRunner,
     download_episodes,
@@ -249,6 +252,7 @@ class FakeJianyingGenerator:
         screenshot_path,
         srt=None,
         bgm_files=None,
+        strategy=None,
     ):
         self.calls.append(
             {
@@ -258,11 +262,24 @@ class FakeJianyingGenerator:
                 "screenshot_path": screenshot_path,
                 "srt": srt,
                 "bgm_files": bgm_files,
+                "strategy": strategy,
             }
         )
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         screenshot_path.write_bytes(b"png")
-        return type("Result", (), {"screenshot_path": screenshot_path})()
+        strategy_labels = {
+            "layered-proof-v1": "标准分轨工程",
+            "competitor-native-v1": "竞品原生工程",
+        }
+        return type(
+            "Result",
+            (),
+            {
+                "screenshot_path": screenshot_path,
+                "strategy_id": strategy,
+                "strategy_label": strategy_labels.get(strategy, strategy),
+            },
+        )()
 
 
 class FailingPublisher:
@@ -627,13 +644,16 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
         for index, episode in enumerate(range(2, 6), start=1)
     ]
     assert publisher.metadata["jianyingProjectScreenshots"] == screenshots
+    assert publisher.metadata["jianyingProjectStrategy"] == "layered-proof-v1"
+    assert publisher.metadata["jianyingProjectStrategyLabel"] == "标准分轨工程"
     for call in jianying_generator.calls:
         assert call["srt"] is not None
         assert call["srt"].name.endswith("_中文字幕.srt")
         assert call["srt"].parent.name == "subtitles"
+        assert call["strategy"] == "layered-proof-v1"
     for screenshot in screenshots:
         assert screenshot in publisher.metadata["buyDramaContractImages"]
-    assert ("生成剪映工程图：神医归来（随机 4 集）", "task-1") in progress_events
+    assert ("生成剪映工程图：神医归来（标准分轨工程，随机 4 集）", "task-1") in progress_events
     assert ("剪映工程图已生成：神医归来（4 张）", "task-1") in progress_events
 
 
@@ -664,6 +684,92 @@ def test_jianying_project_rejects_cross_drama_source_video(tmp_path):
 
     assert not jianying_generator.calls
     assert any("剪映工程素材校验失败" in stage for stage, _ in progress_events)
+
+
+def test_jianying_strategy_registry_includes_competitor_native_version():
+    assert JIANYING_PROJECT_STRATEGIES == ("layered-proof-v1", "competitor-native-v1")
+    assert JIANYING_PROJECT_STRATEGY_LABELS["competitor-native-v1"] == "竞品原生工程"
+
+
+def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strategy(tmp_path):
+    final_dir = drama_processed_dir(tmp_path) / "reassembled"
+    final_dir.mkdir(parents=True)
+    reassembled_items = []
+    for index in range(1, 5):
+        file = final_dir / f"神医归来-第{index}集.mp4"
+        file.write_bytes(b"video")
+        file.with_suffix(".srt").write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n",
+            encoding="utf-8",
+        )
+        reassembled_items.append(
+            EpisodeMediaFile(
+                {
+                    "episodeNo": index,
+                    "title": f"第{index}集",
+                    "sourceEpisodeNumbers": [index],
+                    "sourceEpisodeRange": str(index),
+                    "durationSeconds": 60.0,
+                },
+                index,
+                file,
+                (index,),
+            )
+        )
+    write_download_episode_manifest(
+        final_dir,
+        {
+            "version": 1,
+            "reassemblyVersion": "video-reassembly-v9",
+            "episodeCount": len(reassembled_items),
+            "files": [
+                {
+                    "file": item.file.name,
+                    "episodeIndex": item.episode_index,
+                    "episode": item.episode,
+                    "sourceEpisodeIndexes": list(item.source_episode_indexes or (item.episode_index,)),
+                    "sourceEpisodeNumbers": item.episode.get("sourceEpisodeNumbers") or [],
+                }
+                for item in reassembled_items
+            ],
+        },
+    )
+    jianying_generator = FakeJianyingGenerator()
+    progress_events = []
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+        contracts_dir=tmp_path / "contracts",
+        jianying_generator=jianying_generator,
+    )
+
+    metadata = runner.generate_jianying_project_preview_from_cache(
+        {
+            "id": "task-1",
+            "dramaId": "drama-1",
+            "platform": "WECHAT_VIDEO",
+            "mediaAccountId": "media-1",
+        },
+        strategy="competitor-native-v1",
+    )
+
+    assert len(jianying_generator.calls) == 4
+    assert {call["strategy"] for call in jianying_generator.calls} == {"competitor-native-v1"}
+    assert metadata["jianyingProjectStrategy"] == "competitor-native-v1"
+    assert metadata["jianyingProjectStrategyLabel"] == "竞品原生工程"
+    preview_dirname = f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-竞品原生工程"
+    assert Path(str(metadata["jianyingProjectOutputDir"])).name == preview_dirname
+    assert len(metadata["jianyingProjectScreenshots"]) == 4
+    assert all(
+        preview_dirname in Path(screenshot).parts
+        for screenshot in metadata["jianyingProjectScreenshots"]
+    )
+    assert ("准备剪映工程图预览：神医归来", "task-1") in progress_events
+    assert ("生成剪映工程图：神医归来（竞品原生工程，随机 4 集）", "task-1") in progress_events
 
 
 def test_publish_once_reuses_cached_storyboard_images_for_contract_upload(tmp_path, monkeypatch):

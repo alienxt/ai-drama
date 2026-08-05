@@ -15,6 +15,7 @@ node scripts/jianying/create-jianying-project.js \
   --bgm "/path/to/bgm.mp3" \
   --name "剧名_第99集_剪辑工程" \
   --template "/path/to/template-draft" \
+  --strategy "competitor-native-v1" \
   --clip-count 24 \
   --overwrite
 ```
@@ -25,6 +26,14 @@ Inputs:
 - `--srt`: optional subtitle file. SRT timestamps become Jianying text segments.
 - `--bgm`: optional BGM file. Can be repeated; files become audio materials and timeline segments.
 - `--template`: optional explicit clean template draft. If omitted, the tool creates a built-in clean seed draft.
+- `--strategy`: optional timeline proof strategy. Built-ins are `layered-proof-v1`（标准分轨工程）and `competitor-native-v1`（竞品原生工程）. If omitted, the desktop runner chooses one strategy per drama and reuses it for all four proof screenshots.
+
+Strategy policy:
+
+- Multiple strategy templates can coexist in the tool.
+- `competitor-native-v1` mirrors a competitor-style native proof layout: 5 media-pool video clips, 10 V1 timeline cuts, clip-matched original audio, 3 staggered music tracks, hidden imported subtitle text, native filter/effect/sticker tracks, and hidden audio cards in the media panel.
+- Each generated proof draft records `strategy_id` and `strategy_label` in `codex_audit.json` and `jianying_project_result.json`.
+- The desktop runner writes the chosen strategy into `.jianying-project-materials.json`, so cached screenshots are reused only when the capture version and requested strategy match.
 
 Template policy:
 

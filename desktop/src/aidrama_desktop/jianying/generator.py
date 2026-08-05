@@ -28,6 +28,8 @@ class JianyingProjectGenerationResult:
     screenshot_path: Path
     draft_dir: Path | None = None
     result_path: Path | None = None
+    strategy_id: str | None = None
+    strategy_label: str | None = None
     warnings: tuple[str, ...] = ()
 
 
@@ -51,6 +53,7 @@ class JianyingProjectGenerator:
         screenshot_path: Path,
         srt: Path | None = None,
         bgm_files: list[Path] | None = None,
+        strategy: str | None = None,
     ) -> JianyingProjectGenerationResult:
         video = Path(video)
         if not video.exists() or not video.is_file():
@@ -87,6 +90,8 @@ class JianyingProjectGenerator:
             command.append("--close-existing")
         if srt and srt.exists():
             command.extend(["--srt", str(srt)])
+        if strategy:
+            command.extend(["--strategy", str(strategy)])
         for bgm in bgm_files or []:
             if bgm.exists():
                 command.extend(["--bgm", str(bgm)])
@@ -126,6 +131,8 @@ class JianyingProjectGenerator:
             screenshot_path=screenshot,
             draft_dir=Path(str(payload["draft_dir"])) if payload.get("draft_dir") else None,
             result_path=Path(str(payload["result_path"])) if payload.get("result_path") else None,
+            strategy_id=str(payload.get("strategy_id") or "") or None,
+            strategy_label=str(payload.get("strategy_label") or "") or None,
             warnings=warnings,
         )
 
