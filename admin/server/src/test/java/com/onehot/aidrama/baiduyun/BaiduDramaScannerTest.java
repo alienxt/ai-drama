@@ -201,6 +201,50 @@ class BaiduDramaScannerTest {
     }
 
     @Test
+    void clientAssetSyncResetsGeneratedAiAssetsWhenSummaryOrCoverChanges() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+        Drama drama = new Drama();
+        drama.setId("drama-1");
+        drama.setSummary("旧简介");
+        drama.setAiSummary("旧AI简介");
+        drama.setAiSummaryEn("old ai en");
+        drama.setCoverUrl("/uploads/old-cover.jpg");
+        drama.setAiCoverUrl("/uploads/ai-cover.jpg");
+        drama.setAiVideoCoverUrl("/uploads/ai-video-cover.jpg");
+        drama.setAiCoverEnUrl("/uploads/ai-cover-en.jpg");
+        drama.setAiVideoCoverEnUrl("/uploads/ai-video-cover-en.jpg");
+        drama.setAiCoverGenerating(true);
+        drama.setStatus(DramaStatus.READY);
+
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(assetStorage.storeCoverBytes("/root/drama-1/cover.jpg", "new-cover".getBytes()))
+                .thenReturn("/uploads/new-cover.jpg");
+        when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama updated = scanner.applyClientAssetSync(
+                "drama-1",
+                "新的原始简介",
+                "/root/drama-1/cover.jpg",
+                "new-cover".getBytes()
+        );
+
+        assertThat(updated.getSummary()).isEqualTo("新的原始简介");
+        assertThat(updated.getCoverUrl()).isEqualTo("/uploads/new-cover.jpg");
+        assertThat(updated.getAiSummary()).isNull();
+        assertThat(updated.getAiSummaryEn()).isNull();
+        assertThat(updated.getAiCoverUrl()).isNull();
+        assertThat(updated.getAiVideoCoverUrl()).isNull();
+        assertThat(updated.getAiCoverEnUrl()).isNull();
+        assertThat(updated.getAiVideoCoverEnUrl()).isNull();
+        assertThat(updated.isAiCoverGenerating()).isFalse();
+        assertThat(updated.getStatus()).isEqualTo(DramaStatus.DRAFT);
+    }
+
+    @Test
     void rescanningExistingDramaDoesNotClearExistingTitleSummaryOrCoverWhenAssetsAreMissing() {
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);

@@ -59,6 +59,7 @@ NON_RETRYABLE_DOWNLOAD_ERROR_CODES = {"HONGGUO_VIDEO_EMPTY"}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
+BAIDU_ASSET_SYNC_DOWNLOAD_TIMEOUT_SECONDS = 120.0
 MAX_SKIPPED_EPISODE_FAILURES = 5
 WECHAT_VIDEO_MIN_EPISODE_DURATION_SECONDS = 30.0
 TIKTOK_MIN_EPISODE_DURATION_SECONDS = 15.0
@@ -342,6 +343,7 @@ class TaskRunner:
         platform = self._task_platform(task)
         self._notify("任务已领取", task_id, task)
         try:
+            self._sync_baidu_source_assets_for_task(task)
             self._wait_for_task_preparation(task)
             self._progress(task_id, "DOWNLOADING", 10)
             download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
@@ -523,6 +525,70 @@ class TaskRunner:
             except (TypeError, ValueError):
                 retry_after = TASK_PREPARATION_POLL_INTERVAL_SECONDS
             time.sleep(max(1.0, min(retry_after, 10.0)))
+
+    def _sync_baidu_source_assets_for_task(self, task: dict) -> None:
+        task_id = str(task["id"])
+        drama_id = str(task.get("dramaId") or "").strip()
+        if not drama_id:
+            return
+        response = self.api.post("/admin/dramas/sync-assets/client-plan", {"ids": [drama_id]})
+        items = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(items, list):
+            return
+        plan = next(
+            (
+                item for item in items
+                if isinstance(item, dict) and str(item.get("dramaId") or "").strip() == drama_id
+            ),
+            None,
+        )
+        if not plan:
+            return
+        summary_url = str(plan.get("summaryDownloadUrl") or "").strip()
+        cover_url = str(plan.get("coverDownloadUrl") or "").strip()
+        if not summary_url and not cover_url:
+            return
+        self._notify("同步百度原始简介和封面", task_id, task)
+        summary = self._download_baidu_text_asset(summary_url) if summary_url else None
+        cover_bytes = self._download_baidu_binary_asset(cover_url) if cover_url else None
+        data: dict[str, Any] = {}
+        if summary:
+            data["summary"] = summary
+        cover_path = str(plan.get("coverPath") or "").strip()
+        if cover_bytes:
+            if not cover_path:
+                raise RuntimeError("百度封面同步失败：服务端未返回封面路径。")
+            data["coverPath"] = cover_path
+        files = None
+        if cover_bytes and cover_path:
+            files = {"cover": (Path(cover_path).name or "cover.jpg", cover_bytes, "application/octet-stream")}
+        if not data and not files:
+            return
+        self.api.post_multipart(
+            f"/admin/dramas/sync-assets/client-complete/{drama_id}",
+            data=data or None,
+            files=files,
+        )
+        self._notify("百度原始简介和封面已同步", task_id, task)
+
+    def _download_baidu_text_asset(self, url: str) -> str:
+        payload = self._download_baidu_asset(url)
+        if not payload:
+            return ""
+        return payload.decode("utf-8-sig", errors="replace").strip()
+
+    def _download_baidu_binary_asset(self, url: str) -> bytes:
+        return self._download_baidu_asset(url)
+
+    def _download_baidu_asset(self, url: str) -> bytes:
+        request = urllib.request.Request(url, headers=BAIDU_DOWNLOAD_HEADERS)
+        try:
+            with urllib.request.urlopen(request, timeout=BAIDU_ASSET_SYNC_DOWNLOAD_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except urllib.error.HTTPError as exception:
+            raise RuntimeError(f"百度素材下载失败：HTTP {exception.code}") from exception
+        except urllib.error.URLError as exception:
+            raise RuntimeError(f"百度素材下载失败：{exception.reason}") from exception
 
     def _progress(self, task_id: str, status: str, progress: int) -> None:
         self._notify(status, task_id)

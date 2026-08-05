@@ -81,6 +81,10 @@ class FakeApi:
         self.calls.append(("PUT", path, payload))
         return {}
 
+    def post_multipart(self, path, data=None, files=None, auth=True):
+        self.calls.append(("POST_MULTIPART", path, {"data": data, "files": files, "auth": auth}))
+        return {}
+
     def download_headers(self):
         return {"Authorization": f"Bearer {self.download_token}"}
 
@@ -367,6 +371,79 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
     assert (drama_download_dir(tmp_path) / UPLOAD_SUCCESS_MARKER).exists()
+
+
+def test_publish_once_syncs_baidu_source_assets_before_prepare(tmp_path, monkeypatch):
+    api = FakeApi()
+    downloaded_urls = []
+
+    def post(path, payload=None):
+        api.calls.append(("POST", path, payload))
+        if path == "/desktop/tasks/publish-next":
+            return {"id": "task-1", "dramaId": "drama-1", "mediaAccountId": "media-1"}
+        if path == "/admin/dramas/sync-assets/client-plan":
+            return {
+                "items": [
+                    {
+                        "dramaId": "drama-1",
+                        "summaryDownloadUrl": "https://pan.baidu.com/summary.txt",
+                        "coverPath": "/drama/神医归来/cover.jpg",
+                        "coverDownloadUrl": "https://pan.baidu.com/cover.jpg",
+                    }
+                ]
+            }
+        if path == "/desktop/tasks/task-1/prepare":
+            return {"prepared": True, "preparing": False, "failed": False, "message": "AI 素材已准备完成", "retryAfterSeconds": 0}
+        return {}
+
+    def fake_download_baidu_asset(url):
+        downloaded_urls.append(url)
+        if url.endswith(".txt"):
+            return "真正的原始简介".encode("utf-8")
+        return b"cover-bytes"
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    api.post = post
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+    )
+    runner._download_baidu_asset = fake_download_baidu_asset
+
+    assert runner.publish_once() == "succeeded"
+
+    assert downloaded_urls == [
+        "https://pan.baidu.com/summary.txt",
+        "https://pan.baidu.com/cover.jpg",
+    ]
+    assert (
+        "POST_MULTIPART",
+        "/admin/dramas/sync-assets/client-complete/drama-1",
+        {
+            "data": {
+                "summary": "真正的原始简介",
+                "coverPath": "/drama/神医归来/cover.jpg",
+            },
+            "files": {
+                "cover": ("cover.jpg", b"cover-bytes", "application/octet-stream"),
+            },
+            "auth": True,
+        },
+    ) in api.calls
+    sync_index = api.calls.index(("POST", "/admin/dramas/sync-assets/client-plan", {"ids": ["drama-1"]}))
+    complete_index = next(index for index, call in enumerate(api.calls) if call[0] == "POST_MULTIPART")
+    prepare_index = api.calls.index(("POST", "/desktop/tasks/task-1/prepare", None))
+    assert sync_index < complete_index < prepare_index
 
 def test_publish_once_does_not_run_strategy1_before_upload(tmp_path, monkeypatch):
     api = FakeApi()

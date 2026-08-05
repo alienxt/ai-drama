@@ -52,6 +52,15 @@ class ApiClient:
     def post(self, path: str, payload: dict[str, Any] | None = None, auth: bool = True) -> Any:
         return self._request("POST", path, payload, auth=auth)
 
+    def post_multipart(
+        self,
+        path: str,
+        data: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        auth: bool = True,
+    ) -> Any:
+        return self._request("POST", path, auth=auth, data=data, files=files)
+
     def put(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request("PUT", path, payload)
 
@@ -68,13 +77,15 @@ class ApiClient:
         path: str,
         payload: dict[str, Any] | None = None,
         auth: bool = True,
+        data: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
     ) -> Any:
         refreshed = False
         while True:
             headers = self._headers() if auth else {}
             try:
                 with httpx.Client(base_url=self.base_url, timeout=API_REQUEST_TIMEOUT_SECONDS) as client:
-                    response = client.request(method, path, json=payload, headers=headers)
+                    response = client.request(method, path, json=payload, data=data, files=files, headers=headers)
             except httpx.TimeoutException as exception:
                 raise ApiError("服务请求超时，请稍后重试。") from exception
             except httpx.RequestError as exception:

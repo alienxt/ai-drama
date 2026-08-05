@@ -214,7 +214,11 @@ public class BaiduDramaScanner {
             if (coverPath == null || coverPath.isBlank()) {
                 throw new BaiduPanException("Cover path is required");
             }
-            drama.setCoverUrl(assetStorage.storeCoverBytes(coverPath, coverBytes));
+            String coverUrl = assetStorage.storeCoverBytes(coverPath, coverBytes);
+            if (!Objects.equals(drama.getCoverUrl(), coverUrl)) {
+                resetGeneratedAssetsForSourceChange(drama);
+            }
+            drama.setCoverUrl(coverUrl);
         }
         return dramaRepository.save(drama);
     }
@@ -413,9 +417,23 @@ public class BaiduDramaScanner {
     private void setDramaSummary(Drama drama, String summary) {
         String normalized = summary == null ? null : summary.trim();
         if (!Objects.equals(drama.getSummary(), normalized)) {
-            drama.setAiSummary(null);
+            resetGeneratedAssetsForSourceChange(drama);
         }
         drama.setSummary(normalized);
+    }
+
+    private void resetGeneratedAssetsForSourceChange(Drama drama) {
+        drama.setAiSummary(null);
+        drama.setAiSummaryEn(null);
+        drama.setAiCoverUrl(null);
+        drama.setAiVideoCoverUrl(null);
+        drama.setAiCoverEnUrl(null);
+        drama.setAiVideoCoverEnUrl(null);
+        drama.setAiCoverGenerating(false);
+        drama.setAiPreparationFailedAt(null);
+        if (drama.getStatus() != DramaStatus.DISABLED) {
+            drama.setStatus(DramaStatus.DRAFT);
+        }
     }
 
     private void mergeScannedMetadata(Drama drama, PlannedDrama planned) {
