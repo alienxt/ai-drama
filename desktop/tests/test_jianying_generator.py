@@ -11,6 +11,9 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     windows_open = source.split("function winOpenDraftByTitle", 1)[1].split(
         "function openFirstDraftCard", 1
     )[0]
+    windows_launch = source.split("function openJianying", 1)[1].split(
+        "function sleep", 1
+    )[0]
     windows_debug = source.split("function debugWindowsOpen", 1)[1].split(
         "function createProject", 1
     )[0]
@@ -20,7 +23,18 @@ def test_windows_draft_open_uses_non_polluting_semantic_uia_actions():
     assert "InvokePattern" in windows_open
     assert "LegacyIAccessiblePattern" in windows_open
     assert "SelectionItemPattern" in windows_open
-    assert "Find-BoundedNamedElement $root $draftNames $false 2500 1200" in windows_open
+    assert "--force-renderer-accessibility=complete" in windows_launch
+    assert "PropertyCondition]::new" in windows_open
+    assert ".FindFirst(" in windows_open
+    assert "Find-ExactNamedElementInTargetWindow $root $draftNames" in windows_open
+    assert "function Test-EllipsizedDraftTitleMatch" in windows_open
+    assert "targetTitle.StartsWith($prefix) -and $targetTitle.EndsWith($suffix)" in windows_open
+    assert "Find-UniqueEllipsizedDraftTitleElement $root $draftName 1200" in windows_open
+    assert "draft-title-ellipsis-ambiguous" in windows_open
+    assert "Find-ExactNamedElementInTargetWindow $initialRoot $initialDraftNames" in windows_open
+    assert "-not $initialDraftElement -and -not (Wait-UiaTreeUsable $initialRoot 8)" in windows_open
+    assert "uia-tree-unavailable-after-accessibility-launch" in windows_open
+    assert "Write-UiaTreeSummary (Get-RootElement) 500 60" in windows_open
     assert "Try-OpenFirstDraftByHomeLayout" not in windows_open
     assert "Click-WindowRatio" not in windows_open
     assert "XRatio" not in windows_open

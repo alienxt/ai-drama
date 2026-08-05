@@ -64,7 +64,7 @@ node scripts/jianying/create-jianying-project.js \
 `--open-draft` is best-effort UI automation:
 
 - macOS: launches Jianying, activates the app by bundle id, normalizes the window size, returns to the Home page, double-clicks the first draft thumbnail, then captures only the Jianying window bounds with `screencapture -R`. The terminal/Codex host app needs Accessibility/Automation permission.
-- Windows: launches Jianying/CapCut, locates the exact `HomePageDraftTitle:<draft name>` element with UI Automation, and prefers `InvokePattern`, `LegacyIAccessiblePattern`, or `SelectionItemPattern` before using coordinates derived from that matched element. It validates stable editor-only UI signals before capturing the Jianying/CapCut window. Fixed window-ratio draft-card guesses are not used by the production path.
+- Windows: launches Jianying/CapCut with Chromium/CEF renderer accessibility enabled and first locates the exact `HomePageDraftTitle:<draft name>` element with a native UI Automation `NameProperty` condition. If the client exposes only a visually truncated title, an ellipsis-aware fallback requires both the visible prefix and suffix to match the generated draft name and rejects matches at multiple card locations. It prefers `InvokePattern`, `LegacyIAccessiblePattern`, or `SelectionItemPattern` before using coordinates derived from the matched element. Fixed window-ratio guesses are not used; failures include a bounded UIA tree summary for diagnosis.
 
 Pass `--full-screen-capture` only when you intentionally need the entire desktop screenshot.
 

@@ -1783,7 +1783,10 @@ function openJianying(appPath) {
     return true;
   }
   if (process.platform === 'win32') {
-    const child = spawn(appPath, [], { detached: true, stdio: 'ignore' });
+    const child = spawn(appPath, ['--force-renderer-accessibility=complete'], {
+      detached: true,
+      stdio: 'ignore',
+    });
     child.unref();
     return true;
   }
@@ -2073,7 +2076,24 @@ function Get-ElementName($element) {
   try { return [string]$element.Current.Name } catch { return '' }
 }
 
+function Find-NativeExactNamedElement($root, [string[]]$names) {
+  foreach ($candidate in $names) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    try {
+      $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        [string]$candidate
+      )
+      $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+      if ($element) { return $element }
+    } catch {}
+  }
+  return $null
+}
+
 function Find-BoundedNamedElement($root, [string[]]$names, [bool]$allowContains, [int]$timeoutMs, [int]$maxNodes) {
+  $nativeExact = Find-NativeExactNamedElement $root $names
+  if ($nativeExact) { return $nativeExact }
   $deadline = (Get-Date).AddMilliseconds([Math]::Max(300, $timeoutMs))
   $walkers = @(
     [System.Windows.Automation.TreeWalker]::ControlViewWalker,
@@ -2127,6 +2147,180 @@ function Find-NamedElement($root, [string[]]$names, [bool]$allowContains) {
 
 function Get-ControlTypeName($element) {
   try { return [string]$element.Current.ControlType.ProgrammaticName } catch { return '' }
+}
+
+function Get-DiagnosticText([object]$value) {
+  return [System.Text.RegularExpressions.Regex]::Replace([string]$value, '[\r\n\t]+', ' ').Trim()
+}
+
+function Test-ElementInsideTargetWindow($element) {
+  try {
+    $rect = $element.Current.BoundingRectangle
+    if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) { return $false }
+    $windowRect = Get-WindowRect
+    $centerX = $rect.Left + ($rect.Width / 2)
+    $centerY = $rect.Top + ($rect.Height / 2)
+    return [bool](
+      $centerX -ge $windowRect.Left -and
+      $centerX -le ($windowRect.Left + $windowRect.Width) -and
+      $centerY -ge $windowRect.Top -and
+      $centerY -le ($windowRect.Top + $windowRect.Height)
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Find-ExactNamedElementInTargetWindow($root, [string[]]$names) {
+  $element = Find-NativeExactNamedElement $root $names
+  if ($element) { return $element }
+  try {
+    $desktopRoot = [System.Windows.Automation.AutomationElement]::RootElement
+    $element = Find-NativeExactNamedElement $desktopRoot $names
+    if ($element -and (Test-ElementInsideTargetWindow $element)) { return $element }
+  } catch {}
+  return $null
+}
+
+function Get-NormalizedDraftTitle([string]$value) {
+  $normalized = [string]$value
+  if ($normalized.StartsWith('HomePageDraftTitle:')) {
+    $normalized = $normalized.Substring('HomePageDraftTitle:'.Length)
+  }
+  $normalized = $normalized.Replace(([char]0x2026).ToString(), '...')
+  return [System.Text.RegularExpressions.Regex]::Replace($normalized, '[\s_]+', '').Trim()
+}
+
+function Test-EllipsizedDraftTitleMatch([string]$candidate, [string]$target) {
+  $candidateTitle = Get-NormalizedDraftTitle $candidate
+  $targetTitle = Get-NormalizedDraftTitle $target
+  $parts = [System.Text.RegularExpressions.Regex]::Split($candidateTitle, '\.{2,}')
+  if ($parts.Count -lt 2) { return $false }
+  $prefix = [string]$parts[0]
+  $suffix = [string]$parts[$parts.Count - 1]
+  if ($prefix.Length -lt 2 -or $suffix.Length -lt 2) { return $false }
+  return [bool]($targetTitle.StartsWith($prefix) -and $targetTitle.EndsWith($suffix))
+}
+
+function Find-UniqueEllipsizedDraftTitleElement($root, [string]$target, [int]$maxNodes = 1200) {
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  $queue = New-Object System.Collections.Queue
+  $child = $walker.GetFirstChild($root)
+  while ($child) {
+    $queue.Enqueue($child)
+    $child = $walker.GetNextSibling($child)
+  }
+  $matches = @()
+  $visited = 0
+  while ($queue.Count -gt 0 -and $visited -lt $maxNodes) {
+    $element = $queue.Dequeue()
+    $visited += 1
+    $name = Get-ElementName $element
+    if (-not [string]::IsNullOrWhiteSpace($name) -and (Test-EllipsizedDraftTitleMatch $name $target)) {
+      try {
+        $rect = $element.Current.BoundingRectangle
+        if (-not $element.Current.IsOffscreen -and -not $rect.IsEmpty -and (Test-ElementInsideTargetWindow $element)) {
+          $matches += [pscustomobject]@{
+            Element = $element
+            Name = $name
+            CenterX = $rect.Left + ($rect.Width / 2)
+            CenterY = $rect.Top + ($rect.Height / 2)
+            Area = $rect.Width * $rect.Height
+          }
+        }
+      } catch {}
+    }
+    $child = $walker.GetFirstChild($element)
+    while ($child -and $visited + $queue.Count -lt $maxNodes) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+  }
+  if (-not $matches.Count) { return $null }
+  $best = $matches | Sort-Object Area | Select-Object -First 1
+  $differentLocation = @($matches | Where-Object {
+    [Math]::Abs($_.CenterX - $best.CenterX) -gt 24 -or
+    [Math]::Abs($_.CenterY - $best.CenterY) -gt 24
+  })
+  if ($differentLocation.Count) {
+    Write-ProgressLine ("stage=draft-title-ellipsis-ambiguous matches={0} target={1}" -f $matches.Count, $target)
+    return $null
+  }
+  Write-ProgressLine ("stage=draft-title-ellipsis-matched name={0} target={1}" -f (Get-DiagnosticText $best.Name), $target)
+  return $best.Element
+}
+
+function Write-UiaTreeSummary($root, [int]$maxNodes = 500, [int]$maxNamed = 60) {
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  $queue = New-Object System.Collections.Queue
+  $child = $walker.GetFirstChild($root)
+  while ($child) {
+    $queue.Enqueue($child)
+    $child = $walker.GetNextSibling($child)
+  }
+  $visited = 0
+  $named = 0
+  while ($queue.Count -gt 0 -and $visited -lt $maxNodes) {
+    $element = $queue.Dequeue()
+    $visited += 1
+    $name = Get-ElementName $element
+    if (-not [string]::IsNullOrWhiteSpace($name) -and $named -lt $maxNamed) {
+      $named += 1
+      Write-ProgressLine ("stage=uia-tree-element index={0} name={1} automationId={2} className={3} frameworkId={4} controlType={5}" -f
+        $named,
+        (Get-DiagnosticText $name),
+        (Get-DiagnosticText $element.Current.AutomationId),
+        (Get-DiagnosticText $element.Current.ClassName),
+        (Get-DiagnosticText $element.Current.FrameworkId),
+        (Get-ControlTypeName $element))
+    }
+    $child = $walker.GetFirstChild($element)
+    while ($child -and $visited + $queue.Count -lt $maxNodes) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+  }
+  Write-ProgressLine ("stage=uia-tree-summary visited={0} named={1} queued={2}" -f $visited, $named, $queue.Count)
+}
+
+function Test-UiaTreeUsable($root, [int]$maxNodes = 250, [int]$requiredNamed = 5) {
+  try {
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $queue = New-Object System.Collections.Queue
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
+      $queue.Enqueue($child)
+      $child = $walker.GetNextSibling($child)
+    }
+    $visited = 0
+    $named = 0
+    while ($queue.Count -gt 0 -and $visited -lt $maxNodes) {
+      $element = $queue.Dequeue()
+      $visited += 1
+      if (-not [string]::IsNullOrWhiteSpace((Get-ElementName $element))) {
+        $named += 1
+        if ($named -ge $requiredNamed) { return $true }
+      }
+      $child = $walker.GetFirstChild($element)
+      while ($child -and $visited + $queue.Count -lt $maxNodes) {
+        $queue.Enqueue($child)
+        $child = $walker.GetNextSibling($child)
+      }
+    }
+  } catch {}
+  return $false
+}
+
+function Wait-UiaTreeUsable($root, [int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $seconds))
+  while ((Get-Date) -lt $deadline) {
+    if (Test-UiaTreeUsable $root 250 5) {
+      Write-ProgressLine 'stage=uia-tree-ready'
+      return $true
+    }
+    Start-Sleep -Milliseconds 600
+  }
+  return $false
 }
 
 function Get-SupportedPatternNames($element) {
@@ -2669,7 +2863,13 @@ function Wait-ForDraftTitle([int]$seconds) {
   $draftNames = @("HomePageDraftTitle:$draftName", $draftName)
   while ((Get-Date) -lt $deadline) {
     $root = Get-RootElement
-    $element = Find-BoundedNamedElement $root $draftNames $false 2500 1200
+    $element = Find-ExactNamedElementInTargetWindow $root $draftNames
+    if (-not $element) {
+      $element = Find-BoundedNamedElement $root $draftNames $false 2500 1200
+    }
+    if (-not $element) {
+      $element = Find-UniqueEllipsizedDraftTitleElement $root $draftName 1200
+    }
     if ($element) {
       Write-ProgressLine ("stage=draft-title-matched name={0}" -f (Get-ElementName $element))
       return $element
@@ -2718,12 +2918,25 @@ function Wait-ForEditorAfterClick($before, [int]$seconds = 45) {
 
 function Try-OpenNamedDraftByUia {
   Write-ProgressLine ("stage=uia-open-start target={0}" -f $draftName)
-  [void](Get-RootElement)
-  if (Wait-ForEditor 1) { return $true }
-  [void](Try-GoHome)
-  Start-Sleep -Milliseconds 1200
-  if (Wait-ForEditor 2) { return $true }
-  $titleElement = Wait-ForDraftTitle 8
+  $initialRoot = Get-RootElement
+  $initialDraftNames = @("HomePageDraftTitle:$draftName", $draftName)
+  $initialDraftElement = Find-ExactNamedElementInTargetWindow $initialRoot $initialDraftNames
+  if (-not $initialDraftElement) {
+    $initialDraftElement = Find-UniqueEllipsizedDraftTitleElement $initialRoot $draftName 1200
+  }
+  if (-not $initialDraftElement -and -not (Wait-UiaTreeUsable $initialRoot 8)) {
+    Write-ProgressLine 'stage=uia-tree-unavailable-after-accessibility-launch'
+    try { Write-UiaTreeSummary $initialRoot 500 60 } catch {}
+    throw 'Jianying renderer did not expose a usable Windows UI Automation tree after accessibility-enabled launch'
+  }
+  $titleElement = $initialDraftElement
+  if (-not $titleElement) {
+    if (Wait-ForEditor 1) { return $true }
+    [void](Try-GoHome)
+    Start-Sleep -Milliseconds 1200
+    if (Wait-ForEditor 2) { return $true }
+    $titleElement = Wait-ForDraftTitle 8
+  }
   if ($titleElement) {
     Write-ProgressLine 'stage=title-draft-found'
     $before = Get-WindowSnapshot
@@ -2736,6 +2949,11 @@ function Try-OpenNamedDraftByUia {
   Write-ProgressLine 'stage=title-draft-not-found'
   if (Wait-ForEditor 1) { return $true }
   if (Try-OpenFromDraftDetail 4) { return $true }
+  try {
+    Write-UiaTreeSummary (Get-RootElement) 500 60
+  } catch {
+    Write-ProgressLine ("stage=uia-tree-summary-failed error={0}" -f $_.Exception.Message)
+  }
   Write-ProgressLine ("stage=draft-title-ui-not-found target={0}" -f $draftName)
   return $false
 }
