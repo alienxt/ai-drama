@@ -632,6 +632,7 @@ export function DramasPage() {
 
   async function syncSelectedAssetsInBrowser() {
     const ids = selectedDramaIds;
+    let failedCount = 0;
     setSyncingAssets(true);
     setSyncModeOpen(false);
     setClientSyncOpen(true);
@@ -651,36 +652,21 @@ export function DramasPage() {
         }
         updateClientSyncItem(item.dramaId, { status: 'running', detail: '正在通过浏览器下载简介和封面' });
         try {
-          const [summary, cover] = await Promise.all([
-            item.summaryDownloadUrl ? downloadText(item.summaryDownloadUrl) : Promise.resolve(undefined),
-            item.coverDownloadUrl ? downloadBlob(item.coverDownloadUrl) : Promise.resolve(undefined),
-          ]);
-          if (!summary && !cover) {
-            throw new Error('没有可同步的简介或封面');
-          }
-          updateClientSyncItem(item.dramaId, { status: 'running', detail: '正在上传到后台保存' });
-          const formData = new FormData();
-          if (summary) {
-            formData.append('summary', summary);
-          }
-          if (item.coverPath) {
-            formData.append('coverPath', item.coverPath);
-          }
-          if (cover) {
-            formData.append('cover', cover, coverFileName(item.coverPath));
-          }
-          await http.post<DramaClientAssetSyncComplete>(`/admin/dramas/sync-assets/client-complete/${item.dramaId}`, formData, {
-            timeout: ASSET_SYNC_CLIENT_COMPLETE_TIMEOUT_MS,
-          });
+          await syncClientAssetInBrowser(item);
           updateClientSyncItem(item.dramaId, { status: 'success', detail: '已保存，后台会继续生成 AI 剧名、AI 简介和封面' });
         } catch (error) {
+          failedCount += 1;
           updateClientSyncItem(item.dramaId, {
             status: 'failed',
-            detail: error instanceof Error ? error.message : '浏览器同步失败',
+            detail: errorMessage(error),
           });
         }
       }
-      appMessage.success('浏览器同步已完成');
+      if (failedCount > 0) {
+        appMessage.error(`浏览器同步已完成，仍有 ${failedCount} 部失败`);
+      } else {
+        appMessage.success('浏览器同步已完成');
+      }
       setSelectedRowKeys([]);
       setVersion((value) => value + 1);
     } finally {
@@ -688,8 +674,32 @@ export function DramasPage() {
     }
   }
 
+  async function syncClientAssetInBrowser(item: DramaClientAssetSyncPlan['items'][number]) {
+    const [summary, cover] = await Promise.all([
+      item.summaryDownloadUrl ? downloadText(item.summaryDownloadUrl) : Promise.resolve(undefined),
+      item.coverDownloadUrl ? downloadBlob(item.coverDownloadUrl) : Promise.resolve(undefined),
+    ]);
+    if (!summary && !cover) {
+      throw new Error('没有可同步的简介或封面');
+    }
+    updateClientSyncItem(item.dramaId, { status: 'running', detail: '正在上传到后台保存' });
+    const formData = new FormData();
+    if (summary) {
+      formData.append('summary', summary);
+    }
+    if (item.coverPath) {
+      formData.append('coverPath', item.coverPath);
+    }
+    if (cover) {
+      formData.append('cover', cover, coverFileName(item.coverPath));
+    }
+    await http.post<DramaClientAssetSyncComplete>(`/admin/dramas/sync-assets/client-complete/${item.dramaId}`, formData, {
+      timeout: ASSET_SYNC_CLIENT_COMPLETE_TIMEOUT_MS,
+    });
+  }
+
   async function downloadText(url: string) {
-    const response = await fetch(url);
+    const response = await fetchBaiduAsset(url, '简介');
     if (!response.ok) {
       throw new Error(`简介下载失败：HTTP ${response.status}`);
     }
@@ -697,11 +707,23 @@ export function DramasPage() {
   }
 
   async function downloadBlob(url: string) {
-    const response = await fetch(url);
+    const response = await fetchBaiduAsset(url, '封面');
     if (!response.ok) {
       throw new Error(`封面下载失败：HTTP ${response.status}`);
     }
     return response.blob();
+  }
+
+  async function fetchBaiduAsset(url: string, label: string) {
+    try {
+      return await fetch(url);
+    } catch (error) {
+      throw new Error(`${label}下载失败：浏览器无法访问百度直链（${errorMessage(error)}），可能是 CORS、网络拦截或直链过期`);
+    }
+  }
+
+  function errorMessage(error: unknown) {
+    return error instanceof Error && error.message ? error.message : '未知错误';
   }
 
   function coverFileName(path?: string) {
@@ -1153,7 +1175,7 @@ export function DramasPage() {
             type="warning"
             showIcon
             message="浏览器端同步请确保当前网络在中国大陆"
-            description="如果百度下载链接不允许跨域访问，进度里会显示失败原因；这种情况下可以改用后台同步或换本地辅助工具。"
+            description="这个模式会由当前浏览器直接请求百度下载链接；如果百度链接不允许跨域访问，普通网页无法读取文件内容，只能显示失败原因。"
           />
         </Space>
       </Modal>
