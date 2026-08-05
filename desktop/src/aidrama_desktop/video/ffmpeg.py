@@ -815,13 +815,17 @@ class FfmpegProcessor:
         command = [self.ffmpeg_path, "-y"]
         for clip in clips:
             command.extend(["-i", str(clip.path)])
-        for bgm_file in bgm_files or []:
+        bgm_playlist = bgm_files or []
+        reuse_bgm_inputs = self._should_reuse_reassembly_bgm_inputs(bgm_playlist)
+        command_bgm_files = list(dict.fromkeys(bgm_playlist)) if reuse_bgm_inputs else bgm_playlist
+        for bgm_file in command_bgm_files:
             command.extend(["-i", str(bgm_file)])
         filter_complex = self._reassembly_filter_complex(
             clips,
             speed_factor=speed_factor,
             swap_orientation=swap_orientation,
-            bgm_files=bgm_files or [],
+            bgm_files=bgm_playlist,
+            reuse_bgm_inputs=reuse_bgm_inputs,
             bgm_volume_percent=bgm_volume_percent,
             audio_pitch_semitones=audio_pitch_semitones,
             border_percent=border_percent,
@@ -844,6 +848,7 @@ class FfmpegProcessor:
         speed_factor: float,
         swap_orientation: bool,
         bgm_files: list[Path],
+        reuse_bgm_inputs: bool,
         bgm_volume_percent: float,
         audio_pitch_semitones: float,
         border_percent: float,
@@ -908,15 +913,31 @@ class FfmpegProcessor:
         audio_output_label = "maina"
         if bgm_files and bgm_volume_percent > 0:
             bgm_inputs: list[str] = []
-            for bgm_index, _bgm_file in enumerate(bgm_files):
-                input_index = len(clips) + bgm_index
-                filters.append(
-                    f"[{input_index}:a]asetpts=PTS-STARTPTS,"
-                    "aresample=async=1:first_pts=0,"
-                    "aformat=sample_rates=48000:channel_layouts=stereo"
-                    f"[bgm{bgm_index}]"
-                )
-                bgm_inputs.append(f"[bgm{bgm_index}]")
+            if reuse_bgm_inputs:
+                bgm_occurrences: dict[Path, list[int]] = {}
+                for bgm_index, bgm_file in enumerate(bgm_files):
+                    bgm_occurrences.setdefault(bgm_file, []).append(bgm_index)
+                    bgm_inputs.append(f"[bgm{bgm_index}]")
+                for input_offset, occurrence_indexes in enumerate(bgm_occurrences.values()):
+                    input_index = len(clips) + input_offset
+                    output_labels = "".join(f"[bgm{index}]" for index in occurrence_indexes)
+                    split_filter = f",asplit={len(occurrence_indexes)}" if len(occurrence_indexes) > 1 else ""
+                    filters.append(
+                        f"[{input_index}:a]asetpts=PTS-STARTPTS,"
+                        "aresample=async=1:first_pts=0,"
+                        "aformat=sample_rates=48000:channel_layouts=stereo"
+                        f"{split_filter}{output_labels}"
+                    )
+            else:
+                for bgm_index, _bgm_file in enumerate(bgm_files):
+                    input_index = len(clips) + bgm_index
+                    filters.append(
+                        f"[{input_index}:a]asetpts=PTS-STARTPTS,"
+                        "aresample=async=1:first_pts=0,"
+                        "aformat=sample_rates=48000:channel_layouts=stereo"
+                        f"[bgm{bgm_index}]"
+                    )
+                    bgm_inputs.append(f"[bgm{bgm_index}]")
             filters.append("".join(bgm_inputs) + f"concat=n={len(bgm_inputs)}:v=0:a=1[bgmcat]")
             filters.append(
                 f"[bgmcat]atrim=duration={self._format_seconds(total_output_duration)},"
@@ -933,6 +954,10 @@ class FfmpegProcessor:
         else:
             filters.append(f"[{audio_output_label}]anull[outa]")
         return ";".join(filters)
+
+    @staticmethod
+    def _should_reuse_reassembly_bgm_inputs(bgm_files: list[Path]) -> bool:
+        return os.name == "nt" and len(set(bgm_files)) < len(bgm_files)
 
     def _reassembly_segment_command(
         self,
@@ -1395,8 +1420,15 @@ class FfmpegProcessor:
         if getattr(exception, "winerror", None) == 206 or "WinError 206" in str(exception):
             sections = [
                 "FFmpeg 启动失败：Windows 命令行过长（WinError 206）。"
-                "本版本会把超长 filter_complex 写入临时脚本执行；如果仍出现此错误，请查看下方实际命令。"
+                "超长 filter_complex 已写入临时脚本；如果仍出现此错误，说明脚本之外的输入参数仍然过多。"
             ]
+            sections.extend(
+                [
+                    f"FFmpeg 输入数量：{command.count('-i')}",
+                    f"FFmpeg 参数数量：{len(command)}",
+                    f"FFmpeg 命令估算长度：{len(cls._command_text(command))} 字符",
+                ]
+            )
         else:
             sections = [f"找不到 FFmpeg 可执行文件：{configured_path or 'ffmpeg'}。"]
         if binary_path and cls._looks_like_executable_path(binary_path):

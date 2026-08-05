@@ -758,6 +758,54 @@ def test_ffmpeg_processor_uses_filter_complex_script_for_long_reassembly(monkeyp
     assert all(not path.exists() for path in script_paths)
 
 
+def test_ffmpeg_processor_reuses_repeated_bgm_inputs_on_windows(monkeypatch, tmp_path):
+    source = tmp_path / "001.mp4"
+    bgm = tmp_path / "bgm.mp3"
+    timeline = tmp_path / "reassembled" / ".full.mp4"
+    segment = tmp_path / "reassembled" / "001.mp4"
+    source.write_text("video")
+    bgm.write_text("audio")
+    timeline_commands = []
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"index": 0}], "format": {"duration": "2"}}),
+            )
+        if Path(command[-1]).name == "timeline.mp4":
+            timeline_commands.append(command)
+            Path(command[-1]).write_text("timeline")
+        else:
+            Path(command[-1]).write_text("segment")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        FfmpegProcessor,
+        "_should_reuse_reassembly_bgm_inputs",
+        staticmethod(lambda _files: True),
+    )
+    monkeypatch.setattr("aidrama_desktop.video.ffmpeg.FFMPEG_FILTER_SCRIPT_MIN_CHARS", 100_000)
+
+    processor = FfmpegProcessor("ffmpeg")
+    processor.reassemble_videos(
+        [VideoReassemblySourceClip(source, 0.0, 782.0)],
+        [VideoReassemblySegment(1, 0.0, 782.0, segment)],
+        timeline,
+        bgm_files=[bgm],
+        bgm_volume_percent=20.0,
+    )
+
+    timeline_command = timeline_commands[0]
+    assert timeline_command.count("-i") == 2
+    filter_complex = timeline_command[timeline_command.index("-filter_complex") + 1]
+    bgm_labels = "".join(f"[bgm{index}]" for index in range(391))
+    assert f"asplit=391{bgm_labels}" in filter_complex
+    assert f"{bgm_labels}concat=n=391:v=0:a=1[bgmcat]" in filter_complex
+
+
 def test_ffmpeg_processor_logs_filter_complex_script_content_on_failure(monkeypatch, tmp_path):
     source = tmp_path / "001.mp4"
     timeline = tmp_path / "reassembled" / ".full.mp4"
@@ -822,6 +870,9 @@ def test_ffmpeg_processor_labels_windows_long_command_error(monkeypatch, tmp_pat
 
     message = str(error.value)
     assert "FFmpeg 启动失败：Windows 命令行过长（WinError 206）" in message
+    assert "FFmpeg 输入数量：1" in message
+    assert "FFmpeg 参数数量：" in message
+    assert "FFmpeg 命令估算长度：" in message
     assert "找不到 FFmpeg 可执行文件" not in message
     assert "FFmpeg filter_complex_script：" in message
     assert "FFmpeg filter_complex 内容：" in message
