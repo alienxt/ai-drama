@@ -35,7 +35,7 @@ from aidrama_desktop.storyboard import (
     ai_production_proof_path,
     infer_storyboard_style,
 )
-from aidrama_desktop.subtitles import WhisperSrtGenerationError, WhisperSrtGenerator
+from aidrama_desktop.subtitles import SubtitleSrtGenerator, WhisperSrtGenerationError
 from aidrama_desktop.tasks.cache_cleanup import mark_upload_success
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
@@ -68,7 +68,7 @@ TIKTOK_MAX_EPISODE_COUNT = 120
 TIKTOK_MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 TIKTOK_MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 TIKTOK_EPISODE_MERGE_VERSION = "tiktok-episode-merge-v1"
-VIDEO_REASSEMBLY_VERSION = "video-reassembly-v9"
+VIDEO_REASSEMBLY_VERSION = "video-reassembly-v10-contiguous-episodes"
 VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
@@ -80,10 +80,10 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v21-platform-safe"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v22-short-strategy-codes"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_SCREENSHOT_DIRNAME = "剪映工程截图"
-JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图预览"
+JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图"
 JIANYING_PROJECT_STRATEGIES = (
     "platform-safe-v1",
     "layered-proof-v1",
@@ -93,6 +93,11 @@ JIANYING_PROJECT_STRATEGY_LABELS = {
     "platform-safe-v1": "平台安全工程",
     "layered-proof-v1": "标准分轨工程",
     "competitor-native-v1": "竞品原生工程",
+}
+JIANYING_PROJECT_STRATEGY_VERSION_CODES = {
+    "platform-safe-v1": "V1",
+    "layered-proof-v1": "V2",
+    "competitor-native-v1": "V3",
 }
 JIANYING_PROJECT_MUSIC_DIR_ENV_KEY = "AIDRAMA_JIANYING_MUSIC_DIR"
 JIANYING_PROJECT_MUSIC_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
@@ -105,6 +110,7 @@ MATERIAL_METADATA_STRING_KEYS = (
     "jianyingProjectCaptureVersion",
     "jianyingProjectStrategy",
     "jianyingProjectStrategyLabel",
+    "jianyingProjectStrategyVersion",
     "jianyingProjectOutputDir",
 )
 MATERIAL_METADATA_SINGLE_PATH_KEYS = (
@@ -203,7 +209,9 @@ class TaskRunner:
     storyboard_generator: StoryboardGenerator | None = None
     storyboards_dir: Path | None = None
     jianying_generator: JianyingProjectGenerator | None = None
+    subtitle_provider: str | None = None
     whisper_path: str | None = None
+    faster_whisper_python_path: str | None = None
     jianying_music_dir: Path | None = None
 
     def heartbeat(self) -> None:
@@ -879,6 +887,7 @@ class TaskRunner:
 
         strategy = requested_strategy or self._select_jianying_project_strategy()
         strategy_label = self._jianying_project_strategy_label(strategy)
+        strategy_version = self._jianying_project_strategy_version(strategy)
         selected_items = self._select_jianying_project_episode_items(
             upload_items,
             JIANYING_PROJECT_SCREENSHOT_COUNT,
@@ -906,7 +915,7 @@ class TaskRunner:
                 )
             result = generator.generate_project_screenshot(
                 video=item.file,
-                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_{strategy_label}_剪辑工程"),
+                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑_{strategy_version}"),
                 output_dir=episode_output_dir,
                 screenshot_path=screenshot_path,
                 srt=srt_path,
@@ -915,6 +924,7 @@ class TaskRunner:
             )
             strategy = str(getattr(result, "strategy_id", None) or strategy)
             strategy_label = str(getattr(result, "strategy_label", None) or strategy_label)
+            strategy_version = self._jianying_project_strategy_version(strategy)
             screenshot = Path(getattr(result, "screenshot_path", screenshot_path))
             if not self._is_ready_material_file(screenshot):
                 raise RuntimeError(f"剪映工程图未生成：{screenshot}")
@@ -925,6 +935,7 @@ class TaskRunner:
             "jianyingProjectCaptureVersion": JIANYING_PROJECT_CAPTURE_VERSION,
             "jianyingProjectStrategy": strategy,
             "jianyingProjectStrategyLabel": strategy_label,
+            "jianyingProjectStrategyVersion": strategy_version,
             "jianyingProjectOutputDir": str(output_dir),
             "jianyingProjectScreenshots": screenshots,
         }
@@ -954,6 +965,7 @@ class TaskRunner:
             "jianyingProjectCaptureVersion",
             "jianyingProjectStrategy",
             "jianyingProjectStrategyLabel",
+            "jianyingProjectStrategyVersion",
             "jianyingProjectOutputDir",
         ):
             value = jianying_metadata.get(key)
@@ -973,8 +985,8 @@ class TaskRunner:
         return self._contract_output_dir(task_id, drama_title) / JIANYING_PROJECT_SCREENSHOT_DIRNAME
 
     def _jianying_project_preview_output_dir(self, task_id: str, drama_title: str, strategy: str) -> Path:
-        strategy_label = safe_contract_filename(self._jianying_project_strategy_label(strategy)) or strategy
-        return self._contract_output_dir(task_id, drama_title) / f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-{strategy_label}"
+        strategy_version = safe_contract_filename(self._jianying_project_strategy_version(strategy)) or strategy
+        return self._contract_output_dir(task_id, drama_title) / f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-{strategy_version}"
 
     @staticmethod
     def _select_jianying_project_strategy() -> str:
@@ -997,6 +1009,11 @@ class TaskRunner:
     def _jianying_project_strategy_label(strategy: str) -> str:
         strategy = str(strategy or "").strip()
         return JIANYING_PROJECT_STRATEGY_LABELS.get(strategy, strategy or "默认工程")
+
+    @staticmethod
+    def _jianying_project_strategy_version(strategy: str) -> str:
+        strategy = str(strategy or "").strip()
+        return JIANYING_PROJECT_STRATEGY_VERSION_CODES.get(strategy, strategy or "V")
 
     @staticmethod
     def _select_jianying_project_episode_items(
@@ -1071,8 +1088,10 @@ class TaskRunner:
         )
         try:
             self._notify(f"识别剪映字幕：{drama_title} {episode_label}", task_id)
-            result = WhisperSrtGenerator(
-                command_path=self.whisper_path,
+            result = SubtitleSrtGenerator(
+                provider=self.subtitle_provider,
+                whisper_path=self.whisper_path,
+                faster_whisper_python_path=self.faster_whisper_python_path,
                 ffmpeg_path=getattr(self.processor, "ffmpeg_path", None),
             ).generate_srt(item.file, target)
         except WhisperSrtGenerationError as exception:
@@ -1082,7 +1101,8 @@ class TaskRunner:
             )
             return None
         action = "已生成" if result.created else "复用"
-        self._notify(f"剪映字幕{action}：{drama_title} {episode_label}", task_id)
+        provider = getattr(result, "provider", "") or "字幕引擎"
+        self._notify(f"剪映字幕{action}：{drama_title} {episode_label}（{provider}）", task_id)
         return result.srt_path
 
     def _jianying_project_bgm_files_for_item(self, item: EpisodeMediaFile) -> list[Path]:
@@ -1964,6 +1984,9 @@ class TaskRunner:
         original_items: list[EpisodeMediaFile],
         reassembled_items: list[EpisodeMediaFile],
     ) -> None:
+        if not TaskRunner._reassembled_items_are_contiguous(reassembled_items):
+            indexes = [item.episode_index for item in reassembled_items]
+            raise RuntimeError(f"重组分集集号不连续，拒绝写入缓存：{indexes}")
         covered_indexes = {
             source_index
             for item in reassembled_items
@@ -2846,10 +2869,17 @@ class TaskRunner:
                 return []
             valid_items.append(item)
         if not invalid_tail:
-            return media_items
+            return media_items if self._reassembled_items_are_contiguous(media_items) else []
         if len(valid_items) < VIDEO_REASSEMBLY_MIN_EPISODE_COUNT:
             return []
-        return valid_items
+        return valid_items if self._reassembled_items_are_contiguous(valid_items) else []
+
+    @staticmethod
+    def _reassembled_items_are_contiguous(media_items: list[EpisodeMediaFile]) -> bool:
+        if not media_items:
+            return False
+        indexes = [item.episode_index for item in sorted(media_items, key=lambda item: item.episode_index)]
+        return indexes == list(range(1, len(indexes) + 1))
 
     @staticmethod
     def _cached_video_files(directory: Path) -> list[Path]:

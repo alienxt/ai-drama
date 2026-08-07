@@ -14,8 +14,10 @@ from aidrama_desktop.tasks.runner import (
     JIANYING_PROJECT_PREVIEW_DIRNAME,
     JIANYING_PROJECT_STRATEGIES,
     JIANYING_PROJECT_STRATEGY_LABELS,
+    JIANYING_PROJECT_STRATEGY_VERSION_CODES,
     TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON,
     TaskRunner,
+    VIDEO_REASSEMBLY_VERSION,
     download_episodes,
     drama_directory_name,
     episode_video_filename,
@@ -676,7 +678,7 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
     monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
     monkeypatch.setattr("aidrama_desktop.tasks.runner.random.SystemRandom", lambda: FakeRandom())
 
-    class FakeWhisperSrtGenerator:
+    class FakeSubtitleSrtGenerator:
         def __init__(self):
             self.calls = []
 
@@ -684,10 +686,10 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
             self.calls.append({"video": video, "target": target})
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n")
-            return type("Result", (), {"srt_path": target, "created": True})()
+            return type("Result", (), {"srt_path": target, "created": True, "provider": "fasterWhisper"})()
 
-    whisper_generator = FakeWhisperSrtGenerator()
-    monkeypatch.setattr("aidrama_desktop.tasks.runner.WhisperSrtGenerator", lambda **_: whisper_generator)
+    subtitle_generator = FakeSubtitleSrtGenerator()
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.SubtitleSrtGenerator", lambda **_: subtitle_generator)
 
     api = StoryboardApi()
     publisher = FakePublisher()
@@ -711,7 +713,7 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
 
     assert len(storyboard_generator.calls) == 1
     assert len(jianying_generator.calls) == 4
-    assert len(whisper_generator.calls) == 4
+    assert len(subtitle_generator.calls) == 4
     screenshots = [
         tmp_path
         / "contracts"
@@ -724,11 +726,14 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
     assert publisher.metadata["jianyingProjectScreenshots"] == screenshots
     assert publisher.metadata["jianyingProjectStrategy"] == "platform-safe-v1"
     assert publisher.metadata["jianyingProjectStrategyLabel"] == "平台安全工程"
+    assert publisher.metadata["jianyingProjectStrategyVersion"] == "V1"
     for call in jianying_generator.calls:
         assert call["srt"] is not None
         assert call["srt"].name.endswith("_中文字幕.srt")
         assert call["srt"].parent.name == "subtitles"
         assert call["strategy"] == "platform-safe-v1"
+        assert call["draft_name"].endswith("_剪辑_V1")
+        assert "_平台安全工程_" not in call["draft_name"]
     for screenshot in screenshots:
         assert screenshot in publisher.metadata["buyDramaContractImages"]
     assert ("生成剪映工程图：神医归来（平台安全工程，随机 4 集）", "task-1") in progress_events
@@ -773,6 +778,11 @@ def test_jianying_strategy_registry_exposes_all_project_strategies():
     assert JIANYING_PROJECT_STRATEGY_LABELS["platform-safe-v1"] == "平台安全工程"
     assert JIANYING_PROJECT_STRATEGY_LABELS["layered-proof-v1"] == "标准分轨工程"
     assert JIANYING_PROJECT_STRATEGY_LABELS["competitor-native-v1"] == "竞品原生工程"
+    assert JIANYING_PROJECT_STRATEGY_VERSION_CODES == {
+        "platform-safe-v1": "V1",
+        "layered-proof-v1": "V2",
+        "competitor-native-v1": "V3",
+    }
 
 
 def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strategy(tmp_path):
@@ -804,7 +814,7 @@ def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strate
         final_dir,
         {
             "version": 1,
-            "reassemblyVersion": "video-reassembly-v9",
+            "reassemblyVersion": VIDEO_REASSEMBLY_VERSION,
             "episodeCount": len(reassembled_items),
             "files": [
                 {
@@ -845,7 +855,10 @@ def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strate
     assert {call["strategy"] for call in jianying_generator.calls} == {"competitor-native-v1"}
     assert metadata["jianyingProjectStrategy"] == "competitor-native-v1"
     assert metadata["jianyingProjectStrategyLabel"] == "竞品原生工程"
-    preview_dirname = f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-竞品原生工程"
+    assert metadata["jianyingProjectStrategyVersion"] == "V3"
+    assert all(call["draft_name"].endswith("_剪辑_V3") for call in jianying_generator.calls)
+    preview_dirname = f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-V3"
+    assert "预览" not in preview_dirname
     assert Path(str(metadata["jianyingProjectOutputDir"])).name == preview_dirname
     assert len(metadata["jianyingProjectScreenshots"]) == 4
     assert all(
@@ -1659,7 +1672,7 @@ def test_reassembly_config_rebuilds_episode_timeline_before_upload(tmp_path):
     assert all(item.episode["finalUploadVideo"] is True for item in reassembled)
 
     manifest = json.loads((final_dir / ".downloaded-episodes.json").read_text())
-    assert manifest["reassemblyVersion"] == "video-reassembly-v9"
+    assert manifest["reassemblyVersion"] == VIDEO_REASSEMBLY_VERSION
     assert manifest["originalEpisodeCount"] == 2
     assert manifest["episodeCount"] == 50
     assert manifest["files"][0]["episode"]["sourceEpisodeRange"] == "1"
@@ -2044,6 +2057,61 @@ def test_upload_cache_rejects_partial_reassembly_manifest(tmp_path):
     items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
 
     assert items == []
+
+
+def test_upload_cache_rejects_non_contiguous_reassembly_manifest(tmp_path):
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        video_reassembly_config=VideoReassemblyConfig(method="fixed"),
+    )
+    final_dir = tmp_path / "dramas" / "processed" / "神医归来-drama-1" / "reassembled"
+    final_dir.mkdir(parents=True)
+    entries = []
+    for index in (1, 2, 4):
+        path = final_dir / f"神医归来-第{index}集.mp4"
+        path.write_bytes(f"video-{index}".encode())
+        entries.append(
+            {
+                "file": path.name,
+                "episodeIndex": index,
+                "episode": {"episodeNo": index, "title": f"第{index}集", "finalUploadVideo": True},
+                "sourceEpisodeIndexes": [1],
+            }
+        )
+    write_download_episode_manifest(
+        final_dir,
+        {
+            "reassemblyVersion": VIDEO_REASSEMBLY_VERSION,
+            "episodeCount": len(entries),
+            "files": entries,
+        },
+    )
+
+    items = runner._cached_upload_items(FakeApi().get("/desktop/dramas/drama-1/download-plan"), "WECHAT_VIDEO")
+
+    assert items == []
+
+
+def test_reassembled_manifest_refuses_non_contiguous_items(tmp_path):
+    first = tmp_path / "神医归来-第1集.mp4"
+    third = tmp_path / "神医归来-第3集.mp4"
+    first.write_bytes(b"video-1")
+    third.write_bytes(b"video-3")
+    reassembled_items = [
+        EpisodeMediaFile({"episodeNo": 1}, 1, first, (1,)),
+        EpisodeMediaFile({"episodeNo": 3}, 3, third, (1,)),
+    ]
+
+    with pytest.raises(RuntimeError, match="重组分集集号不连续"):
+        TaskRunner._write_reassembled_episode_manifest(
+            tmp_path,
+            [EpisodeMediaFile({"episodeNo": 1}, 1, tmp_path / "source.mp4")],
+            reassembled_items,
+        )
 
 
 def test_upload_cache_requires_manifest_for_reassembly_cache(tmp_path):

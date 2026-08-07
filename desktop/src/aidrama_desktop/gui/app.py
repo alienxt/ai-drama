@@ -56,7 +56,17 @@ from aidrama_desktop import __version__
 from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
 from aidrama_desktop.browser.chrome import ChromeController, find_chrome
-from aidrama_desktop.config.settings import Settings, load_settings, resolve_ffmpeg_path, save_tool_path_config
+from aidrama_desktop.config.settings import (
+    DEFAULT_SUBTITLE_PROVIDER,
+    SUBTITLE_PROVIDER_FASTER_WHISPER,
+    SUBTITLE_PROVIDER_OPENAI_WHISPER,
+    Settings,
+    load_settings,
+    normalize_subtitle_provider,
+    resolve_faster_whisper_python_path,
+    resolve_ffmpeg_path,
+    save_tool_path_config,
+)
 from aidrama_desktop.contracts import (
     ContractConfigStore,
     CONTRACT_TEMPLATE_TYPES,
@@ -1152,7 +1162,10 @@ class DesktopWindow(QMainWindow):
 
     def _tool_path_settings_panel(self) -> QFrame:
         panel, panel_layout = self._panel("工具路径")
-        hint = QLabel("FFmpeg、Whisper 路径保存后会优先使用。FFmpeg 支持填写 ffmpeg.exe、bin 目录，或整个 FFmpeg 根目录。留空则自动探测常见安装位置。")
+        hint = QLabel(
+            "FFmpeg、字幕引擎和剪映路径保存后会优先使用。"
+            "默认使用 faster-whisper；未安装时会自动回退到原 Whisper 命令。"
+        )
         hint.setObjectName("mutedText")
         panel_layout.addWidget(hint)
 
@@ -1168,9 +1181,34 @@ class DesktopWindow(QMainWindow):
         )
         form.addRow("FFmpeg", self._path_input_row(self.ffmpeg_path_input, self.choose_ffmpeg_path))
 
+        self.subtitle_provider_input = QComboBox()
+        self.subtitle_provider_input.addItem("faster-whisper（推荐）", SUBTITLE_PROVIDER_FASTER_WHISPER)
+        self.subtitle_provider_input.addItem("openai-whisper（兼容）", SUBTITLE_PROVIDER_OPENAI_WHISPER)
+        self._set_combo_current_data(
+            self.subtitle_provider_input,
+            normalize_subtitle_provider(self.settings.subtitle_provider),
+        )
+        form.addRow("字幕引擎", self.subtitle_provider_input)
+
+        self.faster_whisper_python_path_input = QLineEdit(
+            str(self.settings.faster_whisper_python_path or "")
+        )
+        self.faster_whisper_python_path_input.setPlaceholderText(
+            r"例如：C:\AI-Drama\faster-whisper-venv\Scripts\python.exe 或 ~/AI-Drama/faster-whisper-venv/bin/python"
+        )
+        form.addRow(
+            "faster-whisper Python",
+            self._path_input_row(
+                self.faster_whisper_python_path_input,
+                self.choose_faster_whisper_python_path,
+            ),
+        )
+
         self.whisper_path_input = QLineEdit(str(self.settings.whisper_path or ""))
-        self.whisper_path_input.setPlaceholderText("例如：/Users/mac/Library/Python/3.9/bin/whisper")
-        form.addRow("Whisper", self._path_input_row(self.whisper_path_input, self.choose_whisper_path))
+        self.whisper_path_input.setPlaceholderText(
+            r"兼容兜底，例如：C:\AI-Drama\whisper-venv\Scripts\whisper.exe"
+        )
+        form.addRow("openai-whisper 命令", self._path_input_row(self.whisper_path_input, self.choose_whisper_path))
 
         self.node_path_input = QLineEdit(str(self.settings.node_path or ""))
         self.node_path_input.setPlaceholderText("例如：/opt/homebrew/bin/node")
@@ -1389,6 +1427,9 @@ class DesktopWindow(QMainWindow):
     def choose_whisper_path(self) -> None:
         self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
 
+    def choose_faster_whisper_python_path(self) -> None:
+        self._choose_file_path(self.faster_whisper_python_path_input, "选择 faster-whisper Python")
+
     def choose_ffmpeg_path(self) -> None:
         self._choose_file_path(self.ffmpeg_path_input, "选择 FFmpeg 命令")
 
@@ -1421,6 +1462,10 @@ class DesktopWindow(QMainWindow):
 
     def save_tool_path_settings(self) -> None:
         ffmpeg_path = self.ffmpeg_path_input.text().strip() or None
+        subtitle_provider = str(
+            self.subtitle_provider_input.currentData() or DEFAULT_SUBTITLE_PROVIDER
+        )
+        faster_whisper_python_path = self.faster_whisper_python_path_input.text().strip() or None
         whisper_path = self.whisper_path_input.text().strip() or None
         node_path = self.node_path_input.text().strip() or None
         jianying_draft_root = self.jianying_draft_root_input.text().strip() or None
@@ -1430,6 +1475,8 @@ class DesktopWindow(QMainWindow):
             self.settings.config_dir,
             ffmpeg_path=ffmpeg_path,
             whisper_path=whisper_path,
+            subtitle_provider=subtitle_provider,
+            faster_whisper_python_path=faster_whisper_python_path,
             node_path=node_path,
             jianying_draft_root=jianying_draft_root,
             jianying_app=jianying_app,
@@ -1438,6 +1485,10 @@ class DesktopWindow(QMainWindow):
         self.settings = update_settings(
             self.settings,
             ffmpeg_path=resolve_ffmpeg_path(ffmpeg_path or "ffmpeg"),
+            subtitle_provider=normalize_subtitle_provider(subtitle_provider),
+            faster_whisper_python_path=resolve_faster_whisper_python_path(
+                faster_whisper_python_path
+            ),
             whisper_path=whisper_path,
             node_path=node_path,
             jianying_draft_root=Path(jianying_draft_root).expanduser() if jianying_draft_root else None,
@@ -1447,13 +1498,15 @@ class DesktopWindow(QMainWindow):
         self.append_log(
             "工具路径已保存："
             f"FFmpeg={self.settings.ffmpeg_path or '自动探测'}，"
-            f"Whisper={whisper_path or '自动探测'}，"
+            f"字幕引擎={self.settings.subtitle_provider}，"
+            f"faster-whisper Python={self.settings.faster_whisper_python_path or '自动探测'}，"
+            f"openai-whisper={whisper_path or '自动探测'}，"
             f"Node.js={node_path or '自动探测'}，"
             f"剪映草稿目录={jianying_draft_root or '自动探测'}，"
             f"剪映程序地址={jianying_app or '自动探测'}，"
             f"剪映音乐目录={jianying_music_dir or '默认目录'}"
         )
-        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的 FFmpeg / Whisper 路径。")
+        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的工具路径。")
 
     def _logs_page(self) -> QWidget:
         page = QWidget()
@@ -1655,7 +1708,9 @@ class DesktopWindow(QMainWindow):
                 draft_root=self.settings.jianying_draft_root,
                 jianying_app=self.settings.jianying_app,
             ),
+            subtitle_provider=self.settings.subtitle_provider,
             whisper_path=self.settings.whisper_path,
+            faster_whisper_python_path=self.settings.faster_whisper_python_path,
             jianying_music_dir=self.settings.jianying_music_dir,
         )
 
@@ -1987,7 +2042,7 @@ class DesktopWindow(QMainWindow):
             and not self.auto_task_busy
         )
         if has_reassembled:
-            jianying_preview.setToolTip(f"从 processed/reassembled 生成到 {JIANYING_PROJECT_PREVIEW_DIRNAME}-策略名")
+            jianying_preview.setToolTip(f"从 processed/reassembled 生成到 {JIANYING_PROJECT_PREVIEW_DIRNAME}-V1/V2/V3")
         else:
             jianying_preview.setToolTip("本机 processed/reassembled 未找到可用重组视频")
         jianying_preview.clicked.connect(lambda _=False, item=task: self.generate_jianying_preview_for_task(item))

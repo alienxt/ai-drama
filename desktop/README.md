@@ -17,7 +17,9 @@ aidrama-desktop run-once
 - `AIDRAMA_DEVICE_ID`: 当前桌面设备 ID
 - `AIDRAMA_CHROME_PATH`: Chrome 可执行文件路径
 - `AIDRAMA_FFMPEG_PATH`: FFmpeg 路径
-- `AIDRAMA_WHISPER_PATH`: Whisper 命令路径，用于本机字幕识别
+- `AIDRAMA_SUBTITLE_PROVIDER`: 字幕引擎，默认 `fasterWhisper`，兼容 `openaiWhisper`
+- `AIDRAMA_FASTER_WHISPER_PYTHON_PATH`: faster-whisper 虚拟环境里的 Python 路径
+- `AIDRAMA_WHISPER_PATH`: openai-whisper 命令路径，仅作为兼容兜底
 - `AIDRAMA_SOFFICE_PATH`: soffice 路径
 - `AIDRAMA_WORK_DIR`: 本机工作根目录，默认在系统用户数据目录下
 - `AIDRAMA_TOKEN_FILE`: 登录 token 文件，默认在系统用户配置目录下
@@ -57,7 +59,7 @@ Windows 打包需要先安装 Python 3.11+ 和 Inno Setup 6。脚本会使用 `.
 .\scripts\build-package.ps1 -SkipInstaller
 ```
 
-Windows 客户端运行依赖和 Whisper 安装说明见 [Windows 客户端安装文档](../docs/windows-client-install.md)。
+Windows 客户端运行依赖和字幕识别安装说明见 [Windows 客户端安装文档](../docs/windows-client-install.md)。
 
 ## Local directories
 

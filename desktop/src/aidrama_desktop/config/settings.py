@@ -32,6 +32,18 @@ COMMON_WHISPER_PATHS = (
     Path("/opt/homebrew/bin/whisper"),
     Path("/usr/local/bin/whisper"),
 )
+COMMON_FASTER_WHISPER_PYTHON_PATHS = (
+    Path("~/AI-Drama/faster-whisper-venv/bin/python"),
+    Path("~/.venvs/faster-whisper/bin/python"),
+    Path("~/Library/Python/3.11/bin/python3"),
+    Path("/opt/homebrew/bin/python3.11"),
+    Path("/usr/local/bin/python3.11"),
+    Path(r"C:\AI-Drama\faster-whisper-venv\Scripts\python.exe"),
+    Path(r"C:\AI-Drama\whisper-venv\Scripts\python.exe"),
+)
+SUBTITLE_PROVIDER_FASTER_WHISPER = "fasterWhisper"
+SUBTITLE_PROVIDER_OPENAI_WHISPER = "openaiWhisper"
+DEFAULT_SUBTITLE_PROVIDER = SUBTITLE_PROVIDER_FASTER_WHISPER
 TOOL_PATHS_CONFIG_FILENAME = "tool-paths.json"
 
 
@@ -166,6 +178,42 @@ def resolve_whisper_path(whisper_path: str | None = None) -> str | None:
     return normalize_optional_executable_path(whisper_path)
 
 
+def resolve_faster_whisper_python_path(python_path: str | None = None) -> str | None:
+    candidates = [
+        normalize_optional_executable_path(python_path),
+        *COMMON_FASTER_WHISPER_PYTHON_PATHS,
+        shutil.which("python3.11"),
+        shutil.which("python3"),
+        shutil.which("python"),
+        "python",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(str(candidate)).expanduser()
+        normalized = str(candidate_path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if candidate_path.is_file():
+            return normalized
+        resolved = shutil.which(str(candidate))
+        if resolved:
+            return resolved
+    return normalize_optional_executable_path(python_path)
+
+
+def normalize_subtitle_provider(provider: str | None = None) -> str:
+    value = str(provider or "").strip()
+    key = value.lower().replace("-", "").replace("_", "")
+    if key in {"openaiwhisper", "openai", "whisper"}:
+        return SUBTITLE_PROVIDER_OPENAI_WHISPER
+    if key in {"fasterwhisper", "faster", "ctranslate2"}:
+        return SUBTITLE_PROVIDER_FASTER_WHISPER
+    return DEFAULT_SUBTITLE_PROVIDER
+
+
 def load_tool_path_config(config_dir: Path) -> dict[str, str]:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     try:
@@ -178,6 +226,8 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
     key_map = {
         "ffmpegPath": "ffmpeg_path",
         "whisperPath": "whisper_path",
+        "subtitleProvider": "subtitle_provider",
+        "fasterWhisperPythonPath": "faster_whisper_python_path",
         "nodePath": "node_path",
         "jianyingDraftRoot": "jianying_draft_root",
         "jianyingApp": "jianying_app",
@@ -194,7 +244,9 @@ def save_tool_path_config(
     config_dir: Path,
     *,
     ffmpeg_path: str | None = None,
-    whisper_path: str | None,
+    whisper_path: str | None = None,
+    subtitle_provider: str | None = None,
+    faster_whisper_python_path: str | None = None,
     node_path: str | None = None,
     jianying_draft_root: str | None = None,
     jianying_app: str | None = None,
@@ -205,6 +257,8 @@ def save_tool_path_config(
     payload = {
         "ffmpegPath": normalize_optional_executable_path(ffmpeg_path) or "",
         "whisperPath": normalize_optional_executable_path(whisper_path) or "",
+        "subtitleProvider": normalize_subtitle_provider(subtitle_provider),
+        "fasterWhisperPythonPath": normalize_optional_executable_path(faster_whisper_python_path) or "",
         "nodePath": normalize_optional_executable_path(node_path) or "",
         "jianyingDraftRoot": normalize_optional_executable_path(jianying_draft_root) or "",
         "jianyingApp": normalize_optional_executable_path(jianying_app) or "",
@@ -219,6 +273,8 @@ class Settings(BaseSettings):
     chrome_path: str | None = None
     ffmpeg_path: str = "ffmpeg"
     whisper_path: str | None = None
+    subtitle_provider: str = DEFAULT_SUBTITLE_PROVIDER
+    faster_whisper_python_path: str | None = None
     node_path: str | None = None
     jianying_draft_root: Path | None = None
     jianying_app: Path | None = None
@@ -287,6 +343,11 @@ def load_settings() -> Settings:
     settings.ffmpeg_path = resolve_ffmpeg_path(settings.ffmpeg_path)
     if tool_path_config.get("whisper_path"):
         settings.whisper_path = tool_path_config["whisper_path"]
+    if tool_path_config.get("subtitle_provider"):
+        settings.subtitle_provider = tool_path_config["subtitle_provider"]
+    settings.subtitle_provider = normalize_subtitle_provider(settings.subtitle_provider)
+    if tool_path_config.get("faster_whisper_python_path"):
+        settings.faster_whisper_python_path = tool_path_config["faster_whisper_python_path"]
     if tool_path_config.get("node_path"):
         settings.node_path = tool_path_config["node_path"]
     if tool_path_config.get("jianying_draft_root"):
@@ -302,6 +363,10 @@ def load_settings() -> Settings:
     elif os.environ.get("AIDRAMA_JIANYING_MUSIC_DIR"):
         settings.jianying_music_dir = Path(str(os.environ["AIDRAMA_JIANYING_MUSIC_DIR"])).expanduser()
     settings.whisper_path = resolve_whisper_path(settings.whisper_path or os.environ.get("AIDRAMA_WHISPER_PATH"))
+    settings.faster_whisper_python_path = resolve_faster_whisper_python_path(
+        settings.faster_whisper_python_path
+        or os.environ.get("AIDRAMA_FASTER_WHISPER_PYTHON_PATH")
+    )
     if "AIDRAMA_DEVICE_ID" not in os.environ:
         if settings.device_id_file.exists():
             stored_device_id = settings.device_id_file.read_text(encoding="utf-8").strip()

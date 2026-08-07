@@ -30,6 +30,7 @@ class WhisperSrtGenerationError(RuntimeError):
 class WhisperSrtGenerationResult:
     srt_path: Path
     created: bool
+    provider: str = "openaiWhisper"
 
 
 @dataclass

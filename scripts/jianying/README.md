@@ -33,6 +33,7 @@ Strategy policy:
 - Multiple strategy templates can coexist in the tool.
 - `platform-safe-v1` is the audit-safe default: one main video track, one subtitle track, clip-matched original audio, at most one music bed, one light native color track, and hidden audio cards in the media panel.
 - `competitor-native-v1` mirrors a competitor-style native proof layout: 5 media-pool video clips, 10 V1 timeline cuts, clip-matched original audio, 3 staggered music tracks, hidden imported subtitle text, native filter/effect/sticker tracks, and hidden audio cards in the media panel.
+- Desktop draft and manual preview output folder names use short version codes instead of strategy labels: `platform-safe-v1` -> `V1`, `layered-proof-v1` -> `V2`, and `competitor-native-v1` -> `V3`. Example draft name: `剧名_第99集_剪辑_V1`; example output folder: `剪映图-V1`.
 - Each generated proof draft records `strategy_id` and `strategy_label` in `codex_audit.json` and `jianying_project_result.json`.
 - The desktop runner writes the chosen strategy into `.jianying-project-materials.json`, so cached screenshots are reused only when the capture version and requested strategy match.
 

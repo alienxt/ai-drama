@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from aidrama_desktop.config.settings import Settings, load_settings, resolve_ffmpeg_path, resolve_whisper_path, save_tool_path_config
+from aidrama_desktop.config.settings import (
+    Settings,
+    load_settings,
+    resolve_faster_whisper_python_path,
+    resolve_ffmpeg_path,
+    resolve_whisper_path,
+    save_tool_path_config,
+)
 
 
 def test_settings_default_device_id_uses_mac_address(monkeypatch):
@@ -112,12 +119,15 @@ def test_load_settings_falls_back_when_explicit_ffmpeg_path_is_missing(monkeypat
 
 def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp_path):
     saved_whisper = tmp_path / "tools" / "whisper"
+    saved_faster_python = tmp_path / "faster-whisper" / "bin" / "python"
     saved_node = tmp_path / "tools" / "node"
     draft_root = tmp_path / "jianying" / "drafts"
     jianying_app = tmp_path / "jianying" / "JianyingPro.exe"
     music_dir = tmp_path / "music"
     saved_whisper.parent.mkdir(parents=True)
+    saved_faster_python.parent.mkdir(parents=True)
     saved_whisper.write_text("#!/bin/sh\n")
+    saved_faster_python.write_text("#!/bin/sh\n")
     saved_node.write_text("#!/bin/sh\n")
     draft_root.mkdir(parents=True)
     jianying_app.parent.mkdir(parents=True, exist_ok=True)
@@ -128,12 +138,16 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
         config_dir,
         ffmpeg_path=None,
         whisper_path=str(saved_whisper),
+        subtitle_provider="openai",
+        faster_whisper_python_path=str(saved_faster_python),
         node_path=str(saved_node),
         jianying_draft_root=str(draft_root),
         jianying_app=str(jianying_app),
         jianying_music_dir=str(music_dir),
     )
     monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
+    monkeypatch.setenv("AIDRAMA_SUBTITLE_PROVIDER", "fasterWhisper")
+    monkeypatch.setenv("AIDRAMA_FASTER_WHISPER_PYTHON_PATH", str(tmp_path / "old" / "python"))
     monkeypatch.setenv("JIANYING_DRAFT_ROOT", str(tmp_path / "old" / "drafts"))
     monkeypatch.setenv("JIANYING_APP", str(tmp_path / "old" / "JianyingPro.exe"))
     monkeypatch.setenv("AIDRAMA_JIANYING_MUSIC_DIR", str(tmp_path / "old" / "music"))
@@ -144,6 +158,8 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     settings = load_settings()
 
     assert settings.whisper_path == str(saved_whisper)
+    assert settings.subtitle_provider == "openaiWhisper"
+    assert settings.faster_whisper_python_path == str(saved_faster_python)
     assert settings.node_path == str(saved_node)
     assert settings.jianying_draft_root == draft_root
     assert settings.jianying_app == jianying_app
@@ -200,6 +216,20 @@ def test_resolve_whisper_path_detects_user_python_install(monkeypatch, tmp_path)
     )
 
     assert resolve_whisper_path() == str(user_whisper)
+
+
+def test_resolve_faster_whisper_python_path_detects_user_venv(monkeypatch, tmp_path):
+    faster_python = tmp_path / "AI-Drama" / "faster-whisper-venv" / "bin" / "python"
+    faster_python.parent.mkdir(parents=True)
+    faster_python.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("aidrama_desktop.config.settings.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "aidrama_desktop.config.settings.COMMON_FASTER_WHISPER_PYTHON_PATHS",
+        (Path("~/AI-Drama/faster-whisper-venv/bin/python"),),
+    )
+
+    assert resolve_faster_whisper_python_path() == str(faster_python)
 
 
 def test_load_settings_persists_generated_device_id(monkeypatch, tmp_path):
