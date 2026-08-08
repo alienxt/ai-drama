@@ -1,7 +1,10 @@
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from aidrama_desktop.tasks.cache_cleanup import (
+    DEFAULT_STALE_CACHE_RETENTION,
+    DEFAULT_UPLOAD_CACHE_RETENTION,
     UPLOAD_SUCCESS_MARKER,
     cleanup_uploaded_drama_cache,
     mark_upload_success,
@@ -15,7 +18,7 @@ def touch_tree(directory, when: datetime) -> None:
         os.utime(path, (timestamp, timestamp))
 
 
-def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_path):
+def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_48_hour_retention(tmp_path):
     downloads = tmp_path / "dramas" / "downloads"
     processed = tmp_path / "dramas" / "processed"
     old_download = downloads / "drama-old"
@@ -36,7 +39,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-1",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-1",
-        uploaded_at=now - timedelta(hours=25),
+        uploaded_at=now - timedelta(hours=49),
     )
     mark_upload_success(
         old_processed,
@@ -44,7 +47,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-1",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-1",
-        uploaded_at=now - timedelta(hours=25),
+        uploaded_at=now - timedelta(hours=49),
     )
     mark_upload_success(
         fresh_download,
@@ -52,7 +55,7 @@ def test_cleanup_only_deletes_marked_uploaded_drama_dirs_after_retention(tmp_pat
         task_id="task-2",
         platform="WECHAT_VIDEO",
         platform_publish_id="pub-2",
-        uploaded_at=now - timedelta(hours=23),
+        uploaded_at=now - timedelta(hours=47, minutes=59),
     )
     touch_tree(unmarked_download, now - timedelta(hours=1))
 
@@ -99,6 +102,20 @@ def test_cleanup_deletes_unmarked_stale_drama_dirs_after_retention(tmp_path):
     assert not old_download.exists()
     assert fresh_processed.exists()
     assert protected_download.exists()
+
+
+def test_cleanup_defaults_keep_cache_for_48_hours():
+    assert DEFAULT_UPLOAD_CACHE_RETENTION == timedelta(hours=48)
+    assert DEFAULT_STALE_CACHE_RETENTION == timedelta(hours=48)
+
+
+def test_desktop_cleanup_scheduler_runs_hourly_without_daily_gate():
+    app_source = Path(__file__).parents[1] / "src" / "aidrama_desktop" / "gui" / "app.py"
+    source = app_source.read_text(encoding="utf-8")
+
+    assert "upload_cache_cleanup_timer.setInterval(60 * 60 * 1000)" in source
+    assert "last_upload_cache_cleanup_date" not in source
+    assert "now.hour != 23" not in source
 
 
 def test_cleanup_refuses_nested_or_external_paths(tmp_path):

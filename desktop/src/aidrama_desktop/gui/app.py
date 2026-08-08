@@ -5,7 +5,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
@@ -409,7 +409,6 @@ class DesktopWindow(QMainWindow):
         self.video_reassembly_config = self.video_reassembly_store.load()
         self.last_contract_path: Path | None = None
         self.last_contract_paths: list[Path] = []
-        self.last_upload_cache_cleanup_date: date | None = None
         self.upload_cache_cleanup_busy = False
         self.auto_task_timer = QTimer(self)
         self.auto_task_timer.setInterval(30_000)
@@ -418,7 +417,7 @@ class DesktopWindow(QMainWindow):
         self.list_refresh_timer.setInterval(30_000)
         self.list_refresh_timer.timeout.connect(self.refresh_visible_list)
         self.upload_cache_cleanup_timer = QTimer(self)
-        self.upload_cache_cleanup_timer.setInterval(60_000)
+        self.upload_cache_cleanup_timer.setInterval(60 * 60 * 1000)
         self.upload_cache_cleanup_timer.timeout.connect(self.run_scheduled_upload_cache_cleanup)
 
         self.setWindowTitle(f"AI Drama Desktop {__version__}")
@@ -1114,7 +1113,7 @@ class DesktopWindow(QMainWindow):
         update_row.addStretch(1)
         update_row.addWidget(self.update_check_button)
         cleanup_row = QHBoxLayout()
-        cleanup_hint = QLabel("清理已上传成功超过 24 小时、或失败残留超过 48 小时的短剧缓存")
+        cleanup_hint = QLabel("自动每小时清理短剧缓存，仅保留 48 小时内的数据")
         cleanup_hint.setObjectName("mutedText")
         self.cleanup_data_button = QPushButton("清理数据")
         self.cleanup_data_button.clicked.connect(self.clean_upload_cache_now)
@@ -4139,17 +4138,11 @@ class DesktopWindow(QMainWindow):
         self.update_task_progress(f"自动执行已停止：{message}", None)
 
     def run_scheduled_upload_cache_cleanup(self) -> None:
-        now = datetime.now(CHINA_TIMEZONE)
-        if now.hour != 23:
-            return
-        if self.last_upload_cache_cleanup_date == now.date():
-            return
         if self.manual_publish_busy or self.auto_task_busy or self.upload_cache_cleanup_busy:
             return
-        self.last_upload_cache_cleanup_date = now.date()
         self.upload_cache_cleanup_busy = True
         self.run_async(
-            "清理上传成功缓存",
+            "自动清理缓存",
             self.cleanup_uploaded_drama_cache,
             self.handle_upload_cache_cleanup_done,
             log_result=False,

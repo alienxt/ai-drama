@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 UPLOAD_SUCCESS_MARKER = ".aidrama-upload-success.json"
-DEFAULT_UPLOAD_CACHE_RETENTION = timedelta(hours=24)
+DEFAULT_UPLOAD_CACHE_RETENTION = timedelta(hours=48)
 DEFAULT_STALE_CACHE_RETENTION = timedelta(hours=48)
 
 
