@@ -796,10 +796,9 @@ def test_jianying_project_rejects_cross_drama_source_video(tmp_path):
     assert any("剪映工程素材校验失败" in stage for stage, _ in progress_events)
 
 
-def test_jianying_strategy_registry_exposes_all_project_strategies():
+def test_jianying_strategy_registry_disables_layered_proof_without_removing_metadata():
     assert JIANYING_PROJECT_STRATEGIES == (
         "platform-safe-v1",
-        "layered-proof-v1",
         "competitor-native-v1",
     )
     assert JIANYING_PROJECT_STRATEGY_LABELS["platform-safe-v1"] == "平台安全工程"
@@ -810,6 +809,8 @@ def test_jianying_strategy_registry_exposes_all_project_strategies():
         "layered-proof-v1": "V2",
         "competitor-native-v1": "V3",
     }
+    with pytest.raises(RuntimeError, match="未知剪映工程策略"):
+        TaskRunner._normalize_jianying_project_strategy("layered-proof-v1")
 
 
 def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strategy(tmp_path):

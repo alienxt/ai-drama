@@ -92,8 +92,9 @@ def test_jianying_tool_registers_platform_safe_and_competitor_native_strategies(
     assert "nativeStickerTracks" not in platform_safe_config
     assert "id: 'competitor-native-v1'" in source
     assert "label: '竞品原生工程'" in source
-    assert "sourceClipCount: 5" in source
-    assert "timelineClipCount: 10" in source
+    assert "sourceClipCount: 16" in competitor_config
+    assert "timelineClipCount: 16" in competitor_config
+    assert "timelinePartsPattern: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]" in competitor_config
     assert "dialogueAudioMode: 'source-clips'" in source
     assert "hideAudioInMediaPanel: true" in competitor_config
     assert "bgmPlan: 'staggered-beds'" in source

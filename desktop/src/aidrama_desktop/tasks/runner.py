@@ -80,13 +80,12 @@ STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
 JIANYING_PROJECT_MATERIALS_MANIFEST_FILENAME = ".jianying-project-materials.json"
 MATERIALS_MANIFEST_VERSION = 1
 JIANYING_PROJECT_SCREENSHOT_COUNT = 4
-JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v22-short-strategy-codes"
+JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v24-disable-layered-proof"
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_SCREENSHOT_DIRNAME = "剪映工程截图"
 JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图"
 JIANYING_PROJECT_STRATEGIES = (
     "platform-safe-v1",
-    "layered-proof-v1",
     "competitor-native-v1",
 )
 JIANYING_PROJECT_STRATEGY_LABELS = {
@@ -981,7 +980,9 @@ class TaskRunner:
         if cached_metadata:
             if cached_metadata.get("jianyingProjectCaptureVersion") == JIANYING_PROJECT_CAPTURE_VERSION:
                 cached_strategy = str(cached_metadata.get("jianyingProjectStrategy") or "")
-                if requested_strategy and cached_strategy != requested_strategy:
+                if cached_strategy not in JIANYING_PROJECT_STRATEGIES:
+                    cached_metadata = {}
+                elif requested_strategy and cached_strategy != requested_strategy:
                     cached_metadata = {}
                 else:
                     screenshots = cached_metadata.get("jianyingProjectScreenshots") or []
