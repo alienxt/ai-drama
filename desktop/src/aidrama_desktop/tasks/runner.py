@@ -238,24 +238,54 @@ class TaskRunner:
         task_id = str(task["id"])
         platform = self._task_platform(task)
         self._notify("任务已领取", task_id, task)
+        total_started_at = self._timed_stage_start("上传缓存流程", task_id, task, detail=f"平台 {platform}")
         try:
             self._progress(task_id, "UPLOADING", 75)
-            download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
+            download_plan = self._timed_stage(
+                "获取短剧详情",
+                task_id,
+                task,
+                lambda: self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan"),
+            )
             drama_title = self._drama_title(download_plan, task)
             task_with_title = {**task, "dramaTitle": drama_title}
             self._notify(f"从上传阶段继续：{drama_title}", task_id, task_with_title)
-            upload_items = self._cached_upload_items(download_plan, platform)
+            upload_items = self._timed_stage(
+                "读取上传缓存",
+                task_id,
+                task_with_title,
+                lambda: self._cached_upload_items(download_plan, platform),
+                done_detail=lambda items: f"命中 {len(items)} 集",
+            )
             if not upload_items:
                 raise RuntimeError("没有找到本地可用于继续上传的视频缓存，请先完整执行一次任务。")
-            upload_items = self._prepare_media_files_for_upload(
-                upload_items,
+            upload_items = self._timed_stage(
+                "上传前视频处理",
                 task_id,
-                drama_title,
-                original_episode_count=len(download_plan.get("episodes") or []),
-                platform=platform,
+                task_with_title,
+                lambda: self._prepare_media_files_for_upload(
+                    upload_items,
+                    task_id,
+                    drama_title,
+                    original_episode_count=len(download_plan.get("episodes") or []),
+                    platform=platform,
+                ),
+                done_detail=lambda items: f"可上传 {len(items)} 集",
             )
-            return self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
+            result = self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
+            self._timed_stage_done("上传缓存流程", total_started_at, task_id, task_with_title, detail=f"结果 {result}")
+            return result
         except Exception as exception:  # noqa: BLE001
+            if isinstance(exception, TaskPaused):
+                self._timed_stage_done("上传缓存流程", total_started_at, task_id, task, detail="已暂停")
+            elif isinstance(exception, TaskSkipped):
+                self._timed_stage_done("上传缓存流程", total_started_at, task_id, task, detail="已跳过")
+            elif isinstance(exception, TaskCancelled):
+                self._timed_stage_done("上传缓存流程", total_started_at, task_id, task, detail="已停止")
+            elif isinstance(exception, PlatformPublishPaused):
+                self._timed_stage_done("上传缓存流程", total_started_at, task_id, task, detail="待人工确认")
+            else:
+                self._timed_stage_failed("上传缓存流程", total_started_at, task_id, task, exception)
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单已填写，等待人工核验后手动提交。"
                 result_task = self.api.put(
@@ -350,33 +380,81 @@ class TaskRunner:
         task_id = task["id"]
         platform = self._task_platform(task)
         self._notify("任务已领取", task_id, task)
+        total_started_at = self._timed_stage_start("任务总流程", task_id, task, detail=f"平台 {platform}")
         try:
-            self._sync_baidu_source_assets_for_task(task)
-            self._wait_for_task_preparation(task)
+            self._timed_stage(
+                "同步百度原始简介和封面",
+                task_id,
+                task,
+                lambda: self._sync_baidu_source_assets_for_task(task),
+            )
+            self._timed_stage(
+                "AI素材准备",
+                task_id,
+                task,
+                lambda: self._wait_for_task_preparation(task),
+            )
             self._progress(task_id, "DOWNLOADING", 10)
-            download_plan = self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan")
+            download_plan = self._timed_stage(
+                "获取短剧详情",
+                task_id,
+                task,
+                lambda: self.api.get(f"/desktop/dramas/{task['dramaId']}/download-plan"),
+            )
             drama_title = self._drama_title(download_plan, task)
             task_with_title = {**task, "dramaTitle": drama_title}
             self._notify(f"当前短剧：{drama_title}", task_id, task_with_title)
-            source_items = self._download(download_plan, task_id, drama_title)
+            source_items = self._timed_stage(
+                "视频下载",
+                task_id,
+                task_with_title,
+                lambda: self._download(download_plan, task_id, drama_title),
+                done_detail=lambda items: f"共 {len(items)} 集",
+            )
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._progress(task_id, "PROCESSING", 70)
-            source_items = self._prepare_source_items_for_platform(source_items, task_id, drama_title, platform)
-            upload_items = self._prepare_media_files_for_upload(
-                source_items,
+            source_items = self._timed_stage(
+                "平台预处理",
                 task_id,
-                drama_title,
-                original_episode_count=len(download_plan.get("episodes") or []),
-                platform=platform,
+                task_with_title,
+                lambda: self._prepare_source_items_for_platform(source_items, task_id, drama_title, platform),
+                done_detail=lambda items: f"输出 {len(items)} 集",
+            )
+            upload_items = self._timed_stage(
+                "上传前视频处理",
+                task_id,
+                task_with_title,
+                lambda: self._prepare_media_files_for_upload(
+                    source_items,
+                    task_id,
+                    drama_title,
+                    original_episode_count=len(download_plan.get("episodes") or []),
+                    platform=platform,
+                ),
+                done_detail=lambda items: f"可上传 {len(items)} 集",
             )
             upload_items = self._filter_upload_items_for_platform(upload_items, task_id, drama_title, platform)
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             if not upload_items:
                 raise RuntimeError("没有可上传的剧集，整部剧分发失败。")
             if platform == "TIKTOK":
-                return self._stop_tiktok_task_before_upload(task_id, task_with_title, drama_title)
-            return self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
+                result = self._stop_tiktok_task_before_upload(task_id, task_with_title, drama_title)
+                self._timed_stage_done("任务总流程", total_started_at, task_id, task_with_title, detail=f"结果 {result}")
+                return result
+            result = self._publish_upload_items(task, download_plan, upload_items, task_id, task_with_title, platform)
+            self._timed_stage_done("任务总流程", total_started_at, task_id, task_with_title, detail=f"结果 {result}")
+            return result
         except Exception as exception:  # noqa: BLE001
+            if isinstance(exception, TaskPaused):
+                self._timed_stage_done("任务总流程", total_started_at, task_id, task, detail="已暂停")
+            elif isinstance(exception, TaskSkipped):
+                self._timed_stage_done("任务总流程", total_started_at, task_id, task, detail="已跳过")
+            elif isinstance(exception, TaskCancelled):
+                self._timed_stage_done("任务总流程", total_started_at, task_id, task, detail="已停止")
+            elif isinstance(exception, PlatformPublishPaused):
+                self._timed_stage_done("任务总流程", total_started_at, task_id, task, detail="待人工确认")
+            else:
+                self._timed_stage_failed("任务总流程", total_started_at, task_id, task, exception)
             if isinstance(exception, PlatformPublishPaused):
                 failure_reason = str(exception) or "剧目提审表单停留在第一页，未完成上传提交。"
                 result_task = self.api.put(
@@ -448,26 +526,44 @@ class TaskRunner:
         drama_title = self._drama_title(download_plan, task)
         self._validate_upload_items_for_platform(upload_items, task_id, drama_title, platform)
         effective_download_plan = self._effective_download_plan(download_plan, upload_items)
-        contract_metadata = (
-            self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
-            if self._requires_contract_materials(platform)
-            else {}
-        )
-        storyboard_metadata = self._prepare_storyboard_materials(
-            effective_download_plan,
-            upload_items,
-            task,
+        contract_metadata = self._timed_stage(
+            "提审材料/合同材料",
             task_id,
-            drama_title,
-            platform=platform,
+            task_with_title,
+            lambda: (
+                self._prepare_contract_materials(effective_download_plan, task_id, drama_title, platform=platform)
+                if self._requires_contract_materials(platform)
+                else {}
+            ),
+            done_detail=lambda metadata: f"{len(metadata)} 项",
+        )
+        storyboard_metadata = self._timed_stage(
+            "提审材料/分镜材料",
+            task_id,
+            task_with_title,
+            lambda: self._prepare_storyboard_materials(
+                effective_download_plan,
+                upload_items,
+                task,
+                task_id,
+                drama_title,
+                platform=platform,
+            ),
+            done_detail=lambda metadata: self._material_count_detail(metadata, "storyboardImages", "张"),
         )
         contract_metadata = self._append_storyboard_to_contract_metadata(contract_metadata, storyboard_metadata)
-        jianying_metadata = self._prepare_jianying_project_materials(
-            upload_items,
+        jianying_metadata = self._timed_stage(
+            "提审材料/剪映工程图",
             task_id,
-            drama_title,
-            platform=platform,
-            download_plan=effective_download_plan,
+            task_with_title,
+            lambda: self._prepare_jianying_project_materials(
+                upload_items,
+                task_id,
+                drama_title,
+                platform=platform,
+                download_plan=effective_download_plan,
+            ),
+            done_detail=lambda metadata: self._material_count_detail(metadata, "jianyingProjectScreenshots", "张"),
         )
         contract_metadata = self._append_jianying_to_contract_metadata(contract_metadata, jianying_metadata)
         self._progress(task_id, "UPLOADING", 75)
@@ -477,11 +573,17 @@ class TaskRunner:
         metadata.update(self._task_media_account_publish_metadata(task))
         publish_title = str(metadata.get("publishTitle") or drama_title)
         publish_summary = metadata.get("publishSummary")
-        publish_id = self._publisher_for(task).publish(
-            [item.file for item in upload_items],
-            title=publish_title,
-            summary=str(publish_summary) if publish_summary else None,
-            metadata=metadata,
+        publish_id = self._timed_stage(
+            "平台上传",
+            task_id,
+            task_with_title,
+            lambda: self._publisher_for(task).publish(
+                [item.file for item in upload_items],
+                title=publish_title,
+                summary=str(publish_summary) if publish_summary else None,
+                metadata=metadata,
+            ),
+            done_detail=lambda publish_id: f"platformPublishId={publish_id or '-'}",
         )
         result_task = self.api.put(
             f"/desktop/tasks/{task_id}/result",
@@ -670,6 +772,8 @@ class TaskRunner:
         if item is None:
             return {}
         generator = self.storyboard_generator or StoryboardGenerator(getattr(self.processor, "ffmpeg_path", "ffmpeg"))
+        if hasattr(generator, "progress_callback"):
+            generator.progress_callback = lambda message: self._notify(f"分镜分析/{message}", task_id)
         episode_label = self._storyboard_episode_label(item)
         media_account = self._task_media_account_name(task)
         output_dir = self._storyboard_episode_output_dir(task_id, item)
@@ -897,6 +1001,13 @@ class TaskRunner:
 
         screenshots: list[Path] = []
         self._notify(f"生成剪映工程图：{drama_title}（{strategy_label}，随机 {len(selected_items)} 集）", task_id)
+        selected_labels = "、".join(self._jianying_project_episode_label(item) for item in selected_items)
+        self._notify(
+            f"剪映工程图策略：{strategy_label}（{strategy}/{strategy_version}）；"
+            f"字幕引擎配置={self._subtitle_provider_display(self.subtitle_provider)}；"
+            f"抽样={selected_labels or '-'}",
+            task_id,
+        )
         for position, item in enumerate(selected_items, start=1):
             raise_if_task_interrupted(self.cancel_checker, self.pause_checker, self.skip_checker)
             self._validate_jianying_project_source_item(item, download_plan or {}, drama_title, task_id)
@@ -913,21 +1024,46 @@ class TaskRunner:
                     drama_title,
                     episode_label,
                 )
-            result = generator.generate_project_screenshot(
-                video=item.file,
-                draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑_{strategy_version}"),
-                output_dir=episode_output_dir,
-                screenshot_path=screenshot_path,
-                srt=srt_path,
-                bgm_files=self._jianying_project_bgm_files_for_item(item),
-                strategy=strategy,
+            else:
+                self._notify(f"剪映字幕复用：{drama_title} {episode_label}（已有 SRT：{srt_path.name}）", task_id)
+            stage_label = f"剪映工程图/{episode_label}/草稿和截图"
+            stage_started_at = self._timed_stage_start(
+                stage_label,
+                task_id,
+                detail=f"策略 {strategy_version}/{strategy}",
             )
+            try:
+                result = generator.generate_project_screenshot(
+                    video=item.file,
+                    draft_name=safe_contract_filename(f"{drama_title}_{episode_label}_剪辑_{strategy_version}"),
+                    output_dir=episode_output_dir,
+                    screenshot_path=screenshot_path,
+                    srt=srt_path,
+                    bgm_files=self._jianying_project_bgm_files_for_item(item),
+                    strategy=strategy,
+                )
+            except Exception as exception:  # noqa: BLE001
+                self._timed_stage_failed(stage_label, stage_started_at, task_id, None, exception)
+                raise
             strategy = str(getattr(result, "strategy_id", None) or strategy)
             strategy_label = str(getattr(result, "strategy_label", None) or strategy_label)
             strategy_version = self._jianying_project_strategy_version(strategy)
             screenshot = Path(getattr(result, "screenshot_path", screenshot_path))
             if not self._is_ready_material_file(screenshot):
+                self._timed_stage_failed(
+                    stage_label,
+                    stage_started_at,
+                    task_id,
+                    None,
+                    RuntimeError(f"剪映工程图未生成：{screenshot}"),
+                )
                 raise RuntimeError(f"剪映工程图未生成：{screenshot}")
+            self._timed_stage_done(
+                stage_label,
+                stage_started_at,
+                task_id,
+                detail=f"截图 {screenshot.name}",
+            )
             screenshots.append(screenshot)
             self._notify(f"剪映工程图已生成：{drama_title} {episode_label}（{position}/{len(selected_items)}）", task_id)
 
@@ -1016,6 +1152,15 @@ class TaskRunner:
         return JIANYING_PROJECT_STRATEGY_VERSION_CODES.get(strategy, strategy or "V")
 
     @staticmethod
+    def _subtitle_provider_display(provider: str | None) -> str:
+        normalized = str(provider or "").strip()
+        labels = {
+            "fasterWhisper": "faster-whisper",
+            "openaiWhisper": "openai-whisper",
+        }
+        return labels.get(normalized, normalized or "faster-whisper")
+
+    @staticmethod
     def _select_jianying_project_episode_items(
         upload_items: list[EpisodeMediaFile],
         count: int,
@@ -1086,6 +1231,13 @@ class TaskRunner:
             / JIANYING_PROJECT_SUBTITLE_DIRNAME
             / f"{safe_contract_filename(episode_label)}_中文字幕.srt"
         )
+        stage_label = f"剪映字幕识别/{episode_label}"
+        configured_provider = self._subtitle_provider_display(self.subtitle_provider)
+        started_at = self._timed_stage_start(
+            stage_label,
+            task_id,
+            detail=f"配置引擎 {configured_provider}",
+        )
         try:
             self._notify(f"识别剪映字幕：{drama_title} {episode_label}", task_id)
             result = SubtitleSrtGenerator(
@@ -1095,6 +1247,7 @@ class TaskRunner:
                 ffmpeg_path=getattr(self.processor, "ffmpeg_path", None),
             ).generate_srt(item.file, target)
         except WhisperSrtGenerationError as exception:
+            self._timed_stage_failed(stage_label, started_at, task_id, None, exception)
             self._notify(
                 f"剪映字幕识别跳过：{drama_title} {episode_label}（{exception}）",
                 task_id,
@@ -1102,6 +1255,12 @@ class TaskRunner:
             return None
         action = "已生成" if result.created else "复用"
         provider = getattr(result, "provider", "") or "字幕引擎"
+        self._timed_stage_done(
+            stage_label,
+            started_at,
+            task_id,
+            detail=f"实际引擎 {self._subtitle_provider_display(provider)}，{action}",
+        )
         self._notify(f"剪映字幕{action}：{drama_title} {episode_label}（{provider}）", task_id)
         return result.srt_path
 
@@ -1347,6 +1506,88 @@ class TaskRunner:
             return max(int(float(str(value))), 0)
         except (TypeError, ValueError):
             return default
+
+    def _timed_stage(
+        self,
+        label: str,
+        task_id: str,
+        task: dict | None,
+        callback: Callable[[], Any],
+        *,
+        detail: str | None = None,
+        done_detail: Callable[[Any], str] | str | None = None,
+    ) -> Any:
+        started_at = self._timed_stage_start(label, task_id, task, detail=detail)
+        try:
+            result = callback()
+        except Exception as exception:  # noqa: BLE001
+            self._timed_stage_failed(label, started_at, task_id, task, exception)
+            raise
+        detail_text = done_detail(result) if callable(done_detail) else done_detail
+        self._timed_stage_done(label, started_at, task_id, task, detail=detail_text)
+        return result
+
+    def _timed_stage_start(
+        self,
+        label: str,
+        task_id: str,
+        task: dict | None = None,
+        *,
+        detail: str | None = None,
+    ) -> float:
+        suffix = f"（{detail}）" if detail else ""
+        self._notify(f"{label}：开始{suffix}", task_id, task)
+        return time.monotonic()
+
+    def _timed_stage_done(
+        self,
+        label: str,
+        started_at: float,
+        task_id: str,
+        task: dict | None = None,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        detail_text = f"，{detail}" if detail else ""
+        self._notify(
+            f"{label}：完成{detail_text}，耗时 {self._format_elapsed(time.monotonic() - started_at)}",
+            task_id,
+            task,
+        )
+
+    def _timed_stage_failed(
+        self,
+        label: str,
+        started_at: float,
+        task_id: str,
+        task: dict | None,
+        exception: BaseException,
+    ) -> None:
+        self._notify(
+            f"{label}：失败，耗时 {self._format_elapsed(time.monotonic() - started_at)}：{exception}",
+            task_id,
+            task,
+        )
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        seconds = max(0.0, float(seconds))
+        if seconds < 60:
+            return f"{seconds:.1f} 秒"
+        minutes, remainder = divmod(seconds, 60.0)
+        if minutes < 60:
+            return f"{int(minutes)} 分 {remainder:.1f} 秒"
+        hours, minutes = divmod(minutes, 60.0)
+        return f"{int(hours)} 小时 {int(minutes)} 分 {remainder:.1f} 秒"
+
+    @staticmethod
+    def _material_count_detail(metadata: object, key: str, unit: str) -> str:
+        if not isinstance(metadata, dict):
+            return "0 项"
+        value = metadata.get(key)
+        if isinstance(value, list):
+            return f"{len(value)} {unit}"
+        return "0 项"
 
     def _notify(self, stage: str, task_id: str | None, task: dict | None = None) -> None:
         if self.progress_callback:
@@ -2138,6 +2379,8 @@ class TaskRunner:
                 action_parts.append("应用视频生成配置")
             action = "、".join(action_parts) or "统一转码"
             self._notify(f"转码：{drama_title} 第 {episode_no} 集（{action}）", task_id)
+            transcode_stage = f"视频转码/第 {episode_no} 集"
+            transcode_started_at = self._timed_stage_start(transcode_stage, task_id, detail=action)
             try:
                 processed_file = single_transcode(
                     source_file,
@@ -2164,8 +2407,15 @@ class TaskRunner:
                 processed_rejection_reason = self._platform_upload_item_rejection_reason(processed_item, platform)
                 if processed_rejection_reason:
                     raise RuntimeError(processed_rejection_reason)
+                self._timed_stage_done(
+                    transcode_stage,
+                    transcode_started_at,
+                    task_id,
+                    detail=f"输出 {Path(processed_file).name}",
+                )
                 upload_items.append(processed_item)
             except Exception as exception:  # noqa: BLE001
+                self._timed_stage_failed(transcode_stage, transcode_started_at, task_id, None, exception)
                 self._cleanup_failed_media_file(target)
                 self._cleanup_failed_media_file(self._processed_media_signature_path(target))
                 self._cleanup_failed_media_file(source_file)

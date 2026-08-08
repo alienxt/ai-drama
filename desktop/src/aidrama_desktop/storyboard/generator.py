@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -115,6 +115,7 @@ class StoryboardGenerationConfig:
 class StoryboardGenerator:
     ffmpeg_path: str = "ffmpeg"
     chrome_path: str | None = None
+    progress_callback: Callable[[str], None] | None = None
 
     def generate(
         self,
@@ -141,20 +142,47 @@ class StoryboardGenerator:
         pages_dir.mkdir(parents=True, exist_ok=True)
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        storyboard = self._build_storyboard(
-            source_video=source_video,
-            drama_title=drama_title,
-            episode_label=episode_label,
-            media_account=media_account,
-            config=config,
+        storyboard = self._timed_step(
+            "读取视频信息并规划镜头",
+            lambda: self._build_storyboard(
+                source_video=source_video,
+                drama_title=drama_title,
+                episode_label=episode_label,
+                media_account=media_account,
+                config=config,
+            ),
         )
-        self._extract_keyframes(source_video, storyboard["shots"], keyframes_dir)
-        storyboard = self._enrich_with_deepseek(storyboard, config)
+        self._timed_step(
+            f"提取 {len(storyboard.get('shots') or [])} 张关键帧",
+            lambda: self._extract_keyframes(source_video, storyboard["shots"], keyframes_dir),
+        )
+        storyboard = self._timed_step(
+            f"DeepSeek文本推断（model={config.deepseek_model}）",
+            lambda: self._enrich_with_deepseek(storyboard, config),
+        )
         (output_dir / "storyboard.generated.json").write_text(
             json.dumps(storyboard, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return self._render_screenshots(storyboard, keyframes_dir, pages_dir, screenshots_dir, output_dir)
+        return self._timed_step(
+            "渲染分镜截图和AI制作证明",
+            lambda: self._render_screenshots(storyboard, keyframes_dir, pages_dir, screenshots_dir, output_dir),
+        )
+
+    def _timed_step(self, label: str, callback: Callable[[], Any]) -> Any:
+        started_at = time.monotonic()
+        self._log(f"{label}：开始")
+        try:
+            result = callback()
+        except Exception as exception:  # noqa: BLE001
+            self._log(f"{label}：失败，耗时 {format_elapsed(time.monotonic() - started_at)}：{exception}")
+            raise
+        self._log(f"{label}：完成，耗时 {format_elapsed(time.monotonic() - started_at)}")
+        return result
+
+    def _log(self, message: str) -> None:
+        if self.progress_callback:
+            self.progress_callback(message)
 
     def _build_storyboard(
         self,
@@ -453,6 +481,17 @@ def sample_consecutive_shot_indexes(total_shots: int, count: int) -> list[int]:
 
 def ai_production_proof_path(output_dir: Path) -> Path:
     return output_dir / AI_PRODUCTION_PROOF_DIRNAME / AI_PRODUCTION_PROOF_FILENAME
+
+
+def format_elapsed(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f} 秒"
+    minutes, remainder = divmod(seconds, 60.0)
+    if minutes < 60:
+        return f"{int(minutes)} 分 {remainder:.1f} 秒"
+    hours, minutes = divmod(minutes, 60.0)
+    return f"{int(hours)} 小时 {int(minutes)} 分 {remainder:.1f} 秒"
 
 
 def render_ai_production_proof_image(

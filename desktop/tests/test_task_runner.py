@@ -41,6 +41,33 @@ def last_task_result_payload(api) -> dict:
     return result_calls[-1]
 
 
+def test_timed_stage_reports_start_and_elapsed(tmp_path):
+    progress_events = []
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner._timed_stage(
+        "测试阶段",
+        "task-1",
+        None,
+        lambda: "ok",
+        detail="配置 A",
+        done_detail=lambda result: f"结果 {result}",
+    ) == "ok"
+
+    assert ("测试阶段：开始（配置 A）", "task-1") in progress_events
+    assert any(
+        stage.startswith("测试阶段：完成，结果 ok，耗时 ") and task_id == "task-1"
+        for stage, task_id in progress_events
+    )
+
+
 class FakeApi:
     base_url = "http://server/api"
 

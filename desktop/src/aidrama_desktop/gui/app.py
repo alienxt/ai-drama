@@ -4376,6 +4376,8 @@ class DesktopWindow(QMainWindow):
             reason = self.clean_error_message(stage.removeprefix("任务失败："))
             display_stage = f"任务失败：{reason}"
             self.set_task_error_message(reason)
+        if self.should_log_task_progress(display_stage):
+            self.append_log(display_stage)
         if hasattr(self, "auto_task_state"):
             self.auto_task_state.setText(f"自动执行：{'运行中' if self.auto_task_enabled else '未启动'}")
         if hasattr(self, "current_task_label"):
@@ -4389,6 +4391,19 @@ class DesktopWindow(QMainWindow):
         if hasattr(self, "task_stage_label"):
             self.task_stage_label.setText(f"当前阶段：{display_stage}")
         self.update_task_control_buttons()
+
+    def should_log_task_progress(self, stage: str) -> bool:
+        message = str(stage or "").strip()
+        if not message or not hasattr(self, "log_view"):
+            return False
+        if message in {"DOWNLOADING", "PROCESSING", "UPLOADING"}:
+            return False
+        if message.startswith("下载：") and "（100%）" not in message:
+            return False
+        if message == getattr(self, "_last_task_progress_log", None):
+            return False
+        self._last_task_progress_log = message
+        return True
 
     @staticmethod
     def task_drama_title(stage: str, task: dict[str, Any] | None = None) -> str:

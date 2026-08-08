@@ -110,6 +110,16 @@ def test_settings_rows_include_current_desktop_version(tmp_path: Path):
     assert any(row.label == "当前版本" and row.value for row in rows)
 
 
+def test_task_progress_log_filter_skips_noisy_download_updates():
+    window = type("Window", (), {"log_view": object()})()
+
+    assert DesktopWindow.should_log_task_progress(window, "AI素材准备：完成，耗时 1.0 秒") is True
+    assert DesktopWindow.should_log_task_progress(window, "AI素材准备：完成，耗时 1.0 秒") is False
+    assert DesktopWindow.should_log_task_progress(window, "DOWNLOADING") is False
+    assert DesktopWindow.should_log_task_progress(window, "下载：短剧 第 1/2 集 1.0/10.0 MB（10%）") is False
+    assert DesktopWindow.should_log_task_progress(window, "下载：短剧 第 1/2 集 10.0/10.0 MB（100%）") is True
+
+
 def test_video_reassembly_config_store_uses_screenshot_defaults(tmp_path: Path):
     config = VideoReassemblyConfigStore(tmp_path / "video-processing.json").load()
 
