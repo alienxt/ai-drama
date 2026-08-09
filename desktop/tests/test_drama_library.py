@@ -24,7 +24,7 @@ from aidrama_desktop.config.settings import API_BASE_URL, Settings
 from aidrama_desktop.gui import app as gui_app
 from aidrama_desktop.gui.app import DesktopWindow, LoginPage
 from aidrama_desktop.platforms.wechat_video import remote_debugging_port_for_profile
-from aidrama_desktop.tasks.runner import DOWNLOAD_EPISODE_MANIFEST_FILENAME
+from aidrama_desktop.tasks.runner import DOWNLOAD_EPISODE_MANIFEST_FILENAME, VIDEO_REASSEMBLY_DIRNAME
 
 
 def test_desktop_drama_list_path_uses_client_endpoint_without_category_filter():
@@ -264,12 +264,14 @@ def test_upload_step_task_retries_from_upload_cache():
     assert DesktopWindow.should_retry_from_upload_cache({"status": "SUCCEEDED", "progress": 100}) is False
 
 
-def test_task_history_actions_hide_refill_button():
+def test_task_history_actions_hide_refill_button(tmp_path):
     QApplication.instance() or QApplication([])
     window = DesktopWindow.__new__(DesktopWindow)
     window.current_task_id = ""
     window.manual_publish_busy = False
     window.auto_task_busy = False
+    window.jianying_preview_busy = False
+    window.settings = SimpleNamespace(processed_dir=tmp_path / "dramas" / "processed")
 
     widget = DesktopWindow.task_history_actions_widget(
         window,
@@ -278,7 +280,50 @@ def test_task_history_actions_hide_refill_button():
 
     button_texts = [button.text() for button in widget.findChildren(QPushButton)]
     assert "重填" not in button_texts
-    assert button_texts == ["重试", "强停"]
+    assert button_texts == ["重试", "强停", "剪映图"]
+
+
+def test_jianying_preview_button_explains_missing_reassembled_cache(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.current_task_id = ""
+    window.manual_publish_busy = False
+    window.auto_task_busy = False
+    window.jianying_preview_busy = False
+    window.settings = SimpleNamespace(processed_dir=tmp_path / "dramas" / "processed")
+    task = {"id": "task-1", "dramaId": "drama-1", "platform": "WECHAT_VIDEO"}
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args))
+
+    widget = DesktopWindow.task_history_actions_widget(window, task)
+    button = next(button for button in widget.findChildren(QPushButton) if button.text() == "剪映图")
+
+    assert button.isEnabled()
+    assert "processed 目录不存在" in button.toolTip()
+
+    DesktopWindow.generate_jianying_preview_for_task(window, task)
+
+    assert len(infos) == 1
+    assert "processed 目录不存在" in infos[0][2]
+
+
+def test_jianying_preview_cache_available_when_reassembled_video_exists(tmp_path):
+    window = DesktopWindow.__new__(DesktopWindow)
+    window.manual_publish_busy = False
+    window.auto_task_busy = False
+    window.jianying_preview_busy = False
+    processed = tmp_path / "dramas" / "processed"
+    reassembled = processed / "drama-1" / VIDEO_REASSEMBLY_DIRNAME
+    reassembled.mkdir(parents=True)
+    (reassembled / "001.mp4").write_bytes(b"video")
+    window.settings = SimpleNamespace(processed_dir=processed)
+
+    reason = DesktopWindow.jianying_preview_unavailable_reason(
+        window,
+        {"id": "task-1", "dramaId": "drama-1", "platform": "WECHAT_VIDEO"},
+    )
+
+    assert reason is None
 
 
 def test_pending_task_can_be_force_stopped_to_cancel_queueing():
@@ -551,6 +596,30 @@ def test_task_done_can_hide_update_check_payload_from_log():
 
     assert logs == ["完成：检查桌面端更新"]
     assert handled == [payload]
+
+
+def test_format_log_message_prefixes_every_line_with_standard_time():
+    message = DesktopWindow.format_log_message(
+        "下载：月光不安套路 第 1/80 集\n完成：加载任务历史",
+        now=datetime(2026, 8, 9, 15, 4, 5),
+    )
+
+    assert message == (
+        "[2026-08-09 15:04:05] 下载：月光不安套路 第 1/80 集\n"
+        "[2026-08-09 15:04:05] 完成：加载任务历史"
+    )
+
+
+def test_format_log_message_keeps_existing_standard_time_prefix():
+    message = DesktopWindow.format_log_message(
+        "[2026-08-09 14:00:00] 已有时间\n下一行",
+        now=datetime(2026, 8, 9, 15, 4, 5),
+    )
+
+    assert message == (
+        "[2026-08-09 14:00:00] 已有时间\n"
+        "[2026-08-09 15:04:05] 下一行"
+    )
 
 
 def test_settings_page_has_manual_update_button(tmp_path):

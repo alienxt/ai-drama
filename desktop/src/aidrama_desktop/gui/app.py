@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import faulthandler
 import json
+import re
 import sys
 import threading
 import traceback
@@ -116,6 +118,8 @@ from aidrama_desktop.video.reassembly import (
 
 
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
+LOG_TIME_PREFIX_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s")
+_CRASH_LOG_FILE = None
 
 
 class WorkerSignals(QObject):
@@ -358,6 +362,10 @@ class LoginPage(QWidget):
 
 
 class DesktopWindow(QMainWindow):
+    task_progress_requested = Signal(str, object, object)
+    worker_done_requested = Signal(object)
+    worker_failed_requested = Signal(object)
+
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
@@ -369,6 +377,10 @@ class DesktopWindow(QMainWindow):
         self.agent = AgentController(settings)
         self.agent.log.connect(self.append_log)
         self.agent.changed.connect(lambda _: self.refresh_status())
+        self.task_progress_requested.connect(self._apply_task_progress)
+        self.worker_done_requested.connect(self._handle_worker_done_requested)
+        self.worker_failed_requested.connect(self._handle_worker_failed_requested)
+        self._task_progress_signal_ready = True
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.media_accounts: list[dict[str, Any]] = []
@@ -1745,15 +1757,31 @@ class DesktopWindow(QMainWindow):
             self.append_log(f"开始：{title}")
         worker = Worker(task)
         worker.signals.done.connect(
-            lambda result: self._task_done(title, result, on_done, log_result=log_result, log_activity=log_activity)
+            lambda result, item=worker: self.worker_done_requested.emit(
+                (item, title, result, on_done, log_result, log_activity)
+            )
         )
         worker.signals.failed.connect(
-            lambda error: self._task_failed(title, error, on_failed=on_failed, log_activity=log_activity)
+            lambda error, item=worker: self.worker_failed_requested.emit(
+                (item, title, error, on_failed, log_activity)
+            )
         )
-        worker.signals.done.connect(lambda _: self._release_worker(worker))
-        worker.signals.failed.connect(lambda _: self._release_worker(worker))
         self.active_workers.append(worker)
         self.thread_pool.start(worker)
+
+    def _handle_worker_done_requested(self, payload: object) -> None:
+        worker, title, result, on_done, log_result, log_activity = payload
+        try:
+            self._task_done(title, result, on_done, log_result=log_result, log_activity=log_activity)
+        finally:
+            self._release_worker(worker)
+
+    def _handle_worker_failed_requested(self, payload: object) -> None:
+        worker, title, error, on_failed, log_activity = payload
+        try:
+            self._task_failed(title, error, on_failed=on_failed, log_activity=log_activity)
+        finally:
+            self._release_worker(worker)
 
     def _release_worker(self, worker: Worker) -> None:
         if worker in self.active_workers:
@@ -2033,30 +2061,45 @@ class DesktopWindow(QMainWindow):
         force_stop.clicked.connect(lambda _=False, item=task: self.force_stop_distribution_task(item))
         layout.addWidget(force_stop)
         jianying_preview = QPushButton("剪映图")
-        has_reassembled = self.has_local_reassembled_cache(task)
-        jianying_preview.setEnabled(
-            has_reassembled
-            and not self.jianying_preview_busy
-            and not self.manual_publish_busy
-            and not self.auto_task_busy
-        )
-        if has_reassembled:
+        unavailable_reason = self.jianying_preview_unavailable_reason(task)
+        jianying_preview.setEnabled(True)
+        if unavailable_reason is None:
             jianying_preview.setToolTip(f"从 processed/reassembled 生成到 {JIANYING_PROJECT_PREVIEW_DIRNAME}-V1/V2/V3")
         else:
-            jianying_preview.setToolTip("本机 processed/reassembled 未找到可用重组视频")
+            jianying_preview.setToolTip(unavailable_reason)
         jianying_preview.clicked.connect(lambda _=False, item=task: self.generate_jianying_preview_for_task(item))
         layout.addWidget(jianying_preview)
         layout.addStretch(1)
         return wrapper
 
     def has_local_reassembled_cache(self, task: dict[str, Any]) -> bool:
+        return self.jianying_preview_cache_unavailable_reason(task) is None
+
+    def jianying_preview_unavailable_reason(self, task: dict[str, Any]) -> str | None:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return "任务 ID 为空，无法生成剪映工程图。"
         if str(task.get("platform") or "WECHAT_VIDEO") != "WECHAT_VIDEO":
-            return False
-        processed_dir = getattr(self.settings, "processed_dir", None)
+            return "剪映工程图预览当前只支持视频号任务。"
+        if getattr(self, "jianying_preview_busy", False):
+            return "已有剪映工程图正在生成，请等待完成后再试。"
+        if getattr(self, "manual_publish_busy", False) or getattr(self, "auto_task_busy", False):
+            return "当前已有任务在执行，请等待完成后再生成剪映工程图。"
+        return self.jianying_preview_cache_unavailable_reason(task)
+
+    def jianying_preview_cache_unavailable_reason(self, task: dict[str, Any]) -> str | None:
+        settings = getattr(self, "settings", None)
+        processed_dir = getattr(settings, "processed_dir", None)
         if not processed_dir:
-            return False
-        for drama_dir in self.contract_drama_dir_candidates(Path(processed_dir), task):
+            return "本机未配置 processed 目录，无法查找 reassembled 缓存。"
+        processed_dir = Path(processed_dir)
+        if not processed_dir.is_dir():
+            return f"本机 processed 目录不存在：{processed_dir}"
+        checked_dirs: list[Path] = []
+        unreadable_dirs: list[Path] = []
+        for drama_dir in self.contract_drama_dir_candidates(processed_dir, task):
             reassembled_dir = drama_dir / VIDEO_REASSEMBLY_DIRNAME
+            checked_dirs.append(reassembled_dir)
             if not reassembled_dir.is_dir():
                 continue
             try:
@@ -2067,18 +2110,26 @@ class DesktopWindow(QMainWindow):
                     and not path.name.endswith(".part")
                     for path in reassembled_dir.iterdir()
                 ):
-                    return True
+                    return None
             except OSError:
+                unreadable_dirs.append(reassembled_dir)
                 continue
-        return False
+        if unreadable_dirs:
+            checked = "\n".join(str(path) for path in unreadable_dirs[:3])
+            return f"reassembled 目录读取失败，请检查权限：\n{checked}"
+        checked = "\n".join(str(path) for path in checked_dirs[:3])
+        if not checked:
+            return f"本机 processed 下未找到这个任务的 reassembled 目录：{processed_dir}"
+        return f"本机 processed/reassembled 未找到可用重组视频，已检查：\n{checked}"
 
     def generate_jianying_preview_for_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")
         if not task_id:
             QMessageBox.warning(self, "剪映工程图", "任务 ID 为空，无法生成剪映工程图。")
             return
-        if self.manual_publish_busy or self.auto_task_busy or self.jianying_preview_busy:
-            QMessageBox.information(self, "剪映工程图", "当前已有任务在执行，请等待完成后再生成剪映工程图。")
+        unavailable_reason = self.jianying_preview_unavailable_reason(task)
+        if unavailable_reason is not None:
+            QMessageBox.information(self, "剪映工程图", unavailable_reason)
             return
         strategy = self.choose_jianying_project_strategy()
         if strategy is None:
@@ -4347,6 +4398,12 @@ class DesktopWindow(QMainWindow):
             self.skip_task_button.setEnabled(has_task and (running or paused))
 
     def update_task_progress(self, stage: str, task_id: str | None, task: dict[str, Any] | None = None) -> None:
+        if getattr(self, "_task_progress_signal_ready", False):
+            self.task_progress_requested.emit(stage, task_id, task)
+            return
+        self._apply_task_progress(stage, task_id, task)
+
+    def _apply_task_progress(self, stage: str, task_id: str | None, task: dict[str, Any] | None = None) -> None:
         self.current_task_id = task_id
         if task:
             self.current_task_snapshot = dict(task)
@@ -4474,9 +4531,29 @@ class DesktopWindow(QMainWindow):
         return "平台内容均来自互联网，请勿随意转发"
 
     def append_log(self, message: str) -> None:
-        self.log_view.append(message)
+        display_message = self.format_log_message(message)
+        self.log_view.append(display_message)
         if hasattr(self, "statusBar"):
-            self.statusBar().showMessage(message.splitlines()[0], 5000)
+            self.statusBar().showMessage(display_message.splitlines()[0], 5000)
+
+    @classmethod
+    def format_log_message(cls, message: object, *, now: datetime | None = None) -> str:
+        timestamp = cls.format_log_timestamp(now)
+        lines = str(message).splitlines() or [""]
+        return "\n".join(cls.format_log_line(line, timestamp) for line in lines)
+
+    @staticmethod
+    def format_log_timestamp(value: datetime | None = None) -> str:
+        timestamp = value or datetime.now(CHINA_TIMEZONE)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=CHINA_TIMEZONE)
+        return timestamp.astimezone(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def format_log_line(line: str, timestamp: str) -> str:
+        if LOG_TIME_PREFIX_PATTERN.match(line):
+            return line
+        return f"[{timestamp}] {line}"
 
 
 def apply_style(app: QApplication) -> None:
@@ -4896,14 +4973,50 @@ def handle_non_gui_args(argv: list[str]) -> bool:
     return False
 
 
+def install_crash_diagnostics(settings: Settings) -> Path | None:
+    global _CRASH_LOG_FILE
+    try:
+        log_dir = settings.work_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "desktop-crash.log"
+        _CRASH_LOG_FILE = log_path.open("a", encoding="utf-8", buffering=1)
+        started_at = datetime.now(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        _CRASH_LOG_FILE.write(f"\n[{started_at}] AI Drama Desktop 启动，启用崩溃诊断。\n")
+        faulthandler.enable(file=_CRASH_LOG_FILE, all_threads=True)
+        previous_excepthook = sys.excepthook
+        previous_threading_excepthook = threading.excepthook
+
+        def write_unhandled_exception(exc_type, exc_value, exc_traceback) -> None:
+            happened_at = datetime.now(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+            _CRASH_LOG_FILE.write(f"\n[{happened_at}] 未捕获异常：\n")
+            traceback.print_exception(exc_type, exc_value, exc_traceback, file=_CRASH_LOG_FILE)
+            _CRASH_LOG_FILE.flush()
+            previous_excepthook(exc_type, exc_value, exc_traceback)
+
+        def write_thread_exception(args: threading.ExceptHookArgs) -> None:
+            happened_at = datetime.now(CHINA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+            _CRASH_LOG_FILE.write(f"\n[{happened_at}] 线程未捕获异常：{args.thread.name if args.thread else '-'}\n")
+            traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=_CRASH_LOG_FILE)
+            _CRASH_LOG_FILE.flush()
+            previous_threading_excepthook(args)
+
+        sys.excepthook = write_unhandled_exception
+        threading.excepthook = write_thread_exception
+        return log_path
+    except Exception:
+        return None
+
+
 def main() -> None:
     if handle_non_gui_args(sys.argv[1:]):
         return
+    settings = load_settings()
+    install_crash_diagnostics(settings)
     app = QApplication(sys.argv)
     app.setApplicationName("AI Drama Desktop")
     app.setWindowIcon(app_icon())
     apply_style(app)
-    window = DesktopWindow(load_settings())
+    window = DesktopWindow(settings)
     window.setWindowIcon(app_icon())
     window.show()
     QTimer.singleShot(0, window.raise_)
