@@ -731,6 +731,15 @@ body {
   white-space: nowrap;
 }
 
+.task-failure-reason-cell {
+  width: 320px;
+  max-width: 320px;
+}
+
+.task-failure-reason-text {
+  width: 100%;
+}
+
 .task-execution-chain {
   display: inline-flex;
   align-items: center;

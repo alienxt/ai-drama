@@ -402,6 +402,55 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert (drama_download_dir(tmp_path) / UPLOAD_SUCCESS_MARKER).exists()
 
 
+def test_download_progress_notifications_are_throttled(tmp_path, monkeypatch):
+    api = FakeApi()
+    progress_events = []
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+    download_plan = {
+        "dramaId": "drama-1",
+        "title": "神医归来",
+        "episodes": [{"episodeNo": 1, "downloadUrl": "/files/1.mp4", "size": 100}],
+    }
+
+    def fake_download(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=None,
+        progress_callback=None,
+        should_stop=None,
+        should_pause=None,
+        should_skip=None,
+        max_concurrent_downloads=6,
+        episode_file_validator=None,
+    ):
+        episode = download_plan["episodes"][0]
+        for downloaded in (10, 20, 30, 40, 100):
+            progress_callback(1, 1, episode, downloaded, 100)
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.time.monotonic", lambda: 100.0)
+
+    runner._download(download_plan, "task-1", "神医归来")
+
+    download_events = [stage for stage, _task_id in progress_events if stage.startswith("下载：")]
+    assert download_events == [
+        "下载：神医归来 第 1/1 集 0.0/0.0 MB（10%）",
+        "下载：神医归来 第 1/1 集 0.0/0.0 MB（100%）",
+    ]
+
+
 def test_publish_once_syncs_baidu_source_assets_before_prepare(tmp_path, monkeypatch):
     api = FakeApi()
     downloaded_urls = []
@@ -767,6 +816,85 @@ def test_publish_once_generates_jianying_project_screenshots(tmp_path, monkeypat
     assert ("剪映工程图已生成：神医归来（4 张）", "task-1") in progress_events
 
 
+def test_publish_once_uses_configured_jianying_project_strategy(tmp_path, monkeypatch):
+    class JianyingApi(FakeApi):
+        def get(self, path):
+            self.calls.append(("GET", path, None))
+            if path == "/desktop/storyboard-config":
+                return {"enabled": False}
+            if path == "/desktop/media-accounts":
+                return [{"id": "media-1", "displayName": "用户1161", "externalAccountId": "wx-1"}]
+            return {
+                "dramaId": "drama-1",
+                "title": "神医归来",
+                "summary": "简介",
+                "aiSummary": "AI简介...",
+                "totalMinutes": 50,
+                "costAmountWan": 3,
+                "episodes": [
+                    {"episodeNo": index, "downloadUrl": f"/files/{index}.mp4"}
+                    for index in range(1, 5)
+                ],
+            }
+
+    class FakeRandom:
+        def choice(self, population):
+            return list(population)[0]
+
+        def sample(self, population, count):
+            return list(population)[:count]
+
+    def fake_download(
+        download_plan,
+        target_dir,
+        base_url,
+        headers=None,
+        progress_callback=None,
+        should_stop=None,
+        should_pause=None,
+        should_skip=None,
+        max_concurrent_downloads=6,
+    ):
+        files = []
+        for episode in download_plan["episodes"]:
+            target = target_dir / f"{episode['episodeNo']:03d}.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(episode["downloadUrl"])
+            files.append(target)
+        return files
+
+    class FakeSubtitleSrtGenerator:
+        def generate_srt(self, video, target):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n")
+            return type("Result", (), {"srt_path": target, "created": True, "provider": "fasterWhisper"})()
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.random.SystemRandom", lambda: FakeRandom())
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.SubtitleSrtGenerator", lambda **_: FakeSubtitleSrtGenerator())
+
+    publisher = FakePublisher()
+    jianying_generator = FakeJianyingGenerator()
+    runner = TaskRunner(
+        api=JianyingApi(),
+        processor=FakeProcessor(),
+        publisher=publisher,
+        work_dir=tmp_path,
+        device_id="device-1",
+        contracts_dir=tmp_path / "contracts",
+        jianying_generator=jianying_generator,
+        jianying_project_strategy="competitor-native-v1",
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    assert len(jianying_generator.calls) == 4
+    assert {call["strategy"] for call in jianying_generator.calls} == {"competitor-native-v1"}
+    assert publisher.metadata["jianyingProjectStrategy"] == "competitor-native-v1"
+    assert publisher.metadata["jianyingProjectStrategyLabel"] == "竞品原生工程"
+    assert publisher.metadata["jianyingProjectStrategyVersion"] == "V3"
+
+
 def test_jianying_project_rejects_cross_drama_source_video(tmp_path):
     source = tmp_path / "心动偏离航线-第21集.mp4"
     source.write_bytes(b"video")
@@ -867,6 +995,7 @@ def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strate
         progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
         contracts_dir=tmp_path / "contracts",
         jianying_generator=jianying_generator,
+        jianying_project_strategy="platform-safe-v1",
     )
 
     metadata = runner.generate_jianying_project_preview_from_cache(

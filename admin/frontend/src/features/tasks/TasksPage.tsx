@@ -17,6 +17,8 @@ type TaskStatusFormValues = {
   clearPlatformPublishMarker?: boolean;
 };
 
+const TASK_FAILURE_REASON_COLUMN_WIDTH = 320;
+
 export function TasksPage() {
   const [version, setVersion] = useState(0);
   const [filters, setFilters] = useState<Record<string, unknown>>({});
@@ -109,7 +111,8 @@ export function TasksPage() {
       >
         <AdminTable<DistributionTask>
           rowKey="id"
-          scroll={{ x: 1740 }}
+          tableLayout="fixed"
+          scroll={{ x: 2200 }}
           reloadKey={`${version}-${JSON.stringify(filters)}`}
           loadPage={(page, size) => apiGetPage<DistributionTask>('/admin/distribution-tasks', page, size, filters as Record<string, string | number | boolean | string[] | undefined>)}
           columns={[
@@ -127,7 +130,19 @@ export function TasksPage() {
               ),
             },
             { title: '执行链路', dataIndex: 'progress', width: 420, render: (_: number, record) => <TaskExecutionChain task={record} /> },
-            { title: '失败原因', dataIndex: 'failureReason', width: 260, render: renderTaskCellText },
+            {
+              title: '失败原因',
+              dataIndex: 'failureReason',
+              width: TASK_FAILURE_REASON_COLUMN_WIDTH,
+              render: renderTaskFailureReason,
+              onCell: () => ({
+                className: 'task-failure-reason-cell',
+                style: {
+                  width: TASK_FAILURE_REASON_COLUMN_WIDTH,
+                  maxWidth: TASK_FAILURE_REASON_COLUMN_WIDTH,
+                },
+              }),
+            },
             { title: '创建时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
             { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
             {
@@ -199,6 +214,15 @@ function renderTaskCellText(value?: string) {
   return (
     <Tooltip title={text}>
       <span className="task-table-cell-text">{text}</span>
+    </Tooltip>
+  );
+}
+
+function renderTaskFailureReason(value?: string) {
+  const text = value || '-';
+  return (
+    <Tooltip title={text === '-' ? '' : text}>
+      <span className="task-table-cell-text task-failure-reason-text">{text}</span>
     </Tooltip>
   );
 }

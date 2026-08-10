@@ -59,11 +59,15 @@ from aidrama_desktop.auth.remembered_login import RememberedLoginStore
 from aidrama_desktop.auth.token_store import TokenStore
 from aidrama_desktop.browser.chrome import ChromeController, find_chrome
 from aidrama_desktop.config.settings import (
+    DEFAULT_JIANYING_PROJECT_STRATEGY,
     DEFAULT_SUBTITLE_PROVIDER,
+    JIANYING_PROJECT_STRATEGY_PREFERENCES,
     SUBTITLE_PROVIDER_FASTER_WHISPER,
     SUBTITLE_PROVIDER_OPENAI_WHISPER,
     Settings,
+    jianying_project_strategy_preference_label,
     load_settings,
+    normalize_jianying_project_strategy_preference,
     normalize_subtitle_provider,
     resolve_faster_whisper_python_path,
     resolve_ffmpeg_path,
@@ -119,6 +123,7 @@ from aidrama_desktop.video.reassembly import (
 
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
 LOG_TIME_PREFIX_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s")
+LOG_MAX_BLOCK_COUNT = 5_000
 _CRASH_LOG_FILE = None
 
 
@@ -383,6 +388,7 @@ class DesktopWindow(QMainWindow):
         self._task_progress_signal_ready = True
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.document().setMaximumBlockCount(LOG_MAX_BLOCK_COUNT)
         self.media_accounts: list[dict[str, Any]] = []
         self.media_categories: list[dict[str, Any]] = []
         self.current_drama_rows: list[dict[str, Any]] = []
@@ -1176,6 +1182,7 @@ class DesktopWindow(QMainWindow):
         hint = QLabel(
             "FFmpeg、字幕引擎和剪映路径保存后会优先使用。"
             "默认使用 faster-whisper；未安装时会自动回退到原 Whisper 命令。"
+            "剪映图策略只影响自动任务，任务管理里的手动剪映图不受影响。"
         )
         hint.setObjectName("mutedText")
         panel_layout.addWidget(hint)
@@ -1242,11 +1249,23 @@ class DesktopWindow(QMainWindow):
             "例如：/Users/mac/Library/Application Support/ai-drama-desktop/work/dramas/wav"
         )
         form.addRow("剪映音乐目录", self._path_input_row(self.jianying_music_dir_input, self.choose_jianying_music_dir))
+
+        self.jianying_project_strategy_input = QComboBox()
+        for strategy in JIANYING_PROJECT_STRATEGY_PREFERENCES:
+            self.jianying_project_strategy_input.addItem(
+                jianying_project_strategy_preference_label(strategy),
+                strategy,
+            )
+        self._set_combo_current_data(
+            self.jianying_project_strategy_input,
+            normalize_jianying_project_strategy_preference(self.settings.jianying_project_strategy),
+        )
+        form.addRow("剪映图策略", self.jianying_project_strategy_input)
         panel_layout.addLayout(form)
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
-        save_button = QPushButton("保存工具路径")
+        save_button = QPushButton("保存工具配置")
         save_button.clicked.connect(self.save_tool_path_settings)
         action_row.addWidget(save_button)
         panel_layout.addLayout(action_row)
@@ -1482,6 +1501,9 @@ class DesktopWindow(QMainWindow):
         jianying_draft_root = self.jianying_draft_root_input.text().strip() or None
         jianying_app = self.jianying_app_input.text().strip() or None
         jianying_music_dir = self.jianying_music_dir_input.text().strip() or None
+        jianying_project_strategy = normalize_jianying_project_strategy_preference(
+            str(self.jianying_project_strategy_input.currentData() or DEFAULT_JIANYING_PROJECT_STRATEGY)
+        )
         save_tool_path_config(
             self.settings.config_dir,
             ffmpeg_path=ffmpeg_path,
@@ -1492,6 +1514,7 @@ class DesktopWindow(QMainWindow):
             jianying_draft_root=jianying_draft_root,
             jianying_app=jianying_app,
             jianying_music_dir=jianying_music_dir,
+            jianying_project_strategy=jianying_project_strategy,
         )
         self.settings = update_settings(
             self.settings,
@@ -1505,6 +1528,7 @@ class DesktopWindow(QMainWindow):
             jianying_draft_root=Path(jianying_draft_root).expanduser() if jianying_draft_root else None,
             jianying_app=Path(jianying_app).expanduser() if jianying_app else None,
             jianying_music_dir=Path(jianying_music_dir).expanduser() if jianying_music_dir else None,
+            jianying_project_strategy=jianying_project_strategy,
         )
         self.append_log(
             "工具路径已保存："
@@ -1515,9 +1539,10 @@ class DesktopWindow(QMainWindow):
             f"Node.js={node_path or '自动探测'}，"
             f"剪映草稿目录={jianying_draft_root or '自动探测'}，"
             f"剪映程序地址={jianying_app or '自动探测'}，"
-            f"剪映音乐目录={jianying_music_dir or '默认目录'}"
+            f"剪映音乐目录={jianying_music_dir or '默认目录'}，"
+            f"剪映图策略={jianying_project_strategy_preference_label(self.settings.jianying_project_strategy)}"
         )
-        QMessageBox.information(self, "保存工具路径", "工具路径已保存，后续任务会使用新的工具路径。")
+        QMessageBox.information(self, "保存工具配置", "工具配置已保存，后续任务会使用新的配置。")
 
     def _logs_page(self) -> QWidget:
         page = QWidget()
@@ -1723,6 +1748,7 @@ class DesktopWindow(QMainWindow):
             whisper_path=self.settings.whisper_path,
             faster_whisper_python_path=self.settings.faster_whisper_python_path,
             jianying_music_dir=self.settings.jianying_music_dir,
+            jianying_project_strategy=self.settings.jianying_project_strategy,
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):

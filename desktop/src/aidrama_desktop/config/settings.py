@@ -45,6 +45,20 @@ SUBTITLE_PROVIDER_FASTER_WHISPER = "fasterWhisper"
 SUBTITLE_PROVIDER_OPENAI_WHISPER = "openaiWhisper"
 DEFAULT_SUBTITLE_PROVIDER = SUBTITLE_PROVIDER_FASTER_WHISPER
 TOOL_PATHS_CONFIG_FILENAME = "tool-paths.json"
+JIANYING_PROJECT_STRATEGY_RANDOM = "random"
+JIANYING_PROJECT_STRATEGY_PLATFORM_SAFE = "platform-safe-v1"
+JIANYING_PROJECT_STRATEGY_COMPETITOR_NATIVE = "competitor-native-v1"
+DEFAULT_JIANYING_PROJECT_STRATEGY = JIANYING_PROJECT_STRATEGY_RANDOM
+JIANYING_PROJECT_STRATEGY_PREFERENCES = (
+    JIANYING_PROJECT_STRATEGY_RANDOM,
+    JIANYING_PROJECT_STRATEGY_PLATFORM_SAFE,
+    JIANYING_PROJECT_STRATEGY_COMPETITOR_NATIVE,
+)
+JIANYING_PROJECT_STRATEGY_PREFERENCE_LABELS = {
+    JIANYING_PROJECT_STRATEGY_RANDOM: "随机",
+    JIANYING_PROJECT_STRATEGY_PLATFORM_SAFE: "平台安全工程",
+    JIANYING_PROJECT_STRATEGY_COMPETITOR_NATIVE: "竞品原生工程",
+}
 
 
 def default_device_id() -> str:
@@ -214,6 +228,18 @@ def normalize_subtitle_provider(provider: str | None = None) -> str:
     return DEFAULT_SUBTITLE_PROVIDER
 
 
+def normalize_jianying_project_strategy_preference(strategy: str | None = None) -> str:
+    value = str(strategy or "").strip()
+    if value in JIANYING_PROJECT_STRATEGY_PREFERENCES:
+        return value
+    return DEFAULT_JIANYING_PROJECT_STRATEGY
+
+
+def jianying_project_strategy_preference_label(strategy: str | None = None) -> str:
+    value = normalize_jianying_project_strategy_preference(strategy)
+    return JIANYING_PROJECT_STRATEGY_PREFERENCE_LABELS.get(value, value)
+
+
 def load_tool_path_config(config_dir: Path) -> dict[str, str]:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     try:
@@ -232,6 +258,7 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
         "jianyingDraftRoot": "jianying_draft_root",
         "jianyingApp": "jianying_app",
         "jianyingMusicDir": "jianying_music_dir",
+        "jianyingProjectStrategy": "jianying_project_strategy",
     }
     for raw_key, settings_key in key_map.items():
         value = normalize_optional_executable_path(data.get(raw_key))
@@ -251,6 +278,7 @@ def save_tool_path_config(
     jianying_draft_root: str | None = None,
     jianying_app: str | None = None,
     jianying_music_dir: str | None = None,
+    jianying_project_strategy: str | None = None,
 ) -> None:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +291,7 @@ def save_tool_path_config(
         "jianyingDraftRoot": normalize_optional_executable_path(jianying_draft_root) or "",
         "jianyingApp": normalize_optional_executable_path(jianying_app) or "",
         "jianyingMusicDir": normalize_optional_executable_path(jianying_music_dir) or "",
+        "jianyingProjectStrategy": normalize_jianying_project_strategy_preference(jianying_project_strategy),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -279,6 +308,7 @@ class Settings(BaseSettings):
     jianying_draft_root: Path | None = None
     jianying_app: Path | None = None
     jianying_music_dir: Path | None = None
+    jianying_project_strategy: str = DEFAULT_JIANYING_PROJECT_STRATEGY
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
     download_concurrency: int = 6
@@ -362,6 +392,11 @@ def load_settings() -> Settings:
         settings.jianying_music_dir = Path(tool_path_config["jianying_music_dir"]).expanduser()
     elif os.environ.get("AIDRAMA_JIANYING_MUSIC_DIR"):
         settings.jianying_music_dir = Path(str(os.environ["AIDRAMA_JIANYING_MUSIC_DIR"])).expanduser()
+    if tool_path_config.get("jianying_project_strategy"):
+        settings.jianying_project_strategy = tool_path_config["jianying_project_strategy"]
+    settings.jianying_project_strategy = normalize_jianying_project_strategy_preference(
+        settings.jianying_project_strategy
+    )
     settings.whisper_path = resolve_whisper_path(settings.whisper_path or os.environ.get("AIDRAMA_WHISPER_PATH"))
     settings.faster_whisper_python_path = resolve_faster_whisper_python_path(
         settings.faster_whisper_python_path

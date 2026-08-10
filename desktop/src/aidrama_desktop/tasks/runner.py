@@ -57,6 +57,7 @@ EPISODE_DOWNLOAD_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_HTTP_STATUS_CODES = {401, 403, 408, 425, 429, 500, 502, 503, 504}
 NON_RETRYABLE_DOWNLOAD_ERROR_CODES = {"HONGGUO_VIDEO_EMPTY"}
 DOWNLOAD_PROGRESS_REPORT_INTERVAL_SECONDS = 10.0
+DOWNLOAD_UI_PROGRESS_NOTIFY_INTERVAL_SECONDS = 1.0
 TASK_PREPARATION_POLL_INTERVAL_SECONDS = 3.0
 TASK_PREPARATION_TIMEOUT_SECONDS = 10 * 60.0
 BAIDU_ASSET_SYNC_DOWNLOAD_TIMEOUT_SECONDS = 120.0
@@ -84,6 +85,7 @@ JIANYING_PROJECT_CAPTURE_VERSION = "jianying-layered-proof-tracks-v24-disable-la
 JIANYING_PROJECT_MATERIALS_ENABLED = True
 JIANYING_PROJECT_SCREENSHOT_DIRNAME = "剪映工程截图"
 JIANYING_PROJECT_PREVIEW_DIRNAME = "剪映图"
+JIANYING_PROJECT_STRATEGY_RANDOM = "random"
 JIANYING_PROJECT_STRATEGIES = (
     "platform-safe-v1",
     "competitor-native-v1",
@@ -212,6 +214,7 @@ class TaskRunner:
     whisper_path: str | None = None
     faster_whisper_python_path: str | None = None
     jianying_music_dir: Path | None = None
+    jianying_project_strategy: str | None = JIANYING_PROJECT_STRATEGY_RANDOM
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -561,6 +564,7 @@ class TaskRunner:
                 drama_title,
                 platform=platform,
                 download_plan=effective_download_plan,
+                strategy=self._configured_jianying_project_strategy(),
             ),
             done_detail=lambda metadata: self._material_count_detail(metadata, "jianyingProjectScreenshots", "张"),
         )
@@ -1125,6 +1129,12 @@ class TaskRunner:
         strategy_version = safe_contract_filename(self._jianying_project_strategy_version(strategy)) or strategy
         return self._contract_output_dir(task_id, drama_title) / f"{JIANYING_PROJECT_PREVIEW_DIRNAME}-{strategy_version}"
 
+    def _configured_jianying_project_strategy(self) -> str | None:
+        strategy = str(self.jianying_project_strategy or "").strip()
+        if not strategy or strategy == JIANYING_PROJECT_STRATEGY_RANDOM:
+            return None
+        return self._normalize_jianying_project_strategy(strategy)
+
     @staticmethod
     def _select_jianying_project_strategy() -> str:
         return random.SystemRandom().choice(JIANYING_PROJECT_STRATEGIES)
@@ -1132,7 +1142,7 @@ class TaskRunner:
     @staticmethod
     def _normalize_jianying_project_strategy(strategy: str) -> str:
         strategy = str(strategy or "").strip()
-        if not strategy or strategy == "random":
+        if not strategy or strategy == JIANYING_PROJECT_STRATEGY_RANDOM:
             return TaskRunner._select_jianying_project_strategy()
         if strategy not in JIANYING_PROJECT_STRATEGIES:
             options = "、".join(
@@ -1608,13 +1618,17 @@ class TaskRunner:
         }
         last_reported_at = 0.0
         last_reported_progress = 10
+        last_ui_reported_at = 0.0
+        last_ui_reported_stage = ""
 
         def report_progress(index: int, total: int, episode: dict, downloaded: int, total_bytes: int | None) -> None:
-            nonlocal last_reported_at, last_reported_progress
-            self._notify(self._download_stage(drama_title, index, total, downloaded, total_bytes), task_id)
+            nonlocal last_reported_at, last_reported_progress, last_ui_reported_at, last_ui_reported_stage
             now = time.monotonic()
             should_report = False
+            should_notify_ui = False
             progress = 10
+            stage = self._download_stage(drama_title, index, total, downloaded, total_bytes)
+            is_episode_complete = bool(total_bytes and total_bytes > 0 and downloaded >= total_bytes)
             with progress_lock:
                 downloaded_by_episode[index] = max(downloaded_by_episode.get(index, 0), downloaded)
                 if total_bytes and total_bytes > 0:
@@ -1630,6 +1644,16 @@ class TaskRunner:
                     last_reported_progress = max(last_reported_progress, progress)
                     last_reported_at = now
                     should_report = True
+                if (
+                    not last_ui_reported_stage
+                    or is_episode_complete
+                    or now - last_ui_reported_at >= DOWNLOAD_UI_PROGRESS_NOTIFY_INTERVAL_SECONDS
+                ) and stage != last_ui_reported_stage:
+                    last_ui_reported_stage = stage
+                    last_ui_reported_at = now
+                    should_notify_ui = True
+            if should_notify_ui:
+                self._notify(stage, task_id)
             if should_report:
                 try:
                     self.api.put(

@@ -144,6 +144,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
         jianying_draft_root=str(draft_root),
         jianying_app=str(jianying_app),
         jianying_music_dir=str(music_dir),
+        jianying_project_strategy="competitor-native-v1",
     )
     monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
     monkeypatch.setenv("AIDRAMA_SUBTITLE_PROVIDER", "fasterWhisper")
@@ -164,6 +165,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     assert settings.jianying_draft_root == draft_root
     assert settings.jianying_app == jianying_app
     assert settings.jianying_music_dir == music_dir
+    assert settings.jianying_project_strategy == "competitor-native-v1"
 
 
 def test_load_settings_uses_saved_ffmpeg_path_over_environment(monkeypatch, tmp_path):

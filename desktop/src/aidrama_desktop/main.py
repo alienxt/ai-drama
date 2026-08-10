@@ -184,6 +184,7 @@ def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
             draft_root=settings.jianying_draft_root,
             jianying_app=settings.jianying_app,
         ),
+        jianying_project_strategy=settings.jianying_project_strategy,
     )
 
 
