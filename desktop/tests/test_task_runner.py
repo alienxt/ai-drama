@@ -941,6 +941,24 @@ def test_jianying_strategy_registry_disables_layered_proof_without_removing_meta
         TaskRunner._normalize_jianying_project_strategy("layered-proof-v1")
 
 
+def test_jianying_project_episode_label_uses_first_source_episode_for_cross_range(tmp_path):
+    item = EpisodeMediaFile(
+        {"episodeNo": 2, "sourceEpisodeNumbers": [24, 25], "sourceEpisodeRange": "24-25"},
+        2,
+        tmp_path / "神医归来-第2集.mp4",
+        (24, 25),
+    )
+    range_only_item = EpisodeMediaFile(
+        {"episodeNo": 3, "sourceEpisodeRange": "38-39"},
+        3,
+        tmp_path / "神医归来-第3集.mp4",
+        (38, 39),
+    )
+
+    assert TaskRunner._jianying_project_episode_label(item) == "第24集"
+    assert TaskRunner._jianying_project_episode_label(range_only_item) == "第38集"
+
+
 def test_jianying_preview_uses_processed_reassembled_cache_with_requested_strategy(tmp_path):
     final_dir = drama_processed_dir(tmp_path) / "reassembled"
     final_dir.mkdir(parents=True)

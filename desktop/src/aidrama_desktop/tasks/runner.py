@@ -1186,9 +1186,20 @@ class TaskRunner:
 
     @staticmethod
     def _jianying_project_episode_label(item: EpisodeMediaFile) -> str:
-        source_range = item.episode.get("sourceEpisodeRange")
+        source_numbers = item.episode.get("sourceEpisodeNumbers")
+        if isinstance(source_numbers, (list, tuple)):
+            for value in source_numbers:
+                try:
+                    source_number = int(str(value).strip())
+                except (TypeError, ValueError):
+                    continue
+                if source_number > 0:
+                    return f"第{source_number}集"
+        source_range = str(item.episode.get("sourceEpisodeRange") or "").strip()
         if source_range:
-            return f"第{source_range}集"
+            match = re.search(r"\d+", source_range)
+            if match:
+                return f"第{int(match.group())}集"
         return f"第{episode_number(item.episode, item.episode_index)}集"
 
     def _validate_jianying_project_source_item(
