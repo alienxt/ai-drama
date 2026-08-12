@@ -68,6 +68,7 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
         SettingsRow("剪映程序地址", str(settings.jianying_app) if settings.jianying_app else "自动探测"),
         SettingsRow("剪映音乐目录", str(settings.jianying_music_dir) if settings.jianying_music_dir else "默认目录"),
         SettingsRow("剪映图策略", jianying_project_strategy_preference_label(settings.jianying_project_strategy)),
+        SettingsRow("视频号日上传上限", f"{settings.wechat_video_daily_upload_limit} 次"),
         SettingsRow("LibreOffice", settings.soffice_path),
     ]
 

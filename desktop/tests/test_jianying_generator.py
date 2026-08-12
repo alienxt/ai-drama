@@ -45,6 +45,12 @@ def test_windows_draft_open_matches_legacy_full_description_flow():
     assert "runWindowsUiaHelper(helperCommandJson, appPath, draftName)" in windows_open
     assert "--progress-file" in windows_open
     assert "Bundled Python uiautomation helper" in windows_open
+    assert "--close-after-capture" in source
+    assert "macRunningJianyingProcessNames(appPath)" in source
+    assert "closeJianyingAfterCapture(appPath)" in source
+    assert "timelineZoomBeforeCapture(appPath, audit.draft_name)" in source
+    assert "timeline_zoom_before_capture" in source
+    assert "postZoomMousePoint(bounds)" in source
     assert "execPowerShellScript" not in windows_open
     assert "LookupById(30159)" not in source
     assert 'importlib.import_module("uiautomation")' in helper_source
@@ -111,6 +117,8 @@ def test_jianying_tool_registers_platform_safe_and_competitor_native_strategies(
     assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.filterTracks.forEach")
     assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.effectTracks.forEach")
     assert source.index("subtitleTracks.forEach") < source.index("nativeVisualTracks.stickerTracks.forEach")
+    assert "content: plainTextContent(text)" in source
+    assert 'content: `<font id="" path="">' not in source
 
 
 def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path):
@@ -166,6 +174,60 @@ def test_jianying_generator_passes_sibling_ffprobe_to_tool(monkeypatch, tmp_path
     assert command[command.index("--jianying-app") + 1] == str(jianying_app)
     helper_command = json.loads(command[command.index("--windows-uia-helper-command") + 1])
     assert helper_command == ["AI Drama Desktop.exe", "--jianying-uia-helper"]
+
+
+def test_jianying_generator_closes_after_capture_on_desktop_platforms(monkeypatch, tmp_path):
+    video = tmp_path / "episode.mp4"
+    node = tmp_path / "node"
+    tool = tmp_path / "create-jianying-project.js"
+    screenshot = tmp_path / "proof.png"
+    video.write_text("video")
+    node.write_text("node")
+    tool.write_text("tool")
+    commands: list[list[str]] = []
+
+    def fake_run(command, check=False, capture_output=False, text=False, timeout=None, **kwargs):
+        commands.append(command)
+        screenshot.write_bytes(b"png")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"screenshot_path": str(screenshot), "warnings": []}),
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("aidrama_desktop.jianying.generator.sys.platform", "win32")
+    monkeypatch.setattr("aidrama_desktop.jianying.generator._windows_uia_helper_command", lambda: None)
+
+    generator = JianyingProjectGenerator(node_path=str(node), tool_path=tool)
+    generator.generate_project_screenshot(
+        video=video,
+        draft_name="测试工程",
+        output_dir=tmp_path,
+        screenshot_path=screenshot,
+    )
+
+    assert "--close-after-capture" in commands[-1]
+
+    monkeypatch.setattr("aidrama_desktop.jianying.generator.sys.platform", "darwin")
+    generator.generate_project_screenshot(
+        video=video,
+        draft_name="测试工程",
+        output_dir=tmp_path,
+        screenshot_path=screenshot,
+    )
+
+    assert "--close-after-capture" in commands[-1]
+
+    monkeypatch.setattr("aidrama_desktop.jianying.generator.sys.platform", "linux")
+    generator.generate_project_screenshot(
+        video=video,
+        draft_name="测试工程",
+        output_dir=tmp_path,
+        screenshot_path=screenshot,
+    )
+
+    assert "--close-after-capture" not in commands[-1]
 
 
 def test_jianying_generator_passes_strategy_to_tool(monkeypatch, tmp_path):

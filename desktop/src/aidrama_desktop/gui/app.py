@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QStyle,
     QTableWidget,
@@ -72,6 +73,7 @@ from aidrama_desktop.config.settings import (
     resolve_faster_whisper_python_path,
     resolve_ffmpeg_path,
     save_tool_path_config,
+    save_wechat_video_daily_upload_limit,
 )
 from aidrama_desktop.contracts import (
     ContractConfigStore,
@@ -1122,6 +1124,19 @@ class DesktopWindow(QMainWindow):
         layout.addWidget(self._tool_path_settings_panel())
         layout.addWidget(self._video_reassembly_settings_panel())
         panel, panel_layout = self._panel("运行配置")
+        upload_limit_row = QHBoxLayout()
+        upload_limit_hint = QLabel("视频号当天上传成功次数达到上限后，客户端会停止继续上传视频号任务。")
+        upload_limit_hint.setObjectName("mutedText")
+        self.wechat_video_daily_upload_limit_input = QSpinBox()
+        self.wechat_video_daily_upload_limit_input.setRange(1, 10)
+        self.wechat_video_daily_upload_limit_input.setSuffix(" 次/天")
+        self.wechat_video_daily_upload_limit_input.setValue(self.settings.wechat_video_daily_upload_limit)
+        save_upload_limit_button = QPushButton("保存上传上限")
+        save_upload_limit_button.clicked.connect(self.save_wechat_video_daily_upload_limit)
+        upload_limit_row.addWidget(upload_limit_hint)
+        upload_limit_row.addStretch(1)
+        upload_limit_row.addWidget(self.wechat_video_daily_upload_limit_input)
+        upload_limit_row.addWidget(save_upload_limit_button)
         update_row = QHBoxLayout()
         update_hint = QLabel(f"当前版本：{__version__}")
         update_hint.setObjectName("mutedText")
@@ -1169,6 +1184,7 @@ class DesktopWindow(QMainWindow):
         table.setMinimumHeight(360)
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
+        panel_layout.addLayout(upload_limit_row)
         panel_layout.addLayout(update_row)
         panel_layout.addLayout(cleanup_row)
         panel_layout.addWidget(note)
@@ -1454,6 +1470,16 @@ class DesktopWindow(QMainWindow):
         self.append_log(f"视频生成配置已保存：{config.summary()}")
         QMessageBox.information(self, "视频生成配置", "视频生成配置已保存。")
 
+    def save_wechat_video_daily_upload_limit(self) -> None:
+        limit = save_wechat_video_daily_upload_limit(
+            self.settings.config_dir,
+            self.wechat_video_daily_upload_limit_input.value(),
+        )
+        self.settings = update_settings(self.settings, wechat_video_daily_upload_limit=limit)
+        self.wechat_video_daily_upload_limit_input.setValue(limit)
+        self.append_log(f"视频号日上传上限已保存：{limit} 次/天")
+        QMessageBox.information(self, "上传上限", f"视频号日上传上限已保存：{limit} 次/天。")
+
     def choose_whisper_path(self) -> None:
         self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
 
@@ -1515,6 +1541,7 @@ class DesktopWindow(QMainWindow):
             jianying_app=jianying_app,
             jianying_music_dir=jianying_music_dir,
             jianying_project_strategy=jianying_project_strategy,
+            wechat_video_daily_upload_limit=self.settings.wechat_video_daily_upload_limit,
         )
         self.settings = update_settings(
             self.settings,
@@ -1749,6 +1776,7 @@ class DesktopWindow(QMainWindow):
             faster_whisper_python_path=self.settings.faster_whisper_python_path,
             jianying_music_dir=self.settings.jianying_music_dir,
             jianying_project_strategy=self.settings.jianying_project_strategy,
+            wechat_video_daily_upload_limit=self.settings.wechat_video_daily_upload_limit,
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):
@@ -2378,6 +2406,10 @@ class DesktopWindow(QMainWindow):
             self.task_skip_event.clear()
             self.update_task_progress("任务已跳过，已放回池里", None)
             QMessageBox.information(self, "重试任务", "任务已跳过，并已放回待执行池。")
+        elif result == "upload-limit-reached":
+            message = self.current_task_error_message() or "视频号今日上传成功次数已达到系统配置上限。"
+            self.update_task_progress(message, None)
+            QMessageBox.information(self, "重试任务", message)
         elif result == "ready-for-review":
             self.update_task_progress("提审未自动提交，任务未完成", self.current_task_id)
             QMessageBox.warning(self, "重试任务", "视频已上传但提审未自动提交，请重试任务或查看日志。")
@@ -4034,6 +4066,10 @@ class DesktopWindow(QMainWindow):
         if result == "no-task":
             self.update_task_progress("空闲：没有可发布任务", None)
             QMessageBox.information(self, "发布下一条", "当前没有可发布任务。请确认短剧可分发，且媒体号策略匹配。")
+        elif result == "upload-limit-reached":
+            message = self.current_task_error_message() or "视频号今日上传成功次数已达到系统配置上限。"
+            self.update_task_progress(message, None)
+            QMessageBox.information(self, "发布下一条", message)
         elif result == "failed":
             self.update_task_progress("任务失败", self.current_task_id)
             reason = self.current_task_error_message() or "发布任务执行失败，请查看最近错误或日志。"
@@ -4173,6 +4209,10 @@ class DesktopWindow(QMainWindow):
         self.last_auto_error_popup_message = None
         if result == "no-task":
             self.update_task_progress("空闲，等待下一轮", None)
+        elif result == "upload-limit-reached":
+            message = self.current_task_error_message() or "视频号今日上传成功次数已达到系统配置上限。"
+            self.stop_auto_task_for_error(message)
+            self.show_auto_error_once("自动执行", message)
         elif result == "failed":
             message = self.current_task_error_message()
             if message and self.is_auto_stop_error(message):
@@ -4452,6 +4492,8 @@ class DesktopWindow(QMainWindow):
             reason = self.clean_error_message(stage.removeprefix("任务失败："))
             display_stage = f"任务失败：{reason}"
             self.set_task_error_message(reason)
+        elif stage.startswith("视频号今日上传已达上限："):
+            self.set_task_error_message(stage)
         if self.should_log_task_progress(display_stage):
             self.append_log(display_stage)
         if hasattr(self, "auto_task_state"):

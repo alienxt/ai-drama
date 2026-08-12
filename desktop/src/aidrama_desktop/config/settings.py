@@ -59,6 +59,9 @@ JIANYING_PROJECT_STRATEGY_PREFERENCE_LABELS = {
     JIANYING_PROJECT_STRATEGY_PLATFORM_SAFE: "平台安全工程",
     JIANYING_PROJECT_STRATEGY_COMPETITOR_NATIVE: "竞品原生工程",
 }
+WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MIN = 1
+WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX = 10
+DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT = 10
 
 
 def default_device_id() -> str:
@@ -240,7 +243,15 @@ def jianying_project_strategy_preference_label(strategy: str | None = None) -> s
     return JIANYING_PROJECT_STRATEGY_PREFERENCE_LABELS.get(value, value)
 
 
-def load_tool_path_config(config_dir: Path) -> dict[str, str]:
+def normalize_wechat_video_daily_upload_limit(limit: object = None) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        value = DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT
+    return max(WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MIN, min(WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX, value))
+
+
+def load_tool_path_config(config_dir: Path) -> dict[str, object]:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -248,7 +259,7 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
-    result: dict[str, str] = {}
+    result: dict[str, object] = {}
     key_map = {
         "ffmpegPath": "ffmpeg_path",
         "whisperPath": "whisper_path",
@@ -264,6 +275,10 @@ def load_tool_path_config(config_dir: Path) -> dict[str, str]:
         value = normalize_optional_executable_path(data.get(raw_key))
         if value:
             result[settings_key] = value
+    if "wechatVideoDailyUploadLimit" in data:
+        result["wechat_video_daily_upload_limit"] = normalize_wechat_video_daily_upload_limit(
+            data.get("wechatVideoDailyUploadLimit")
+        )
     return result
 
 
@@ -279,6 +294,7 @@ def save_tool_path_config(
     jianying_app: str | None = None,
     jianying_music_dir: str | None = None,
     jianying_project_strategy: str | None = None,
+    wechat_video_daily_upload_limit: object = None,
 ) -> None:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,8 +308,26 @@ def save_tool_path_config(
         "jianyingApp": normalize_optional_executable_path(jianying_app) or "",
         "jianyingMusicDir": normalize_optional_executable_path(jianying_music_dir) or "",
         "jianyingProjectStrategy": normalize_jianying_project_strategy_preference(jianying_project_strategy),
+        "wechatVideoDailyUploadLimit": normalize_wechat_video_daily_upload_limit(
+            wechat_video_daily_upload_limit
+        ),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_wechat_video_daily_upload_limit(config_dir: Path, limit: object) -> int:
+    normalized_limit = normalize_wechat_video_daily_upload_limit(limit)
+    path = config_dir / TOOL_PATHS_CONFIG_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["wechatVideoDailyUploadLimit"] = normalized_limit
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return normalized_limit
 
 
 class Settings(BaseSettings):
@@ -309,6 +343,7 @@ class Settings(BaseSettings):
     jianying_app: Path | None = None
     jianying_music_dir: Path | None = None
     jianying_project_strategy: str = DEFAULT_JIANYING_PROJECT_STRATEGY
+    wechat_video_daily_upload_limit: int = DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
     download_concurrency: int = 6
@@ -397,6 +432,14 @@ def load_settings() -> Settings:
     settings.jianying_project_strategy = normalize_jianying_project_strategy_preference(
         settings.jianying_project_strategy
     )
+    if "wechat_video_daily_upload_limit" in tool_path_config:
+        settings.wechat_video_daily_upload_limit = normalize_wechat_video_daily_upload_limit(
+            tool_path_config.get("wechat_video_daily_upload_limit")
+        )
+    else:
+        settings.wechat_video_daily_upload_limit = normalize_wechat_video_daily_upload_limit(
+            settings.wechat_video_daily_upload_limit
+        )
     settings.whisper_path = resolve_whisper_path(settings.whisper_path or os.environ.get("AIDRAMA_WHISPER_PATH"))
     settings.faster_whisper_python_path = resolve_faster_whisper_python_path(
         settings.faster_whisper_python_path

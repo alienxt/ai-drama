@@ -18,6 +18,10 @@ const DEFAULTS = {
   homeNavClickYRatio: 0.31,
   draftCardClickXRatio: 0.16,
   draftCardClickYRatio: 0.34,
+  timelineZoomClickXRatio: 0.988,
+  timelineZoomClickYRatio: 0.495,
+  postZoomMouseXRatio: 0.52,
+  postZoomMouseYRatio: 0.34,
 };
 
 const AUDIO_DISPLAY_STEMS = [
@@ -266,6 +270,7 @@ Proof/screenshot options:
   --capture-delay <sec>   Extra wait before screenshot. Default: 2.
   --full-screen-capture   Capture the whole screen instead of the Jianying/CapCut window.
   --close-existing        Close existing Jianying process before opening.
+  --close-after-capture   Close Jianying after a successful screenshot capture.
   --jianying-app <path>   App path override. Useful on Windows installs.
   --windows-uia-helper-command <json>
                           Internal Windows helper command supplied by the desktop client.
@@ -311,6 +316,7 @@ function parseArgs(argv) {
     ...DEFAULTS,
     bgm: [],
     capture: false,
+    closeAfterCapture: false,
     closeExisting: false,
     debugWindowsOpen: false,
     fullScreenCapture: false,
@@ -328,7 +334,17 @@ function parseArgs(argv) {
     }
     if (!arg.startsWith('--')) fail(`Unexpected argument: ${arg}`);
     const key = normalizeKey(arg.slice(2));
-    if (['allowDraftTemplateFallback', 'capture', 'closeExisting', 'debugWindowsOpen', 'fullScreenCapture', 'open', 'openDraft', 'overwrite'].includes(key)) {
+    if ([
+      'allowDraftTemplateFallback',
+      'capture',
+      'closeAfterCapture',
+      'closeExisting',
+      'debugWindowsOpen',
+      'fullScreenCapture',
+      'open',
+      'openDraft',
+      'overwrite',
+    ].includes(key)) {
       args[key] = true;
       continue;
     }
@@ -1185,11 +1201,11 @@ function makeAudioSegment(materialId, sourceStartUs, startUs, durationUs, extraR
   };
 }
 
-function escapeText(text) {
+function plainTextContent(text) {
   return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function makeTextMaterial({ id, text, textSize, color = '#FFFFFF', alpha = 1.0 }) {
@@ -1203,7 +1219,7 @@ function makeTextMaterial({ id, text, textSize, color = '#FFFFFF', alpha = 1.0 }
     border_color: '#000000',
     border_width: 0.025,
     check_flag: 7,
-    content: `<font id="" path="">${escapeText(text)}</font>`,
+    content: plainTextContent(text),
     font_category: '',
     font_id: '',
     font_name: '',
@@ -2461,6 +2477,250 @@ function closeExistingJianying() {
     const script = 'Get-Process | Where-Object { $_.ProcessName -match "Jianying|CapCut|VideoFusion" } | Stop-Process -Force';
     try { execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { stdio: 'ignore' }); } catch {}
   }
+}
+
+function macRunningJianyingProcessNames(appPath) {
+  if (process.platform !== 'darwin') return [];
+  const running = [];
+  for (const processName of macJianyingProcessNames(appPath)) {
+    try {
+      const exists = osascript(`tell application "System Events" to return exists process ${appleScriptString(processName)}`);
+      if (String(exists).trim() === 'true') running.push(processName);
+    } catch {
+      // Try the next known process name.
+    }
+  }
+  return unique(running);
+}
+
+function closeJianyingAfterCapture(appPath) {
+  if (process.platform === 'darwin') {
+    const bundleIds = unique([
+      macBundleId(appPath),
+      'com.lemon.lvpro',
+      'com.lemon.lveditor',
+      'com.lemon.capcut',
+    ]);
+    const attemptedBundleIds = [];
+    const quitErrors = [];
+    for (const bundleId of bundleIds) {
+      try {
+        osascript(`
+if application id ${appleScriptString(bundleId)} is running then
+  tell application id ${appleScriptString(bundleId)} to quit
+end if
+`);
+        attemptedBundleIds.push(bundleId);
+      } catch (error) {
+        quitErrors.push(`${bundleId}: ${error.message || error}`);
+      }
+    }
+    sleep(2);
+    const remaining = macRunningJianyingProcessNames(appPath);
+    const killed = [];
+    for (const processName of remaining) {
+      try {
+        execFileSync('pkill', ['-x', processName], { stdio: 'ignore' });
+        killed.push(processName);
+      } catch {
+        // The process may have exited after the graceful quit.
+      }
+    }
+    if (killed.length) sleep(0.5);
+    const remainingAfterForce = macRunningJianyingProcessNames(appPath);
+    return {
+      requested: true,
+      attempted: true,
+      closed: remainingAfterForce.length === 0,
+      detail: `quit=${attemptedBundleIds.join(',') || 'none'} killed=${killed.join(',') || 'none'} remaining=${remainingAfterForce.join(',') || 'none'}`,
+      errors: quitErrors,
+    };
+  }
+  if (process.platform !== 'win32') {
+    return { requested: true, attempted: false, closed: false, reason: 'unsupported-platform' };
+  }
+  const script = `
+$appPath = ${psSingle(appPath || '')}
+$baseName = ''
+if ($appPath) {
+  try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+}
+function Find-JianyingProcess {
+  Get-Process | Where-Object {
+    $_.ProcessName -match "Jianying|CapCut|VideoFusion|剪映" -or
+    ($_.MainWindowTitle -and $_.MainWindowTitle -match "Jianying|CapCut|VideoFusion|剪映") -or
+    ($baseName -and $_.ProcessName -eq $baseName)
+  }
+}
+$processes = @(Find-JianyingProcess)
+if ($processes.Count -eq 0) {
+  Write-Output "closed=0 remaining=0"
+  exit 0
+}
+foreach ($process in $processes) {
+  try {
+    if ($process.MainWindowHandle -ne 0) {
+      [void]$process.CloseMainWindow()
+    }
+  } catch {}
+}
+Start-Sleep -Seconds 2
+$remaining = @(Find-JianyingProcess)
+if ($remaining.Count -gt 0) {
+  try { $remaining | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+  Start-Sleep -Milliseconds 500
+}
+$remainingAfterForce = @(Find-JianyingProcess)
+Write-Output ("closed={0} remaining={1}" -f $processes.Count, $remainingAfterForce.Count)
+`;
+  try {
+    const output = execPowerShellScript(script, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return {
+      requested: true,
+      attempted: true,
+      closed: !/remaining=(?!0\b)\d+/.test(output),
+      detail: output,
+    };
+  } catch (error) {
+    return {
+      requested: true,
+      attempted: true,
+      closed: false,
+      error: String(error.message || error),
+    };
+  }
+}
+
+function timelineZoomClickPoint(bounds) {
+  const [x, y, w, h] = positiveWindowRect(bounds);
+  return [
+    Math.round(x + w * DEFAULTS.timelineZoomClickXRatio),
+    Math.round(y + h * DEFAULTS.timelineZoomClickYRatio),
+  ];
+}
+
+function postZoomMousePoint(bounds) {
+  const [x, y, w, h] = positiveWindowRect(bounds);
+  return [
+    Math.round(x + w * DEFAULTS.postZoomMouseXRatio),
+    Math.round(y + h * DEFAULTS.postZoomMouseYRatio),
+  ];
+}
+
+function macMouseMove(moveX, moveY) {
+  const swift = `
+import CoreGraphics
+import Foundation
+
+let point = CGPoint(x: ${moveX}, y: ${moveY})
+CGWarpMouseCursorPosition(point)
+CGAssociateMouseAndMouseCursorPosition(1)
+`;
+  execFileSync('swift', ['-e', swift], { stdio: 'ignore' });
+}
+
+function macTimelineZoomBeforeCapture(appPath) {
+  const bounds = macWindowBoundsViaCoreGraphics(appPath) || macFrontWindowBounds(appPath);
+  const [clickX, clickY] = timelineZoomClickPoint(bounds);
+  const [moveX, moveY] = postZoomMousePoint(bounds);
+  macMouseClick(clickX, clickY, 1);
+  sleep(0.2);
+  macMouseMove(moveX, moveY);
+  return {
+    requested: true,
+    attempted: true,
+    clicked: true,
+    method: 'coordinate',
+    point: [clickX, clickY],
+    postMovePoint: [moveX, moveY],
+  };
+}
+
+function windowsTimelineZoomBeforeCapture(appPath, draftName) {
+  const script = `
+$ErrorActionPreference = 'Stop'
+$appPath = ${psSingle(appPath || '')}
+$draftName = ${psSingle(draftName || '')}
+$xRatio = ${DEFAULTS.timelineZoomClickXRatio}
+$yRatio = ${DEFAULTS.timelineZoomClickYRatio}
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32TimelineZoom {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+}
+"@
+try { [Win32TimelineZoom]::SetProcessDPIAware() | Out-Null } catch {}
+$baseName = ''
+if ($appPath) {
+  try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
+}
+$processes = @(Get-Process | Where-Object {
+  $_.MainWindowHandle -ne 0 -and (
+    $_.ProcessName -match "Jianying|CapCut|VideoFusion|剪映" -or
+    ($_.MainWindowTitle -and $_.MainWindowTitle -match "Jianying|CapCut|VideoFusion|剪映") -or
+    ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
+    ($baseName -and $_.ProcessName -eq $baseName)
+  )
+} | Sort-Object Id)
+$p = $null
+if ($draftName) {
+  $p = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
+}
+if (-not $p -and $baseName) {
+  $p = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
+}
+if (-not $p) { $p = $processes | Select-Object -First 1 }
+if (-not $p) { throw "Jianying/CapCut window not found" }
+[Win32TimelineZoom]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
+[Win32TimelineZoom]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 300
+$rect = New-Object Win32TimelineZoom+RECT
+[Win32TimelineZoom]::GetWindowRect($p.MainWindowHandle, [ref]$rect) | Out-Null
+$width = [Math]::Max(1, $rect.Right - $rect.Left)
+$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+$clickX = [Math]::Round($rect.Left + $width * $xRatio)
+$clickY = [Math]::Round($rect.Top + $height * $yRatio)
+$moveX = [Math]::Round($rect.Left + $width * ${DEFAULTS.postZoomMouseXRatio})
+$moveY = [Math]::Round($rect.Top + $height * ${DEFAULTS.postZoomMouseYRatio})
+[Win32TimelineZoom]::SetCursorPos($clickX, $clickY) | Out-Null
+[Win32TimelineZoom]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 80
+[Win32TimelineZoom]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 200
+[Win32TimelineZoom]::SetCursorPos($moveX, $moveY) | Out-Null
+Write-Output ("clicked=1 point={0},{1} moved={2},{3}" -f $clickX, $clickY, $moveX, $moveY)
+`;
+  const output = execPowerShellScript(script, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  return {
+    requested: true,
+    attempted: true,
+    clicked: true,
+    method: 'coordinate',
+    detail: output,
+  };
+}
+
+function timelineZoomBeforeCapture(appPath, draftName) {
+  if (process.platform === 'darwin') {
+    return macTimelineZoomBeforeCapture(appPath);
+  }
+  if (process.platform === 'win32') {
+    return windowsTimelineZoomBeforeCapture(appPath, draftName);
+  }
+  return { requested: true, attempted: false, clicked: false, reason: 'unsupported-platform' };
 }
 
 function windowsJianyingVersion(appPath) {
@@ -3814,6 +4074,7 @@ function postCreateAutomation(args, audit) {
     }
   }
   if (args.capture) {
+    let captured = false;
     if (args.openDraft && !draftOpened) {
       audit.warnings.push('Screenshot skipped because Jianying editor did not open.');
       return;
@@ -3825,7 +4086,19 @@ function postCreateAutomation(args, audit) {
         return;
       }
     }
-    if (args.open || args.openDraft) activateJianying(appPath);
+    if (args.open || args.openDraft) {
+      activateJianying(appPath);
+      try {
+        audit.timeline_zoom_before_capture = timelineZoomBeforeCapture(appPath, audit.draft_name);
+      } catch (error) {
+        audit.timeline_zoom_before_capture = {
+          requested: true,
+          attempted: true,
+          clicked: false,
+          error: String(error.message || error),
+        };
+      }
+    }
     sleep(Number(args.captureDelay ?? DEFAULTS.captureDelay));
     const screenshot = path.resolve(args.screenshot || path.join(audit.output_dir, `${audit.draft_name}_工程图.png`));
     try {
@@ -3835,8 +4108,12 @@ function postCreateAutomation(args, audit) {
         draftName: audit.draft_name,
         fullScreen: args.fullScreenCapture,
       });
+      captured = true;
     } catch (error) {
       audit.warnings.push(`Screenshot capture failed: ${error.message}`);
+    }
+    if (captured && args.closeAfterCapture) {
+      audit.close_after_capture = closeJianyingAfterCapture(appPath);
     }
   }
 }

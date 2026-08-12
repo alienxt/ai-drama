@@ -88,6 +88,8 @@ class JianyingProjectGenerator:
         ]
         if self.close_existing:
             command.append("--close-existing")
+        if sys.platform in {"darwin", "win32"}:
+            command.append("--close-after-capture")
         if srt and srt.exists():
             command.extend(["--srt", str(srt)])
         if strategy:

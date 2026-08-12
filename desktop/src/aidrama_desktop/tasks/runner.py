@@ -14,7 +14,7 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ from aidrama_desktop.storyboard import (
     infer_storyboard_style,
 )
 from aidrama_desktop.subtitles import SubtitleSrtGenerator, WhisperSrtGenerationError
-from aidrama_desktop.tasks.cache_cleanup import mark_upload_success
+from aidrama_desktop.tasks.cache_cleanup import UPLOAD_SUCCESS_MARKER, mark_upload_success
 from aidrama_desktop.video.ffmpeg import (
     FfmpegProcessor,
     VideoReassemblySegment,
@@ -149,6 +149,9 @@ BAIDU_DOWNLOAD_HEADERS = {
 }
 FILENAME_EDGE_CHARS = " ._-—–·，,。.!！?？、:：;；《》<>【】[]()（）"
 INVALID_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX = 10
+WECHAT_VIDEO_UPLOAD_HISTORY_FILENAME = ".wechat-video-upload-history.json"
+WECHAT_VIDEO_UPLOAD_HISTORY_RETENTION_DAYS = 30
 
 
 class DownloadHttpError(RuntimeError):
@@ -215,6 +218,7 @@ class TaskRunner:
     faster_whisper_python_path: str | None = None
     jianying_music_dir: Path | None = None
     jianying_project_strategy: str | None = JIANYING_PROJECT_STRATEGY_RANDOM
+    wechat_video_daily_upload_limit: int = WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -242,6 +246,7 @@ class TaskRunner:
         self._notify("任务已领取", task_id, task)
         total_started_at = self._timed_stage_start("上传缓存流程", task_id, task, detail=f"平台 {platform}")
         try:
+            self._raise_if_wechat_video_daily_upload_limit_reached(platform)
             self._progress(task_id, "UPLOADING", 75)
             download_plan = self._timed_stage(
                 "获取短剧详情",
@@ -316,7 +321,7 @@ class TaskRunner:
             if isinstance(exception, TaskSkipped):
                 self.api.post(f"/desktop/tasks/{task_id}/skip", {"deviceId": self.device_id})
                 self._notify("任务已跳过，已放回池里", task_id, task)
-                return "skipped"
+                return "upload-limit-reached" if is_wechat_video_upload_limit_exception(exception) else "skipped"
             if isinstance(exception, TaskCancelled):
                 self.api.post(f"/desktop/tasks/{task_id}/force-stop")
                 self._notify("任务已停止，可重新分发", task_id, task)
@@ -384,6 +389,7 @@ class TaskRunner:
         self._notify("任务已领取", task_id, task)
         total_started_at = self._timed_stage_start("任务总流程", task_id, task, detail=f"平台 {platform}")
         try:
+            self._raise_if_wechat_video_daily_upload_limit_reached(platform)
             self._timed_stage(
                 "同步百度原始简介和封面",
                 task_id,
@@ -485,7 +491,7 @@ class TaskRunner:
             if isinstance(exception, TaskSkipped):
                 self.api.post(f"/desktop/tasks/{task_id}/skip", {"deviceId": self.device_id})
                 self._notify("任务已跳过，已放回池里", task_id, task)
-                return "skipped"
+                return "upload-limit-reached" if is_wechat_video_upload_limit_exception(exception) else "skipped"
             if isinstance(exception, TaskCancelled):
                 self.api.post(f"/desktop/tasks/{task_id}/force-stop")
                 self._notify("任务已停止，可重新分发", task_id, task)
@@ -595,6 +601,15 @@ class TaskRunner:
         if self._is_cancelled_result(result_task):
             self._notify("任务已停止，可重新分发", task_id, task)
             return "cancelled"
+        if platform == "WECHAT_VIDEO":
+            try:
+                self._append_wechat_video_upload_history(
+                    drama_id=str(download_plan.get("dramaId") or ""),
+                    task_id=str(task_id),
+                    platform_publish_id=str(publish_id) if publish_id else None,
+                )
+            except OSError:
+                pass
         self._mark_uploaded_cache_dirs(download_plan, task_id, platform, publish_id)
         self._notify("任务完成", task_id)
         return "succeeded"
@@ -720,6 +735,149 @@ class TaskRunner:
     @staticmethod
     def _task_platform(task: dict) -> str:
         return str(task.get("platform") or task.get("mediaPlatform") or "WECHAT_VIDEO").strip() or "WECHAT_VIDEO"
+
+    def _raise_if_wechat_video_daily_upload_limit_reached(self, platform: str) -> None:
+        if platform != "WECHAT_VIDEO":
+            return
+        limit = self._normalized_wechat_video_daily_upload_limit()
+        count = self._wechat_video_daily_upload_success_count()
+        if count < limit:
+            return
+        message = self._wechat_video_daily_upload_limit_message(count=count, limit=limit)
+        self._notify(message, None)
+        raise WeChatVideoDailyUploadLimitReached(message)
+
+    def _wechat_video_daily_upload_limit_message(self, *, count: int | None = None, limit: int | None = None) -> str:
+        effective_limit = limit if limit is not None else self._normalized_wechat_video_daily_upload_limit()
+        effective_count = count if count is not None else self._wechat_video_daily_upload_success_count()
+        return f"视频号今日上传已达上限：{effective_count}/{effective_limit} 次，暂停继续领取视频号任务。"
+
+    def _normalized_wechat_video_daily_upload_limit(self) -> int:
+        try:
+            limit = int(self.wechat_video_daily_upload_limit)
+        except (TypeError, ValueError):
+            limit = WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX
+        return max(1, min(WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX, limit))
+
+    def _wechat_video_daily_upload_success_count(self, *, now: datetime | None = None) -> int:
+        now = now or datetime.now().astimezone()
+        start_of_day, end_of_day = self._local_day_bounds_utc(now)
+        task_ids: set[str] = set()
+        marker_fingerprints: set[str] = set()
+        count = 0
+        for record in self._iter_wechat_video_upload_success_records():
+            uploaded_at = self._parse_upload_success_timestamp(record.get("uploadedAt"))
+            if uploaded_at is None or uploaded_at < start_of_day or uploaded_at >= end_of_day:
+                continue
+            task_id = str(record.get("taskId") or "").strip()
+            if task_id:
+                if task_id in task_ids:
+                    continue
+                task_ids.add(task_id)
+                count += 1
+                continue
+            fingerprint = str(record.get("_source") or record.get("platformPublishId") or record.get("dramaId") or "").strip()
+            if fingerprint:
+                if fingerprint in marker_fingerprints:
+                    continue
+                marker_fingerprints.add(fingerprint)
+            count += 1
+        return count
+
+    def _local_day_bounds_utc(self, now: datetime) -> tuple[datetime, datetime]:
+        if now.tzinfo is None:
+            now = now.astimezone()
+        local_now = now.astimezone()
+        local_start = datetime.combine(local_now.date(), datetime_time.min, tzinfo=local_now.tzinfo)
+        return local_start.astimezone(timezone.utc), (local_start + timedelta(days=1)).astimezone(timezone.utc)
+
+    def _iter_wechat_video_upload_success_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen_sources: set[str] = set()
+        records.extend(self._read_wechat_video_upload_history())
+        for base_dir in (self.input_dir(), self.output_dir()):
+            if not base_dir.is_dir():
+                continue
+            for marker in base_dir.glob(f"*/{UPLOAD_SUCCESS_MARKER}"):
+                try:
+                    payload = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict) or payload.get("platform") != "WECHAT_VIDEO":
+                    continue
+                source = str(marker.resolve(strict=False))
+                if source in seen_sources:
+                    continue
+                seen_sources.add(source)
+                record = dict(payload)
+                record["_source"] = source
+                records.append(record)
+        return records
+
+    def _read_wechat_video_upload_history(self) -> list[dict[str, Any]]:
+        path = self._wechat_video_upload_history_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        records = payload.get("records") if isinstance(payload, dict) else None
+        if not isinstance(records, list):
+            return []
+        return [dict(record) for record in records if isinstance(record, dict)]
+
+    def _append_wechat_video_upload_history(
+        self,
+        *,
+        drama_id: str,
+        task_id: str,
+        platform_publish_id: str | None,
+        uploaded_at: datetime | None = None,
+    ) -> None:
+        uploaded_at = uploaded_at or datetime.now(timezone.utc)
+        cutoff = uploaded_at.astimezone(timezone.utc) - timedelta(days=WECHAT_VIDEO_UPLOAD_HISTORY_RETENTION_DAYS)
+        records = []
+        for record in self._read_wechat_video_upload_history():
+            record_uploaded_at = self._parse_upload_success_timestamp(record.get("uploadedAt"))
+            if record_uploaded_at is not None and record_uploaded_at >= cutoff and str(record.get("taskId") or "") != task_id:
+                records.append(record)
+        records.append(
+            {
+                "taskId": task_id,
+                "dramaId": drama_id,
+                "platform": "WECHAT_VIDEO",
+                "platformPublishId": platform_publish_id,
+                "uploadedAt": self._format_upload_success_timestamp(uploaded_at),
+            }
+        )
+        path = self._wechat_video_upload_history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(
+            json.dumps({"version": 1, "records": records}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(path)
+
+    def _wechat_video_upload_history_path(self) -> Path:
+        return self.work_dir / WECHAT_VIDEO_UPLOAD_HISTORY_FILENAME
+
+    @staticmethod
+    def _parse_upload_success_timestamp(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _format_upload_success_timestamp(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     @staticmethod
     def _requires_contract_materials(platform: str) -> bool:
@@ -4319,6 +4477,14 @@ class TaskPaused(TaskInterrupted):
 
 class TaskSkipped(TaskInterrupted):
     pass
+
+
+class WeChatVideoDailyUploadLimitReached(TaskSkipped):
+    pass
+
+
+def is_wechat_video_upload_limit_exception(exception: BaseException) -> bool:
+    return isinstance(exception, WeChatVideoDailyUploadLimitReached)
 
 
 def raise_if_task_interrupted(

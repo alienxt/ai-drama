@@ -4,7 +4,7 @@ import random
 import threading
 import time
 import urllib.error
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,7 +23,7 @@ from aidrama_desktop.tasks.runner import (
     episode_video_filename,
     write_download_episode_manifest,
 )
-from aidrama_desktop.tasks.cache_cleanup import UPLOAD_SUCCESS_MARKER
+from aidrama_desktop.tasks.cache_cleanup import UPLOAD_SUCCESS_MARKER, mark_upload_success
 from aidrama_desktop.video.reassembly import VideoReassemblyConfig
 
 
@@ -400,6 +400,78 @@ def test_publish_once_prepares_task_and_downloads_each_episode(tmp_path, monkeyp
     assert ("下载：神医归来 第 1/2 集 5.0/10.0 MB（50%）", "task-1") in progress_events
     assert ("发布：神医归来", "task-1") in progress_events
     assert (drama_download_dir(tmp_path) / UPLOAD_SUCCESS_MARKER).exists()
+
+
+def test_publish_once_stops_when_wechat_video_daily_upload_limit_is_reached(tmp_path, monkeypatch):
+    api = FakeApi()
+    progress_events = []
+    download_dir = drama_download_dir(tmp_path, title="已上传剧", drama_id="old-drama")
+    processed_dir = drama_processed_dir(tmp_path, title="已上传剧", drama_id="old-drama")
+    download_dir.mkdir(parents=True)
+    processed_dir.mkdir(parents=True)
+    uploaded_at = datetime.now(timezone.utc)
+    mark_upload_success(
+        download_dir,
+        drama_id="old-drama",
+        task_id="old-task",
+        platform="WECHAT_VIDEO",
+        platform_publish_id="pub-old",
+        uploaded_at=uploaded_at,
+    )
+    mark_upload_success(
+        processed_dir,
+        drama_id="old-drama",
+        task_id="old-task",
+        platform="WECHAT_VIDEO",
+        platform_publish_id="pub-old",
+        uploaded_at=uploaded_at,
+    )
+
+    def fail_download(*_args, **_kwargs):
+        raise AssertionError("upload limit should stop before downloading")
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fail_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        wechat_video_daily_upload_limit=1,
+        progress_callback=lambda stage, task_id, task=None: progress_events.append((stage, task_id)),
+    )
+
+    assert runner.publish_once() == "upload-limit-reached"
+    assert ("POST", "/desktop/tasks/task-1/skip", {"deviceId": "device-1"}) in api.calls
+    assert any("视频号今日上传已达上限：1/1 次" in stage for stage, _task_id in progress_events)
+
+
+def test_publish_once_records_wechat_video_upload_history(tmp_path, monkeypatch):
+    api = FakeApi()
+
+    def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
+        target = target_dir / "001.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("video")
+        return [target]
+
+    monkeypatch.setattr("aidrama_desktop.tasks.runner.download_episodes", fake_download)
+    runner = TaskRunner(
+        api=api,
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=tmp_path,
+        device_id="device-1",
+        wechat_video_daily_upload_limit=10,
+    )
+
+    assert runner.publish_once() == "succeeded"
+
+    history_path = tmp_path / ".wechat-video-upload-history.json"
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["records"][0]["taskId"] == "task-1"
+    assert history["records"][0]["platform"] == "WECHAT_VIDEO"
+    assert runner._wechat_video_daily_upload_success_count() == 1
 
 
 def test_download_progress_notifications_are_throttled(tmp_path, monkeypatch):

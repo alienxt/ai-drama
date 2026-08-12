@@ -1,11 +1,14 @@
 from pathlib import Path
 
 from aidrama_desktop.config.settings import (
+    DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT,
     Settings,
     load_settings,
+    normalize_wechat_video_daily_upload_limit,
     resolve_faster_whisper_python_path,
     resolve_ffmpeg_path,
     resolve_whisper_path,
+    save_wechat_video_daily_upload_limit,
     save_tool_path_config,
 )
 
@@ -145,6 +148,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
         jianying_app=str(jianying_app),
         jianying_music_dir=str(music_dir),
         jianying_project_strategy="competitor-native-v1",
+        wechat_video_daily_upload_limit=7,
     )
     monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
     monkeypatch.setenv("AIDRAMA_SUBTITLE_PROVIDER", "fasterWhisper")
@@ -166,6 +170,25 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     assert settings.jianying_app == jianying_app
     assert settings.jianying_music_dir == music_dir
     assert settings.jianying_project_strategy == "competitor-native-v1"
+    assert settings.wechat_video_daily_upload_limit == 7
+
+
+def test_wechat_video_daily_upload_limit_is_clamped():
+    assert normalize_wechat_video_daily_upload_limit(None) == DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT
+    assert normalize_wechat_video_daily_upload_limit(0) == 1
+    assert normalize_wechat_video_daily_upload_limit(11) == 10
+
+
+def test_save_wechat_video_daily_upload_limit_preserves_tool_config(tmp_path):
+    config_dir = tmp_path / "config"
+    save_tool_path_config(config_dir, ffmpeg_path="/tools/ffmpeg", whisper_path=None)
+
+    saved = save_wechat_video_daily_upload_limit(config_dir, 12)
+    settings_payload = (config_dir / "tool-paths.json").read_text(encoding="utf-8")
+
+    assert saved == 10
+    assert '"ffmpegPath": "/tools/ffmpeg"' in settings_payload
+    assert '"wechatVideoDailyUploadLimit": 10' in settings_payload
 
 
 def test_load_settings_uses_saved_ffmpeg_path_over_environment(monkeypatch, tmp_path):
