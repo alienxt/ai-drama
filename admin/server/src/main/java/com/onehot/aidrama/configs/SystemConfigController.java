@@ -41,4 +41,10 @@ public class SystemConfigController {
         config = service.put(key, request.value(), request.secret());
         return ApiResponse.ok(ConfigDtos.ConfigResponse.from(config), MDC.get(TraceIdFilter.TRACE_ID));
     }
+
+    @DeleteMapping("/{key}")
+    ApiResponse<Void> delete(@PathVariable String key) {
+        service.delete(key);
+        return ApiResponse.ok(null, MDC.get(TraceIdFilter.TRACE_ID));
+    }
 }

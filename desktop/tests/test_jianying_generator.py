@@ -48,9 +48,6 @@ def test_windows_draft_open_matches_legacy_full_description_flow():
     assert "--close-after-capture" in source
     assert "macRunningJianyingProcessNames(appPath)" in source
     assert "closeJianyingAfterCapture(appPath)" in source
-    assert "timelineZoomBeforeCapture(appPath, audit.draft_name)" in source
-    assert "timeline_zoom_before_capture" in source
-    assert "postZoomMousePoint(bounds)" in source
     assert "execPowerShellScript" not in windows_open
     assert "LookupById(30159)" not in source
     assert 'importlib.import_module("uiautomation")' in helper_source

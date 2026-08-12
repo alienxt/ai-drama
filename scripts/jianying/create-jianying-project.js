@@ -18,10 +18,6 @@ const DEFAULTS = {
   homeNavClickYRatio: 0.31,
   draftCardClickXRatio: 0.16,
   draftCardClickYRatio: 0.34,
-  timelineZoomClickXRatio: 0.988,
-  timelineZoomClickYRatio: 0.495,
-  postZoomMouseXRatio: 0.52,
-  postZoomMouseYRatio: 0.34,
 };
 
 const AUDIO_DISPLAY_STEMS = [
@@ -2594,135 +2590,6 @@ Write-Output ("closed={0} remaining={1}" -f $processes.Count, $remainingAfterFor
   }
 }
 
-function timelineZoomClickPoint(bounds) {
-  const [x, y, w, h] = positiveWindowRect(bounds);
-  return [
-    Math.round(x + w * DEFAULTS.timelineZoomClickXRatio),
-    Math.round(y + h * DEFAULTS.timelineZoomClickYRatio),
-  ];
-}
-
-function postZoomMousePoint(bounds) {
-  const [x, y, w, h] = positiveWindowRect(bounds);
-  return [
-    Math.round(x + w * DEFAULTS.postZoomMouseXRatio),
-    Math.round(y + h * DEFAULTS.postZoomMouseYRatio),
-  ];
-}
-
-function macMouseMove(moveX, moveY) {
-  const swift = `
-import CoreGraphics
-import Foundation
-
-let point = CGPoint(x: ${moveX}, y: ${moveY})
-CGWarpMouseCursorPosition(point)
-CGAssociateMouseAndMouseCursorPosition(1)
-`;
-  execFileSync('swift', ['-e', swift], { stdio: 'ignore' });
-}
-
-function macTimelineZoomBeforeCapture(appPath) {
-  const bounds = macWindowBoundsViaCoreGraphics(appPath) || macFrontWindowBounds(appPath);
-  const [clickX, clickY] = timelineZoomClickPoint(bounds);
-  const [moveX, moveY] = postZoomMousePoint(bounds);
-  macMouseClick(clickX, clickY, 1);
-  sleep(0.2);
-  macMouseMove(moveX, moveY);
-  return {
-    requested: true,
-    attempted: true,
-    clicked: true,
-    method: 'coordinate',
-    point: [clickX, clickY],
-    postMovePoint: [moveX, moveY],
-  };
-}
-
-function windowsTimelineZoomBeforeCapture(appPath, draftName) {
-  const script = `
-$ErrorActionPreference = 'Stop'
-$appPath = ${psSingle(appPath || '')}
-$draftName = ${psSingle(draftName || '')}
-$xRatio = ${DEFAULTS.timelineZoomClickXRatio}
-$yRatio = ${DEFAULTS.timelineZoomClickYRatio}
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32TimelineZoom {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-}
-"@
-try { [Win32TimelineZoom]::SetProcessDPIAware() | Out-Null } catch {}
-$baseName = ''
-if ($appPath) {
-  try { $baseName = [System.IO.Path]::GetFileNameWithoutExtension($appPath) } catch {}
-}
-$processes = @(Get-Process | Where-Object {
-  $_.MainWindowHandle -ne 0 -and (
-    $_.ProcessName -match "Jianying|CapCut|VideoFusion|剪映" -or
-    ($_.MainWindowTitle -and $_.MainWindowTitle -match "Jianying|CapCut|VideoFusion|剪映") -or
-    ($draftName -and $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName)) -or
-    ($baseName -and $_.ProcessName -eq $baseName)
-  )
-} | Sort-Object Id)
-$p = $null
-if ($draftName) {
-  $p = $processes | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle.Contains($draftName) } | Select-Object -First 1
-}
-if (-not $p -and $baseName) {
-  $p = $processes | Where-Object { $_.ProcessName -eq $baseName } | Select-Object -First 1
-}
-if (-not $p) { $p = $processes | Select-Object -First 1 }
-if (-not $p) { throw "Jianying/CapCut window not found" }
-[Win32TimelineZoom]::ShowWindow($p.MainWindowHandle, 3) | Out-Null
-[Win32TimelineZoom]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
-Start-Sleep -Milliseconds 300
-$rect = New-Object Win32TimelineZoom+RECT
-[Win32TimelineZoom]::GetWindowRect($p.MainWindowHandle, [ref]$rect) | Out-Null
-$width = [Math]::Max(1, $rect.Right - $rect.Left)
-$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
-$clickX = [Math]::Round($rect.Left + $width * $xRatio)
-$clickY = [Math]::Round($rect.Top + $height * $yRatio)
-$moveX = [Math]::Round($rect.Left + $width * ${DEFAULTS.postZoomMouseXRatio})
-$moveY = [Math]::Round($rect.Top + $height * ${DEFAULTS.postZoomMouseYRatio})
-[Win32TimelineZoom]::SetCursorPos($clickX, $clickY) | Out-Null
-[Win32TimelineZoom]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 80
-[Win32TimelineZoom]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 200
-[Win32TimelineZoom]::SetCursorPos($moveX, $moveY) | Out-Null
-Write-Output ("clicked=1 point={0},{1} moved={2},{3}" -f $clickX, $clickY, $moveX, $moveY)
-`;
-  const output = execPowerShellScript(script, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
-  return {
-    requested: true,
-    attempted: true,
-    clicked: true,
-    method: 'coordinate',
-    detail: output,
-  };
-}
-
-function timelineZoomBeforeCapture(appPath, draftName) {
-  if (process.platform === 'darwin') {
-    return macTimelineZoomBeforeCapture(appPath);
-  }
-  if (process.platform === 'win32') {
-    return windowsTimelineZoomBeforeCapture(appPath, draftName);
-  }
-  return { requested: true, attempted: false, clicked: false, reason: 'unsupported-platform' };
-}
-
 function windowsJianyingVersion(appPath) {
   if (process.platform !== 'win32' || !appPath || !fs.existsSync(appPath)) return null;
   const script = `
@@ -4086,19 +3953,7 @@ function postCreateAutomation(args, audit) {
         return;
       }
     }
-    if (args.open || args.openDraft) {
-      activateJianying(appPath);
-      try {
-        audit.timeline_zoom_before_capture = timelineZoomBeforeCapture(appPath, audit.draft_name);
-      } catch (error) {
-        audit.timeline_zoom_before_capture = {
-          requested: true,
-          attempted: true,
-          clicked: false,
-          error: String(error.message || error),
-        };
-      }
-    }
+    if (args.open || args.openDraft) activateJianying(appPath);
     sleep(Number(args.captureDelay ?? DEFAULTS.captureDelay));
     const screenshot = path.resolve(args.screenshot || path.join(audit.output_dir, `${audit.draft_name}_工程图.png`));
     try {

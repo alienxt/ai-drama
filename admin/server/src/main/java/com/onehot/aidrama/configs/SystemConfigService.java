@@ -37,5 +37,8 @@ public class SystemConfigService {
         config.setSecret(secret);
         return repository.save(config);
     }
-}
 
+    public void delete(String key) {
+        repository.findByKey(key).ifPresent(repository::delete);
+    }
+}

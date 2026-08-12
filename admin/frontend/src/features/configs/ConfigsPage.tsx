@@ -1,11 +1,11 @@
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Form, Input, Modal, Switch, Tag, Tooltip, Typography } from 'antd';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
-import { apiGetPage, apiPut } from '../../shared/http';
+import { apiDelete, apiGetPage, apiPut } from '../../shared/http';
 import type { SystemConfig } from '../../shared/types';
 
 type ConfigHelp = {
@@ -98,6 +98,21 @@ export function ConfigsPage() {
     setVersion((value) => value + 1);
   }
 
+  function remove(config: SystemConfig) {
+    Modal.confirm({
+      title: '删除系统配置',
+      content: `确认删除配置项 ${config.key} 吗？`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await apiDelete(`/admin/configs/${encodeURIComponent(config.key)}`);
+        appMessage.success('配置已删除');
+        setVersion((value) => value + 1);
+      },
+    });
+  }
+
   return (
     <DataPage
       title="系统配置"
@@ -132,9 +147,21 @@ export function ConfigsPage() {
           {
             title: '操作',
             render: (_, record) => (
-              <Tooltip title="更新">
-                <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => showEditor(record)} />
-              </Tooltip>
+              <>
+                <Tooltip title="更新">
+                  <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => showEditor(record)} />
+                </Tooltip>
+                <Tooltip title="删除">
+                  <Button
+                    className="table-action"
+                    size="small"
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => remove(record)}
+                  />
+                </Tooltip>
+              </>
             ),
           },
         ]}
