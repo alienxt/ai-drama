@@ -20,6 +20,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationOperation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -297,10 +300,22 @@ public class DistributionService {
                     .forEach(task -> incrementStatusCount(counts, task.getStatus()));
             return counts;
         }
-        Query query = new Query();
-        Optional.ofNullable(keywordCriteria(keyword)).ifPresent(query::addCriteria);
-        mongoTemplate.find(query, DistributionTask.class)
-                .forEach(task -> incrementStatusCount(counts, task.getStatus()));
+        var aggregationOperations = new ArrayList<AggregationOperation>();
+        Optional.ofNullable(keywordCriteria(keyword))
+                .map(Aggregation::match)
+                .ifPresent(aggregationOperations::add);
+        aggregationOperations.add(Aggregation.group("status").count().as("count"));
+        aggregationOperations.add(Aggregation.project("count").and("_id").as("status"));
+        AggregationResults<TaskStatusCountAggregation> aggregationResults = mongoTemplate.aggregate(
+                Aggregation.newAggregation(aggregationOperations),
+                "distribution_tasks",
+                TaskStatusCountAggregation.class
+        );
+        aggregationResults.getMappedResults().forEach(item -> {
+            if (item.status() != null) {
+                counts.put(item.status(), item.count());
+            }
+        });
         return counts;
     }
 
@@ -308,6 +323,9 @@ public class DistributionService {
         if (status != null) {
             counts.merge(status, 1L, Long::sum);
         }
+    }
+
+    private record TaskStatusCountAggregation(DistributionTaskStatus status, long count) {
     }
 
     private PageImpl<DistributionTask> findTasks(

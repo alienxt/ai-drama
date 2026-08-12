@@ -25,6 +25,23 @@ public class MongoConfig {
                         .on("status", ASC)
                         .on("updatedAt", DESC)
                         .named("drama_status_updated_at_idx"));
+            var distributionTaskIndexes = mongoTemplate.indexOps("distribution_tasks");
+            distributionTaskIndexes.ensureIndex(new Index()
+                    .on("createdAt", DESC)
+                    .named("distribution_task_created_at_idx"));
+            distributionTaskIndexes.ensureIndex(new Index()
+                    .on("status", ASC)
+                    .on("createdAt", DESC)
+                    .named("distribution_task_status_created_at_idx"));
+            distributionTaskIndexes.ensureIndex(new Index()
+                    .on("mediaAccountId", ASC)
+                    .on("createdAt", DESC)
+                    .named("distribution_task_media_created_at_idx"));
+            distributionTaskIndexes.ensureIndex(new Index()
+                    .on("mediaAccountId", ASC)
+                    .on("status", ASC)
+                    .on("createdAt", DESC)
+                    .named("distribution_task_media_status_created_at_idx"));
             var contractTemplateIndexes = mongoTemplate.indexOps("contract_templates");
             mongoTemplate.updateMulti(
                     new Query(Criteria.where("platform").exists(false)),
