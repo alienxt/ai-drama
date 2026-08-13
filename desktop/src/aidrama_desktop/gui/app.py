@@ -68,6 +68,8 @@ from aidrama_desktop.config.settings import (
     Settings,
     jianying_project_strategy_preference_label,
     load_settings,
+    normalize_free_episode_ratio,
+    normalize_optional_free_episode_ratio,
     normalize_jianying_project_strategy_preference,
     normalize_subtitle_provider,
     resolve_faster_whisper_python_path,
@@ -1137,6 +1139,20 @@ class DesktopWindow(QMainWindow):
         upload_limit_row.addStretch(1)
         upload_limit_row.addWidget(self.wechat_video_daily_upload_limit_input)
         upload_limit_row.addWidget(save_upload_limit_button)
+        free_episode_ratio_row = QHBoxLayout()
+        free_episode_ratio_hint = QLabel("免费集数比例：留空时跟随后台系统配置；填写后仅当前客户端生效，例如 0.2 表示 20%。")
+        free_episode_ratio_hint.setObjectName("mutedText")
+        self.free_episode_ratio_override_input = QLineEdit(
+            "" if self.settings.free_episode_ratio_override is None else f"{self.settings.free_episode_ratio_override:.4g}"
+        )
+        self.free_episode_ratio_override_input.setPlaceholderText("例如：0.2")
+        self.free_episode_ratio_override_input.setMaximumWidth(140)
+        save_free_episode_ratio_button = QPushButton("保存免费比例")
+        save_free_episode_ratio_button.clicked.connect(self.save_free_episode_ratio_override)
+        free_episode_ratio_row.addWidget(free_episode_ratio_hint)
+        free_episode_ratio_row.addStretch(1)
+        free_episode_ratio_row.addWidget(self.free_episode_ratio_override_input)
+        free_episode_ratio_row.addWidget(save_free_episode_ratio_button)
         update_row = QHBoxLayout()
         update_hint = QLabel(f"当前版本：{__version__}")
         update_hint.setObjectName("mutedText")
@@ -1185,6 +1201,7 @@ class DesktopWindow(QMainWindow):
         note = QLabel("目录类配置可以点击“打开”进入 Finder；双击目录值也可以打开。")
         note.setObjectName("mutedText")
         panel_layout.addLayout(upload_limit_row)
+        panel_layout.addLayout(free_episode_ratio_row)
         panel_layout.addLayout(update_row)
         panel_layout.addLayout(cleanup_row)
         panel_layout.addWidget(note)
@@ -1480,6 +1497,42 @@ class DesktopWindow(QMainWindow):
         self.append_log(f"视频号日上传上限已保存：{limit} 次/天")
         QMessageBox.information(self, "上传上限", f"视频号日上传上限已保存：{limit} 次/天。")
 
+    def save_free_episode_ratio_override(self) -> None:
+        raw_value = self.free_episode_ratio_override_input.text().strip()
+        normalized_ratio = normalize_optional_free_episode_ratio(raw_value)
+        if raw_value and normalized_ratio is None:
+            QMessageBox.warning(self, "保存失败", "免费集数比例格式不正确，请填写 0 到 1 之间的小数，例如 0.2。")
+            return
+        save_tool_path_config(
+            self.settings.config_dir,
+            ffmpeg_path=self.settings.ffmpeg_path,
+            whisper_path=self.settings.whisper_path,
+            subtitle_provider=self.settings.subtitle_provider,
+            faster_whisper_python_path=self.settings.faster_whisper_python_path,
+            node_path=self.settings.node_path,
+            jianying_draft_root=str(self.settings.jianying_draft_root) if self.settings.jianying_draft_root else None,
+            jianying_app=str(self.settings.jianying_app) if self.settings.jianying_app else None,
+            jianying_music_dir=str(self.settings.jianying_music_dir) if self.settings.jianying_music_dir else None,
+            jianying_project_strategy=self.settings.jianying_project_strategy,
+            wechat_video_daily_upload_limit=self.settings.wechat_video_daily_upload_limit,
+            free_episode_ratio_override=normalized_ratio,
+        )
+        self.settings = update_settings(self.settings, free_episode_ratio_override=normalized_ratio)
+        self.free_episode_ratio_override_input.setText(
+            "" if normalized_ratio is None else f"{normalize_free_episode_ratio(normalized_ratio):.4g}"
+        )
+        if normalized_ratio is None:
+            self.append_log("免费集数比例覆盖已清空：当前客户端将跟随后台系统配置。")
+        else:
+            self.append_log(f"免费集数比例覆盖已保存：{normalize_free_episode_ratio(normalized_ratio):.0%}")
+        QMessageBox.information(
+            self,
+            "免费比例",
+            "免费集数比例覆盖已清空，当前客户端将跟随后台系统配置。"
+            if normalized_ratio is None
+            else f"免费集数比例覆盖已保存：{normalize_free_episode_ratio(normalized_ratio):.0%}。",
+        )
+
     def choose_whisper_path(self) -> None:
         self._choose_file_path(self.whisper_path_input, "选择 Whisper 命令")
 
@@ -1542,6 +1595,7 @@ class DesktopWindow(QMainWindow):
             jianying_music_dir=jianying_music_dir,
             jianying_project_strategy=jianying_project_strategy,
             wechat_video_daily_upload_limit=self.settings.wechat_video_daily_upload_limit,
+            free_episode_ratio_override=self.settings.free_episode_ratio_override,
         )
         self.settings = update_settings(
             self.settings,
@@ -1556,6 +1610,7 @@ class DesktopWindow(QMainWindow):
             jianying_app=Path(jianying_app).expanduser() if jianying_app else None,
             jianying_music_dir=Path(jianying_music_dir).expanduser() if jianying_music_dir else None,
             jianying_project_strategy=jianying_project_strategy,
+            free_episode_ratio_override=self.settings.free_episode_ratio_override,
         )
         self.append_log(
             "工具路径已保存："
@@ -1777,6 +1832,7 @@ class DesktopWindow(QMainWindow):
             jianying_music_dir=self.settings.jianying_music_dir,
             jianying_project_strategy=self.settings.jianying_project_strategy,
             wechat_video_daily_upload_limit=self.settings.wechat_video_daily_upload_limit,
+            free_episode_ratio_override=self.settings.free_episode_ratio_override,
         )
 
     def publisher_for_media_account(self, chrome: ChromeController, media_account_id: str):

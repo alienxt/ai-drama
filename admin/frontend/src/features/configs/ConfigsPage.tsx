@@ -52,6 +52,10 @@ const CONFIG_HELP: Record<string, ConfigHelp> = {
     description: '第三方文本请求是否追加 store=false，避免代理侧持久化响应。',
     values: '可选值：true、false。建议保持 true。',
   },
+  'distribution.freeEpisodeRatio': {
+    description: '默认免费集数比例。客户端未单独覆盖时，会按这个比例计算免费集数。',
+    values: '示例：0.2 = 20%，0.15 = 15%，0.3 = 30%。',
+  },
 };
 
 function configHelp(key?: string) {

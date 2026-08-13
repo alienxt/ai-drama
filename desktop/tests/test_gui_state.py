@@ -96,6 +96,7 @@ def test_settings_rows_marks_directory_values(tmp_path: Path):
     assert any(row.label == "LibreOffice" for row in rows)
     assert any(row.label == "剪映图策略" and row.value == "随机" for row in rows)
     assert any(row.label == "视频号日上传上限" and row.value == "10 次" for row in rows)
+    assert any(row.label == "免费集数比例覆盖" and row.value == "跟随后台默认" for row in rows)
     assert all(row.label != "服务地址" for row in rows)
     assert all(row.label != "本地服务端口" for row in rows)
 

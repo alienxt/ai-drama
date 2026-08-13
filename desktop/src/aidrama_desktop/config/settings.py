@@ -44,6 +44,9 @@ COMMON_FASTER_WHISPER_PYTHON_PATHS = (
 SUBTITLE_PROVIDER_FASTER_WHISPER = "fasterWhisper"
 SUBTITLE_PROVIDER_OPENAI_WHISPER = "openaiWhisper"
 DEFAULT_SUBTITLE_PROVIDER = SUBTITLE_PROVIDER_FASTER_WHISPER
+DEFAULT_FREE_EPISODE_RATIO = 0.2
+FREE_EPISODE_RATIO_MIN = 0.0
+FREE_EPISODE_RATIO_MAX = 1.0
 TOOL_PATHS_CONFIG_FILENAME = "tool-paths.json"
 JIANYING_PROJECT_STRATEGY_RANDOM = "random"
 JIANYING_PROJECT_STRATEGY_PLATFORM_SAFE = "platform-safe-v1"
@@ -251,6 +254,27 @@ def normalize_wechat_video_daily_upload_limit(limit: object = None) -> int:
     return max(WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MIN, min(WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX, value))
 
 
+def normalize_free_episode_ratio(ratio: object = None) -> float:
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError):
+        value = DEFAULT_FREE_EPISODE_RATIO
+    return max(FREE_EPISODE_RATIO_MIN, min(FREE_EPISODE_RATIO_MAX, value))
+
+
+def normalize_optional_free_episode_ratio(ratio: object = None) -> float | None:
+    if ratio is None:
+        return None
+    text = str(ratio).strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return max(FREE_EPISODE_RATIO_MIN, min(FREE_EPISODE_RATIO_MAX, value))
+
+
 def load_tool_path_config(config_dir: Path) -> dict[str, object]:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     try:
@@ -279,6 +303,10 @@ def load_tool_path_config(config_dir: Path) -> dict[str, object]:
         result["wechat_video_daily_upload_limit"] = normalize_wechat_video_daily_upload_limit(
             data.get("wechatVideoDailyUploadLimit")
         )
+    if "freeEpisodeRatioOverride" in data:
+        result["free_episode_ratio_override"] = normalize_optional_free_episode_ratio(
+            data.get("freeEpisodeRatioOverride")
+        )
     return result
 
 
@@ -295,6 +323,7 @@ def save_tool_path_config(
     jianying_music_dir: str | None = None,
     jianying_project_strategy: str | None = None,
     wechat_video_daily_upload_limit: object = None,
+    free_episode_ratio_override: object = None,
 ) -> None:
     path = config_dir / TOOL_PATHS_CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +340,7 @@ def save_tool_path_config(
         "wechatVideoDailyUploadLimit": normalize_wechat_video_daily_upload_limit(
             wechat_video_daily_upload_limit
         ),
+        "freeEpisodeRatioOverride": normalize_optional_free_episode_ratio(free_episode_ratio_override),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -344,6 +374,7 @@ class Settings(BaseSettings):
     jianying_music_dir: Path | None = None
     jianying_project_strategy: str = DEFAULT_JIANYING_PROJECT_STRATEGY
     wechat_video_daily_upload_limit: int = DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT
+    free_episode_ratio_override: float | None = None
     soffice_path: str = "soffice"
     local_agent_port: int = 17888
     download_concurrency: int = 6
@@ -439,6 +470,14 @@ def load_settings() -> Settings:
     else:
         settings.wechat_video_daily_upload_limit = normalize_wechat_video_daily_upload_limit(
             settings.wechat_video_daily_upload_limit
+        )
+    if "free_episode_ratio_override" in tool_path_config:
+        settings.free_episode_ratio_override = normalize_optional_free_episode_ratio(
+            tool_path_config.get("free_episode_ratio_override")
+        )
+    else:
+        settings.free_episode_ratio_override = normalize_optional_free_episode_ratio(
+            settings.free_episode_ratio_override
         )
     settings.whisper_path = resolve_whisper_path(settings.whisper_path or os.environ.get("AIDRAMA_WHISPER_PATH"))
     settings.faster_whisper_python_path = resolve_faster_whisper_python_path(

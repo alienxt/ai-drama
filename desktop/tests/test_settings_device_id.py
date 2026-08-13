@@ -1,9 +1,11 @@
 from pathlib import Path
 
 from aidrama_desktop.config.settings import (
+    DEFAULT_FREE_EPISODE_RATIO,
     DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT,
     Settings,
     load_settings,
+    normalize_optional_free_episode_ratio,
     normalize_wechat_video_daily_upload_limit,
     resolve_faster_whisper_python_path,
     resolve_ffmpeg_path,
@@ -149,6 +151,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
         jianying_music_dir=str(music_dir),
         jianying_project_strategy="competitor-native-v1",
         wechat_video_daily_upload_limit=7,
+        free_episode_ratio_override=0.35,
     )
     monkeypatch.setenv("AIDRAMA_WHISPER_PATH", str(tmp_path / "old" / "whisper"))
     monkeypatch.setenv("AIDRAMA_SUBTITLE_PROVIDER", "fasterWhisper")
@@ -171,6 +174,7 @@ def test_load_settings_uses_saved_whisper_path_over_environment(monkeypatch, tmp
     assert settings.jianying_music_dir == music_dir
     assert settings.jianying_project_strategy == "competitor-native-v1"
     assert settings.wechat_video_daily_upload_limit == 7
+    assert settings.free_episode_ratio_override == 0.35
 
 
 def test_wechat_video_daily_upload_limit_is_clamped():
@@ -189,6 +193,27 @@ def test_save_wechat_video_daily_upload_limit_preserves_tool_config(tmp_path):
     assert saved == 10
     assert '"ffmpegPath": "/tools/ffmpeg"' in settings_payload
     assert '"wechatVideoDailyUploadLimit": 10' in settings_payload
+
+
+def test_free_episode_ratio_normalization_supports_empty_and_clamping():
+    assert normalize_optional_free_episode_ratio("") is None
+    assert normalize_optional_free_episode_ratio("abc") is None
+    assert normalize_optional_free_episode_ratio("1.5") == 1.0
+
+
+def test_save_tool_path_config_persists_free_episode_ratio_override(tmp_path):
+    config_dir = tmp_path / "config"
+
+    save_tool_path_config(
+        config_dir,
+        ffmpeg_path="/tools/ffmpeg",
+        whisper_path=None,
+        free_episode_ratio_override=DEFAULT_FREE_EPISODE_RATIO,
+    )
+
+    settings_payload = (config_dir / "tool-paths.json").read_text(encoding="utf-8")
+
+    assert '"freeEpisodeRatioOverride": 0.2' in settings_payload
 
 
 def test_load_settings_uses_saved_ffmpeg_path_over_environment(monkeypatch, tmp_path):

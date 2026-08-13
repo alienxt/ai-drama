@@ -71,6 +71,9 @@ class ApiClient:
         query = urlencode({"platform": platform, "currentVersion": current_version})
         return self.get(f"/desktop/versions/check?{query}")
 
+    def get_free_episode_config(self) -> Any:
+        return self.get("/desktop/distribution-config")
+
     def _request(
         self,
         method: str,

@@ -93,6 +93,7 @@ public class BootstrapConfig {
     private void bootstrapSystemTaskConfig(SystemConfigService configService) {
         configService.putIfAbsent("system.taskTimeoutMs", "1800000", false);
         configService.putIfAbsent("drama.prepareOnDemandOnly", "true", false);
+        configService.putIfAbsent("distribution.freeEpisodeRatio", "0.2", false);
     }
 
     private void bootstrapBaiduConfig(SystemConfigService configService) throws Exception {

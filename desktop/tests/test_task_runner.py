@@ -93,6 +93,8 @@ class FakeApi:
         self.calls.append(("GET", path, None))
         if path == "/desktop/media-accounts":
             return [{"id": "media-1", "displayName": "用户1161", "externalAccountId": "wx-1"}]
+        if path == "/desktop/distribution-config":
+            return {"freeEpisodeRatio": 0.2}
         return {
             "dramaId": "drama-1",
             "title": "神医归来",
@@ -2695,11 +2697,32 @@ def test_publish_once_does_not_embed_video_cover_for_horizontal_videos(tmp_path,
 
 
 def test_publish_metadata_uses_stable_free_episode_count():
-    assert TaskRunner._free_episode_count({"freeEpisodeCount": 6}, 49) == 6
-    assert TaskRunner._free_episode_count({}, 49) == 10
-    assert TaskRunner._free_episode_count({}, 80) == 16
-    assert TaskRunner._free_episode_count({}, 120) == 20
-    assert TaskRunner._free_episode_count({}, 2) == 2
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=Path("/tmp"),
+        device_id="device-1",
+    )
+
+    assert runner._free_episode_count({"freeEpisodeCount": 6}, 49) == 6
+    assert runner._free_episode_count({}, 49) == 10
+    assert runner._free_episode_count({}, 80) == 16
+    assert runner._free_episode_count({}, 120) == 20
+    assert runner._free_episode_count({}, 2) == 2
+
+
+def test_publish_metadata_uses_client_free_episode_ratio_override():
+    runner = TaskRunner(
+        api=FakeApi(),
+        processor=FakeProcessor(),
+        publisher=FakePublisher(),
+        work_dir=Path("/tmp"),
+        device_id="device-1",
+        free_episode_ratio_override=0.5,
+    )
+
+    assert runner._free_episode_count({}, 10) == 5
 
 
 def test_publish_once_generates_contract_materials_before_upload(tmp_path, monkeypatch):

@@ -13,13 +13,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from aidrama_desktop import __version__
-from aidrama_desktop.api.client import ApiClient
+from aidrama_desktop.api.client import ApiClient, ApiError
+from aidrama_desktop.config.settings import DEFAULT_FREE_EPISODE_RATIO, normalize_free_episode_ratio
 from aidrama_desktop.contracts import (
     ContractRenderInput,
     generate_contract_start_date,
@@ -219,6 +220,9 @@ class TaskRunner:
     jianying_music_dir: Path | None = None
     jianying_project_strategy: str | None = JIANYING_PROJECT_STRATEGY_RANDOM
     wechat_video_daily_upload_limit: int = WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX
+    free_episode_ratio_override: float | None = None
+    _distribution_config_loaded: bool = field(default=False, init=False, repr=False)
+    _distribution_free_episode_ratio: float | None = field(default=None, init=False, repr=False)
 
     def heartbeat(self) -> None:
         self.api.post(
@@ -3581,16 +3585,41 @@ class TaskRunner:
             value = download_plan.get("aiSummary") or download_plan.get("summary")
         return str(value) if value else None
 
-    @classmethod
-    def _free_episode_count(cls, download_plan: dict[str, Any], episode_count: int) -> int:
+    def _free_episode_count(self, download_plan: dict[str, Any], episode_count: int) -> int:
         for key in ("freeEpisodeCount", "trialEpisodeCount", "previewEpisodeCount", "sampleEpisodeCount"):
-            value = cls._int_value(download_plan.get(key), 0)
+            value = self._int_value(download_plan.get(key), 0)
             if value > 0:
                 return min(value, episode_count) if episode_count > 0 else value
         if episode_count <= 0:
             return 3
-        calculated = max(3, min(20, round(episode_count * 0.2)))
+        calculated = max(3, min(20, round(episode_count * self._configured_free_episode_ratio())))
         return min(calculated, episode_count)
+
+    def _configured_free_episode_ratio(self) -> float:
+        if self.free_episode_ratio_override is not None:
+            return normalize_free_episode_ratio(self.free_episode_ratio_override)
+        if not self._distribution_config_loaded:
+            self._distribution_config_loaded = True
+            try:
+                if hasattr(self.api, "get_free_episode_config"):
+                    payload = self.api.get_free_episode_config() or {}
+                else:
+                    payload = self.api.get("/desktop/distribution-config") or {}
+            except (ApiError, AttributeError):
+                payload = {}
+            self._distribution_free_episode_ratio = self._distribution_free_episode_ratio_from_payload(payload)
+        if self._distribution_free_episode_ratio is not None:
+            return self._distribution_free_episode_ratio
+        return DEFAULT_FREE_EPISODE_RATIO
+
+    @staticmethod
+    def _distribution_free_episode_ratio_from_payload(payload: dict[str, Any]) -> float | None:
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("freeEpisodeRatio")
+        if value is None or str(value).strip() == "":
+            return None
+        return normalize_free_episode_ratio(value)
 
     def input_dir(self) -> Path:
         return self.downloads_dir or self.work_dir / "dramas" / "downloads"

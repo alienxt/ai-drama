@@ -186,6 +186,7 @@ def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
         ),
         jianying_project_strategy=settings.jianying_project_strategy,
         wechat_video_daily_upload_limit=settings.wechat_video_daily_upload_limit,
+        free_episode_ratio_override=settings.free_episode_ratio_override,
     )
 
 
