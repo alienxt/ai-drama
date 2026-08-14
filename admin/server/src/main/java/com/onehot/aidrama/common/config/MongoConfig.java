@@ -30,6 +30,10 @@ public class MongoConfig {
                     .on("createdAt", DESC)
                     .named("distribution_task_created_at_idx"));
             distributionTaskIndexes.ensureIndex(new Index()
+                    .on("dramaId", ASC)
+                    .on("updatedAt", DESC)
+                    .named("distribution_task_drama_updated_at_idx"));
+            distributionTaskIndexes.ensureIndex(new Index()
                     .on("status", ASC)
                     .on("createdAt", DESC)
                     .named("distribution_task_status_created_at_idx"));

@@ -1,8 +1,10 @@
 package com.onehot.aidrama.dramas;
 
+import com.onehot.aidrama.distribution.DistributionTaskStatus;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.annotation.Transient;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
@@ -38,6 +40,12 @@ public class Drama {
     private Instant sourceSyncedAt;
     private DramaStatus status = DramaStatus.DRAFT;
     private List<DramaEpisode> episodes = new ArrayList<>();
+    @Transient
+    private String distributionState;
+    @Transient
+    private DistributionTaskStatus distributionTaskStatus;
+    @Transient
+    private int distributionTaskCount;
     @CreatedDate
     private Instant createdAt;
     @LastModifiedDate
@@ -104,6 +112,12 @@ public class Drama {
     public void setStatus(DramaStatus status) { this.status = status; }
     public List<DramaEpisode> getEpisodes() { return episodes; }
     public void setEpisodes(List<DramaEpisode> episodes) { this.episodes = episodes; }
+    public String getDistributionState() { return distributionState; }
+    public void setDistributionState(String distributionState) { this.distributionState = distributionState; }
+    public DistributionTaskStatus getDistributionTaskStatus() { return distributionTaskStatus; }
+    public void setDistributionTaskStatus(DistributionTaskStatus distributionTaskStatus) { this.distributionTaskStatus = distributionTaskStatus; }
+    public int getDistributionTaskCount() { return distributionTaskCount; }
+    public void setDistributionTaskCount(int distributionTaskCount) { this.distributionTaskCount = Math.max(distributionTaskCount, 0); }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

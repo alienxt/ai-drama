@@ -33,6 +33,7 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             List<String> mediaAccountIds
     );
     List<DistributionTask> findByDramaId(String dramaId);
+    List<DistributionTask> findByDramaIdIn(List<String> dramaIds);
     boolean existsByDramaIdAndPlatform(String dramaId, MediaPlatform platform);
     boolean existsByMediaAccountIdAndDramaId(String mediaAccountId, String dramaId);
     boolean existsByMediaAccountIdAndDramaIdAndStatusNotIn(

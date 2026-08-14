@@ -48,6 +48,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -174,9 +175,9 @@ public class DramaController {
             query.missingText("aiSummary");
         }
         PageResult<Drama> page = PageResult.from(query.page(mongoTemplate, Drama.class, adminDramaListPageable(pageable)));
-        List<Drama> content = page.content().stream()
+        List<Drama> content = enrichDistributionState(page.content().stream()
                 .map(this::ensureCostAmountWan)
-                .toList();
+                .toList());
         return ApiResponse.ok(
                 new PageResult<>(content, page.totalElements(), page.totalPages(), page.page(), page.size()),
                 MDC.get(TraceIdFilter.TRACE_ID)
@@ -568,14 +569,23 @@ public class DramaController {
                 Criteria.where("createdAt").lt(createdToExclusive)
         ));
         List<Drama> scanned = mongoTemplate.find(query, Drama.class);
-        List<Drama> matched = scanned.stream()
+        List<Drama> undistributed = scanned.stream()
+                .filter(drama -> !hasActiveDistributionTask(drama))
+                .toList();
+        List<Drama> matched = undistributed.stream()
                 .filter(drama -> !queueEligibleOnly || canEnterTaskQueue(drama))
                 .toList();
         long updated = matched.stream()
                 .filter(this::clearAiAssets)
                 .count();
         return ApiResponse.ok(
-                new DramaDtos.ClearAiAssetsResponse(scanned.size(), matched.size(), updated, Instant.now()),
+                new DramaDtos.ClearAiAssetsResponse(
+                        scanned.size(),
+                        matched.size(),
+                        scanned.size() - undistributed.size(),
+                        updated,
+                        Instant.now()
+                ),
                 MDC.get(TraceIdFilter.TRACE_ID)
         );
     }
@@ -616,6 +626,79 @@ public class DramaController {
         }
         drama.setCostAmountWan(DramaDurationEstimator.estimateCostAmountWan(drama));
         return repository.save(drama);
+    }
+
+    private List<Drama> enrichDistributionState(List<Drama> dramas) {
+        List<String> dramaIds = dramas.stream()
+                .map(Drama::getId)
+                .filter(this::hasText)
+                .distinct()
+                .toList();
+        if (dramaIds.isEmpty()) {
+            return dramas;
+        }
+        Map<String, List<DistributionTask>> tasksByDramaId = distributionTaskRepository.findByDramaIdIn(dramaIds).stream()
+                .filter(task -> hasText(task.getDramaId()))
+                .collect(Collectors.groupingBy(DistributionTask::getDramaId));
+        dramas.forEach(drama -> applyDistributionState(drama, tasksByDramaId.getOrDefault(drama.getId(), List.of())));
+        return dramas;
+    }
+
+    private void applyDistributionState(Drama drama, List<DistributionTask> tasks) {
+        drama.setDistributionTaskCount(tasks.size());
+        DistributionTask displayTask = latestDistributionTask(tasks, true);
+        if (displayTask == null) {
+            displayTask = latestDistributionTask(tasks, false);
+        }
+        if (displayTask == null || displayTask.getStatus() == null) {
+            drama.setDistributionState("NONE");
+            drama.setDistributionTaskStatus(null);
+            return;
+        }
+        drama.setDistributionTaskStatus(displayTask.getStatus());
+        drama.setDistributionState(distributionState(displayTask.getStatus()));
+    }
+
+    private DistributionTask latestDistributionTask(List<DistributionTask> tasks, boolean activeOnly) {
+        return tasks.stream()
+                .filter(task -> !activeOnly || isActiveDistributionTask(task))
+                .max(Comparator.comparing(this::distributionTaskSortTime))
+                .orElse(null);
+    }
+
+    private boolean isActiveDistributionTask(DistributionTask task) {
+        return task.getStatus() != null
+                && task.getStatus() != DistributionTaskStatus.FAILED
+                && task.getStatus() != DistributionTaskStatus.CANCELLED;
+    }
+
+    private Instant distributionTaskSortTime(DistributionTask task) {
+        if (task.getUpdatedAt() != null) {
+            return task.getUpdatedAt();
+        }
+        if (task.getFinishedAt() != null) {
+            return task.getFinishedAt();
+        }
+        if (task.getClaimedAt() != null) {
+            return task.getClaimedAt();
+        }
+        if (task.getCreatedAt() != null) {
+            return task.getCreatedAt();
+        }
+        return Instant.EPOCH;
+    }
+
+    private String distributionState(DistributionTaskStatus status) {
+        return switch (status) {
+            case PENDING -> "QUEUED";
+            case CLAIMED -> "CLAIMED";
+            case DOWNLOADING -> "DOWNLOADING";
+            case PROCESSING -> "PROCESSING";
+            case UPLOADING -> "UPLOADING";
+            case SUCCEEDED -> "DISTRIBUTED";
+            case FAILED -> "FAILED";
+            case CANCELLED -> "CANCELLED";
+        };
     }
 
     @PostMapping("/api/admin/dramas/{id}/generate-title")
@@ -868,6 +951,12 @@ public class DramaController {
                 && !drama.getEpisodes().isEmpty()
                 && !drama.isAiCoverGenerating()
                 && !isRecentPreparationFailure(drama);
+    }
+
+    private boolean hasActiveDistributionTask(Drama drama) {
+        return drama != null
+                && hasText(drama.getId())
+                && distributionTaskRepository.existsActiveByDramaId(drama.getId());
     }
 
     private boolean isRecentPreparationFailure(Drama drama) {

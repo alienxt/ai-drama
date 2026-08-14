@@ -24,6 +24,10 @@ export type DramaCategory = {
   sortOrder: number;
 };
 
+export type DistributionTaskStatusValue = 'PENDING' | 'CLAIMED' | 'DOWNLOADING' | 'PROCESSING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+
+export type DramaDistributionState = 'NONE' | 'QUEUED' | 'CLAIMED' | 'DOWNLOADING' | 'PROCESSING' | 'UPLOADING' | 'DISTRIBUTED' | 'FAILED' | 'CANCELLED';
+
 export type Drama = {
   id: string;
   title: string;
@@ -48,6 +52,9 @@ export type Drama = {
   providerDramaId?: string;
   publishedAt?: string;
   status: 'DRAFT' | 'READY' | 'DISABLED';
+  distributionState?: DramaDistributionState;
+  distributionTaskStatus?: DistributionTaskStatusValue;
+  distributionTaskCount?: number;
   episodes: { episodeNo: number; title?: string; sourcePath: string; providerVideoId?: string; size: number }[];
   createdAt?: string;
   updatedAt?: string;
@@ -163,6 +170,7 @@ export type DramaBackfillAiSummariesAccepted = {
 export type DramaClearAiAssetsResponse = {
   scanned: number;
   matched: number;
+  skippedDistributed: number;
   updated: number;
   updatedAt?: string;
 };
@@ -222,7 +230,7 @@ export type DistributionTask = {
   platform?: 'WECHAT_VIDEO' | 'DOUYIN' | 'TIKTOK';
   dramaId: string;
   dramaTitle?: string;
-  status: 'PENDING' | 'CLAIMED' | 'DOWNLOADING' | 'PROCESSING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  status: DistributionTaskStatusValue;
   progress: number;
   failureReason?: string;
   platformPublishId?: string;

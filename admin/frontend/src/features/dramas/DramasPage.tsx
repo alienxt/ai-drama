@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClearAiAssetsResponse, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse, OtherShortDramaChannel, OtherShortDramaChannelOption } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClearAiAssetsResponse, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, DramaDistributionState, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse, OtherShortDramaChannel, OtherShortDramaChannelOption } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -68,10 +68,70 @@ const dramaSourceOptions = [
   { value: '52API_BAIDU', label: '百度短剧' },
 ];
 
+const distributionStateLabels: Partial<Record<DramaDistributionState, string>> = {
+  QUEUED: '已入队',
+  CLAIMED: '已领取',
+  DOWNLOADING: '下载中',
+  PROCESSING: '处理中',
+  UPLOADING: '上传中',
+  DISTRIBUTED: '已分发',
+  FAILED: '分发失败',
+  CANCELLED: '已取消',
+};
+
+const distributionStateColors: Partial<Record<DramaDistributionState, string>> = {
+  QUEUED: 'blue',
+  CLAIMED: 'geekblue',
+  DOWNLOADING: 'processing',
+  PROCESSING: 'processing',
+  UPLOADING: 'orange',
+  DISTRIBUTED: 'green',
+  FAILED: 'red',
+  CANCELLED: 'default',
+};
+
+const aiRegenerationLockedStates = new Set<DramaDistributionState>([
+  'QUEUED',
+  'CLAIMED',
+  'DOWNLOADING',
+  'PROCESSING',
+  'UPLOADING',
+  'DISTRIBUTED',
+]);
+
 function categoryOptionsFrom(categories?: DramaCategory[]): OtherShortDramaChannelOption[] {
   return (categories ?? [])
     .filter((category) => category.enabled)
     .map((category) => ({ id: category.code, label: category.name }));
+}
+
+function hasDistributionState(record: Drama) {
+  return Boolean(record.distributionState && record.distributionState !== 'NONE');
+}
+
+function isAiRegenerationLocked(record: Drama) {
+  return Boolean(record.distributionState && aiRegenerationLockedStates.has(record.distributionState));
+}
+
+function aiRegenerationTooltip(record: Drama) {
+  if (isAiRegenerationLocked(record)) {
+    return '已有分发任务，不能重新生成 AI 剧名';
+  }
+  return '生成中英文剧名和简介';
+}
+
+function renderDramaStatus(record: Drama): ReactNode {
+  if (!hasDistributionState(record)) {
+    return <Tag color={dramaStatusColors[record.status]}>{dramaStatusLabel(record.status)}</Tag>;
+  }
+  const state = record.distributionState as DramaDistributionState;
+  const label = distributionStateLabels[state] ?? record.distributionTaskStatus ?? state;
+  const taskCountText = record.distributionTaskCount ? `，任务记录 ${record.distributionTaskCount} 条` : '';
+  return (
+    <Tooltip title={`${label}${taskCountText}，原状态：${dramaStatusLabel(record.status)}`}>
+      <Tag color={distributionStateColors[state]}>{label}</Tag>
+    </Tooltip>
+  );
 }
 
 function dramaSourceLabel(drama: Drama) {
@@ -546,7 +606,7 @@ export function DramasPage() {
         createdToDate: values.createdToDate,
         queueEligibleOnly: values.queueEligibleOnly,
       });
-      appMessage.success(`已扫描 ${result.scanned} 部，命中 ${result.matched} 部，清空 AI 素材 ${result.updated} 部`);
+      appMessage.success(`已扫描 ${result.scanned} 部，跳过已有分发任务 ${result.skippedDistributed} 部，命中 ${result.matched} 部，清空 AI 素材 ${result.updated} 部`);
       setClearAiAssetsOpen(false);
       setSelectedRowKeys([]);
       setVersion((value) => value + 1);
@@ -1024,8 +1084,8 @@ export function DramasPage() {
           {
             title: '状态',
             dataIndex: 'status',
-            width: 100,
-            render: (status: Drama['status']) => <Tag color={dramaStatusColors[status]}>{dramaStatusLabel(status)}</Tag>,
+            width: 120,
+            render: (_, record) => renderDramaStatus(record),
           },
           {
             title: '操作',
@@ -1039,15 +1099,18 @@ export function DramasPage() {
                 <Tooltip title="编辑">
                   <Button className="table-action" size="small" type="text" icon={<EditOutlined />} onClick={() => showEditor(record)} />
                 </Tooltip>
-                <Tooltip title="生成中英文剧名和简介">
-                  <Button
-                    className="table-action"
-                    size="small"
-                    type="text"
-                    icon={<FileTextOutlined />}
-                    loading={generating === `title-${record.id}`}
-                    onClick={() => generateTitle(record)}
-                  />
+                <Tooltip title={aiRegenerationTooltip(record)}>
+                  <span>
+                    <Button
+                      className="table-action"
+                      size="small"
+                      type="text"
+                      icon={<FileTextOutlined />}
+                      loading={generating === `title-${record.id}`}
+                      disabled={isAiRegenerationLocked(record)}
+                      onClick={() => generateTitle(record)}
+                    />
+                  </span>
                 </Tooltip>
                 <Tooltip title={record.aiCoverGenerating ? 'AI 封面生成中' : '生成新封面'}>
                   <Button
@@ -1087,7 +1150,7 @@ export function DramasPage() {
             showIcon
             type="info"
             message="会保留原始封面、原始简介和当前短剧状态，只清空 AI 剧名、AI 简介、AI 封面、英文素材和 AI 生成标记。"
-            description="默认只处理仍可进入分发队列的短剧。日期格式请填写 YYYY-MM-DD。"
+            description="系统会跳过已经存在分发任务的短剧；默认只处理仍可进入分发队列的短剧。日期格式请填写 YYYY-MM-DD。"
             style={{ marginBottom: 16 }}
           />
           <Form.Item

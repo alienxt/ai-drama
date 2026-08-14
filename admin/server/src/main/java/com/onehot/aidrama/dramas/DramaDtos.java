@@ -46,6 +46,7 @@ public class DramaDtos {
     public record ClearAiAssetsResponse(
             int scanned,
             int matched,
+            int skippedDistributed,
             long updated,
             Instant updatedAt
     ) {
