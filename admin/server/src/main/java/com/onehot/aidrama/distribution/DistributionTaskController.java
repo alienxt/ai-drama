@@ -200,6 +200,11 @@ public class DistributionTaskController {
         return ApiResponse.ok(service.updateTaskStatusFromAdmin(id, request), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
+    @DeleteMapping("/api/admin/distribution-tasks/{id}/drama")
+    ApiResponse<DistributionDtos.AdminTaskDeleteResponse> deleteDramaTasks(@PathVariable String id) {
+        return ApiResponse.ok(service.deleteDramaTasksFromAdmin(id), MDC.get(TraceIdFilter.TRACE_ID));
+    }
+
     private DistributionTask get(String id) {
         return repository.findById(id)
                 .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));

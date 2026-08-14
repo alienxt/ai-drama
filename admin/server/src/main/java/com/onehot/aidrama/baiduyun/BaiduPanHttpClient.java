@@ -17,6 +17,7 @@ import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
 import java.net.Proxy;
 import java.net.URI;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -214,7 +215,7 @@ public class BaiduPanHttpClient implements BaiduPanClient {
         ));
         Map<String, Object> payload = postForm(URI.create(TOKEN_URL), body);
         if (payload.get("access_token") == null) {
-            throw new BaiduPanException("Baidu token refresh failed");
+            throw new BaiduPanException("Baidu token refresh failed" + baiduOauthMessage(payload));
         }
         configService.put("baidu.accessToken", String.valueOf(payload.get("access_token")), true);
         if (payload.get("refresh_token") != null) {
@@ -255,6 +256,9 @@ public class BaiduPanHttpClient implements BaiduPanClient {
             }
             return payload;
         } catch (IOException exception) {
+            if (exception instanceof SocketTimeoutException) {
+                throw new BaiduPanException("Baidu request timed out for " + safeUri(request.url().uri()), exception);
+            }
             throw new BaiduPanException("Baidu response parse failed", exception);
         }
     }
@@ -364,6 +368,25 @@ public class BaiduPanHttpClient implements BaiduPanClient {
             return "";
         }
         return " (" + message + ")";
+    }
+
+    private String baiduOauthMessage(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return "";
+        }
+        Object error = payload.get("error");
+        Object description = payload.get("error_description");
+        if ((error == null || String.valueOf(error).isBlank())
+                && (description == null || String.valueOf(description).isBlank())) {
+            return "";
+        }
+        if (description == null || String.valueOf(description).isBlank()) {
+            return " (" + error + ")";
+        }
+        if (error == null || String.valueOf(error).isBlank()) {
+            return " (" + description + ")";
+        }
+        return " (" + error + ": " + description + ")";
     }
 
     static Optional<ProxySettings> resolveProxySettings(Function<String, Optional<String>> config) {

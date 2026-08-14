@@ -1,5 +1,6 @@
 package com.onehot.aidrama.common.error;
 
+import com.onehot.aidrama.baiduyun.BaiduPanException;
 import com.onehot.aidrama.common.ApiError;
 import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.TraceIdFilter;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import java.net.SocketTimeoutException;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -49,9 +51,67 @@ public class GlobalExceptionHandler {
         return error(HttpStatus.FORBIDDEN, "FORBIDDEN", "没有权限执行该操作", Map.of(), exception, request);
     }
 
+    @ExceptionHandler(BaiduPanException.class)
+    ResponseEntity<ApiResponse<Void>> handleBaidu(BaiduPanException exception, HttpServletRequest request) {
+        if (hasCause(exception, SocketTimeoutException.class) || messageContains(exception, "timed out")) {
+            return error(
+                    HttpStatus.GATEWAY_TIMEOUT,
+                    "BAIDU_CONNECT_TIMEOUT",
+                    "百度网盘接口连接超时，暂时拿不到下载链接。请检查服务器网络，必要时开启百度代理后重试。",
+                    Map.of(),
+                    exception,
+                    request
+            );
+        }
+        if (messageContains(exception, "token refresh failed")) {
+            return error(
+                    HttpStatus.BAD_GATEWAY,
+                    "BAIDU_TOKEN_REFRESH_FAILED",
+                    "百度网盘 token 刷新失败，请检查 baidu.refreshToken、baidu.clientId、baidu.clientSecret 是否有效。",
+                    Map.of("rawMessage", exception.getMessage()),
+                    exception,
+                    request
+            );
+        }
+        if (messageContains(exception, "path not found")) {
+            return error(
+                    HttpStatus.NOT_FOUND,
+                    "BAIDU_PATH_NOT_FOUND",
+                    "百度网盘源文件不存在或路径已失效，请检查网盘目录后重试。",
+                    Map.of("rawMessage", exception.getMessage()),
+                    exception,
+                    request
+            );
+        }
+        return error(
+                HttpStatus.BAD_GATEWAY,
+                "BAIDU_API_ERROR",
+                "百度网盘接口异常，暂时拿不到下载链接，请稍后重试。",
+                Map.of("rawMessage", exception.getMessage()),
+                exception,
+                request
+        );
+    }
+
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiResponse<Void>> handleUnhandled(Exception exception, HttpServletRequest request) {
         return error(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "系统异常", Map.of(), exception, request);
+    }
+
+    private boolean hasCause(Throwable throwable, Class<? extends Throwable> type) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean messageContains(Throwable throwable, String token) {
+        String message = throwable == null ? "" : String.valueOf(throwable.getMessage());
+        return message.toLowerCase().contains(token.toLowerCase());
     }
 
     private ResponseEntity<ApiResponse<Void>> error(

@@ -66,6 +66,13 @@ public class DistributionDtos {
     public record TaskStatusCount(DistributionTaskStatus status, long count) {
     }
 
+    public record AdminTaskDeleteResponse(
+            String dramaId,
+            String dramaTitle,
+            int deletedCount
+    ) {
+    }
+
     public record ClaimRequest(String deviceId, Boolean asyncPreparation) {
         public boolean useAsyncPreparation() {
             return Boolean.TRUE.equals(asyncPreparation);

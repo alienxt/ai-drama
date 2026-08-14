@@ -1,5 +1,6 @@
 package com.onehot.aidrama.dramas;
 
+import java.time.LocalDate;
 import java.time.Instant;
 import java.util.List;
 
@@ -33,6 +34,21 @@ public class DramaDtos {
     }
 
     public record BackfillAiSummariesAccepted(int requested, Instant acceptedAt) {
+    }
+
+    public record ClearAiAssetsRequest(
+            LocalDate createdFromDate,
+            LocalDate createdToDate,
+            Boolean queueEligibleOnly
+    ) {
+    }
+
+    public record ClearAiAssetsResponse(
+            int scanned,
+            int matched,
+            long updated,
+            Instant updatedAt
+    ) {
     }
 
     public record DownloadPlan(

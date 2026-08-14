@@ -42,7 +42,10 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.Date;
@@ -56,6 +59,8 @@ import java.util.stream.Collectors;
 @RestController
 public class DramaController {
     private static final Logger LOGGER = LoggerFactory.getLogger(DramaController.class);
+    private static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Duration PREPARATION_FAILURE_GRACE = Duration.ofMinutes(10);
 
     private final DramaRepository repository;
     private final com.onehot.aidrama.baiduyun.BaiduPanClient baiduPanClient;
@@ -544,6 +549,37 @@ public class DramaController {
         );
     }
 
+    @PostMapping("/api/admin/dramas/clear-ai-assets")
+    ApiResponse<DramaDtos.ClearAiAssetsResponse> clearAiAssets(@RequestBody DramaDtos.ClearAiAssetsRequest request) {
+        LocalDate createdFromDate = Optional.ofNullable(request)
+                .map(DramaDtos.ClearAiAssetsRequest::createdFromDate)
+                .orElseThrow(() -> new BusinessException("CREATED_FROM_REQUIRED", "请选择开始日期", HttpStatus.BAD_REQUEST));
+        LocalDate createdToDate = Optional.ofNullable(request)
+                .map(DramaDtos.ClearAiAssetsRequest::createdToDate)
+                .orElseThrow(() -> new BusinessException("CREATED_TO_REQUIRED", "请选择结束日期", HttpStatus.BAD_REQUEST));
+        if (createdToDate.isBefore(createdFromDate)) {
+            throw new BusinessException("INVALID_DATE_RANGE", "结束日期不能早于开始日期", HttpStatus.BAD_REQUEST);
+        }
+        boolean queueEligibleOnly = Optional.ofNullable(request.queueEligibleOnly()).orElse(true);
+        Instant createdFrom = createdFromDate.atStartOfDay(SHANGHAI_ZONE).toInstant();
+        Instant createdToExclusive = createdToDate.plusDays(1).atStartOfDay(SHANGHAI_ZONE).toInstant();
+        Query query = new Query(new Criteria().andOperator(
+                Criteria.where("createdAt").gte(createdFrom),
+                Criteria.where("createdAt").lt(createdToExclusive)
+        ));
+        List<Drama> scanned = mongoTemplate.find(query, Drama.class);
+        List<Drama> matched = scanned.stream()
+                .filter(drama -> !queueEligibleOnly || canEnterTaskQueue(drama))
+                .toList();
+        long updated = matched.stream()
+                .filter(this::clearAiAssets)
+                .count();
+        return ApiResponse.ok(
+                new DramaDtos.ClearAiAssetsResponse(scanned.size(), matched.size(), updated, Instant.now()),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
+    }
+
     private Drama apply(Drama drama, DramaDtos.DramaRequest request) {
         String previousSummary = drama.getSummary();
         String previousAiSummary = drama.getAiSummary();
@@ -753,6 +789,54 @@ public class DramaController {
         return drama.getTitle();
     }
 
+    private boolean clearAiAssets(Drama drama) {
+        boolean changed = false;
+        if (hasText(drama.getAiTitle())) {
+            drama.setAiTitle(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiTitleEn())) {
+            drama.setAiTitleEn(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiSummary())) {
+            drama.setAiSummary(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiSummaryEn())) {
+            drama.setAiSummaryEn(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiCoverUrl())) {
+            drama.setAiCoverUrl(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiVideoCoverUrl())) {
+            drama.setAiVideoCoverUrl(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiCoverEnUrl())) {
+            drama.setAiCoverEnUrl(null);
+            changed = true;
+        }
+        if (hasText(drama.getAiVideoCoverEnUrl())) {
+            drama.setAiVideoCoverEnUrl(null);
+            changed = true;
+        }
+        if (drama.isAiCoverGenerating()) {
+            drama.setAiCoverGenerating(false);
+            changed = true;
+        }
+        if (drama.getAiPreparationFailedAt() != null) {
+            drama.setAiPreparationFailedAt(null);
+            changed = true;
+        }
+        if (changed) {
+            repository.save(drama);
+        }
+        return changed;
+    }
+
     private void ensureReadyAllowed(Drama drama) {
         if (drama.getStatus() != DramaStatus.READY) {
             return;
@@ -768,6 +852,27 @@ public class DramaController {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean canEnterTaskQueue(Drama drama) {
+        if (drama == null) {
+            return false;
+        }
+        if (drama.getStatus() == DramaStatus.READY) {
+            return true;
+        }
+        return drama.getStatus() == DramaStatus.DRAFT
+                && DramaSources.BAIDU_PAN.equals(DramaSources.normalize(drama.getSource()))
+                && hasText(drama.getSourcePath())
+                && drama.getEpisodes() != null
+                && !drama.getEpisodes().isEmpty()
+                && !drama.isAiCoverGenerating()
+                && !isRecentPreparationFailure(drama);
+    }
+
+    private boolean isRecentPreparationFailure(Drama drama) {
+        Instant failedAt = drama == null ? null : drama.getAiPreparationFailedAt();
+        return failedAt != null && failedAt.isAfter(Instant.now().minus(PREPARATION_FAILURE_GRACE));
     }
 
     private List<String> selectedIds(DramaDtos.BatchIdsRequest request) {

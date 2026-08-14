@@ -1,5 +1,5 @@
 import { AppstoreOutlined, CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
-import { Alert, Button, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Button, Checkbox, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -9,7 +9,7 @@ import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
 import { apiDelete, apiGet, apiGetPage, apiPost, apiPut, http } from '../../shared/http';
 import { dramaStatusColors, dramaStatusLabel, dramaStatusOptions } from '../../shared/labels';
-import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse, OtherShortDramaChannel, OtherShortDramaChannelOption } from '../../shared/types';
+import type { AiCoverGenerationAccepted, BaiduScanAccepted, BaiduScanStatus, Drama, DramaAssetSyncAccepted, DramaBackfillAiSummariesAccepted, DramaBackfillTotalMinutesResponse, DramaBatchFreshResponse, DramaCategory, DramaClearAiAssetsResponse, DramaClientAssetSyncComplete, DramaClientAssetSyncPlan, HongguoCandidate, HongguoCoverBackfillResponse, HongguoImportCandidateResponse, HongguoMangaSyncResponse, OtherShortDramaChannel, OtherShortDramaChannelOption } from '../../shared/types';
 import { useAsyncData } from '../../shared/useAsyncData';
 import { EpisodePlayer } from './EpisodePlayer';
 
@@ -114,6 +114,8 @@ export function DramasPage() {
   const [freshing, setFreshing] = useState(false);
   const [backfillingMinutes, setBackfillingMinutes] = useState(false);
   const [backfillingAiSummaries, setBackfillingAiSummaries] = useState(false);
+  const [clearAiAssetsOpen, setClearAiAssetsOpen] = useState(false);
+  const [clearingAiAssets, setClearingAiAssets] = useState(false);
   const [backfillingHongguoCovers, setBackfillingHongguoCovers] = useState(false);
   const [syncModeOpen, setSyncModeOpen] = useState(false);
   const [clientSyncOpen, setClientSyncOpen] = useState(false);
@@ -143,6 +145,7 @@ export function DramasPage() {
   const [syncingOtherChannel, setSyncingOtherChannel] = useState(false);
   const [importingOtherChannelId, setImportingOtherChannelId] = useState<string | null>(null);
   const [form] = Form.useForm();
+  const [clearAiAssetsForm] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
   const selectedDramaIds = useMemo(() => selectedRowKeys.map(String), [selectedRowKeys]);
@@ -526,6 +529,32 @@ export function DramasPage() {
     }
   }
 
+  function openClearAiAssets() {
+    clearAiAssetsForm.setFieldsValue({
+      createdFromDate: '2026-08-12',
+      createdToDate: '2026-08-13',
+      queueEligibleOnly: true,
+    });
+    setClearAiAssetsOpen(true);
+  }
+
+  async function submitClearAiAssets(values: { createdFromDate: string; createdToDate: string; queueEligibleOnly?: boolean }) {
+    setClearingAiAssets(true);
+    try {
+      const result = await apiPost<DramaClearAiAssetsResponse>('/admin/dramas/clear-ai-assets', {
+        createdFromDate: values.createdFromDate,
+        createdToDate: values.createdToDate,
+        queueEligibleOnly: values.queueEligibleOnly,
+      });
+      appMessage.success(`已扫描 ${result.scanned} 部，命中 ${result.matched} 部，清空 AI 素材 ${result.updated} 部`);
+      setClearAiAssetsOpen(false);
+      setSelectedRowKeys([]);
+      setVersion((value) => value + 1);
+    } finally {
+      setClearingAiAssets(false);
+    }
+  }
+
   function showEditor(drama?: Drama) {
     setEditing(drama ?? null);
     form.setFieldsValue(drama ?? { categoryIds: [], status: 'DRAFT', rating: 5 });
@@ -836,6 +865,9 @@ export function DramasPage() {
           >
             补跑AI简介{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
           </Button>
+          <Button icon={<DeleteOutlined />} loading={clearingAiAssets} onClick={openClearAiAssets}>
+            按日期清空AI素材
+          </Button>
           <Button
             icon={<SyncOutlined />}
             disabled={!hasSelectedDramas}
@@ -1038,6 +1070,51 @@ export function DramasPage() {
           },
         ]}
       />
+      <Modal
+        title="按日期清空 AI 素材"
+        open={clearAiAssetsOpen}
+        onCancel={() => {
+          if (!clearingAiAssets) {
+            setClearAiAssetsOpen(false);
+          }
+        }}
+        onOk={() => clearAiAssetsForm.submit()}
+        confirmLoading={clearingAiAssets}
+        destroyOnClose
+      >
+        <Form form={clearAiAssetsForm} layout="vertical" onFinish={submitClearAiAssets}>
+          <Alert
+            showIcon
+            type="info"
+            message="会保留原始封面、原始简介和当前短剧状态，只清空 AI 剧名、AI 简介、AI 封面、英文素材和 AI 生成标记。"
+            description="默认只处理仍可进入分发队列的短剧。日期格式请填写 YYYY-MM-DD。"
+            style={{ marginBottom: 16 }}
+          />
+          <Form.Item
+            name="createdFromDate"
+            label="开始日期"
+            rules={[
+              { required: true, message: '请填写开始日期' },
+              { pattern: /^\d{4}-\d{2}-\d{2}$/, message: '日期格式应为 YYYY-MM-DD' },
+            ]}
+          >
+            <Input placeholder="2026-08-12" />
+          </Form.Item>
+          <Form.Item
+            name="createdToDate"
+            label="结束日期"
+            rules={[
+              { required: true, message: '请填写结束日期' },
+              { pattern: /^\d{4}-\d{2}-\d{2}$/, message: '日期格式应为 YYYY-MM-DD' },
+            ]}
+          >
+            <Input placeholder="2026-08-13" />
+          </Form.Item>
+          <Form.Item name="queueEligibleOnly" valuePropName="checked">
+            <Checkbox>只处理还可以进入分发队列的剧</Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
       <Drawer
         title="短剧详情"
         width="min(94vw, 920px)"

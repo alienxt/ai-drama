@@ -160,6 +160,13 @@ export type DramaBackfillAiSummariesAccepted = {
   acceptedAt?: string;
 };
 
+export type DramaClearAiAssetsResponse = {
+  scanned: number;
+  matched: number;
+  updated: number;
+  updatedAt?: string;
+};
+
 export type DramaClientAssetSyncPlanItem = {
   dramaId: string;
   title?: string;

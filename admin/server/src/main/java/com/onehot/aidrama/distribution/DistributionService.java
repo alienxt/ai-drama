@@ -203,6 +203,23 @@ public class DistributionService {
         return taskRepository.save(task);
     }
 
+    public DistributionDtos.AdminTaskDeleteResponse deleteDramaTasksFromAdmin(String taskId) {
+        DistributionTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new BusinessException("TASK_NOT_FOUND", "任务不存在", HttpStatus.NOT_FOUND));
+        List<DistributionTask> tasks = taskRepository.findByDramaId(task.getDramaId());
+        if (tasks.isEmpty()) {
+            return new DistributionDtos.AdminTaskDeleteResponse(task.getDramaId(), task.getDramaId(), 0);
+        }
+        String dramaTitle = task.getDramaId();
+        if (dramaRepository != null) {
+            dramaTitle = dramaRepository.findById(task.getDramaId())
+                    .map(this::dramaDisplayTitle)
+                    .orElse(task.getDramaId());
+        }
+        taskRepository.deleteAll(tasks);
+        return new DistributionDtos.AdminTaskDeleteResponse(task.getDramaId(), dramaTitle, tasks.size());
+    }
+
     public PageResult<DistributionDtos.AdminTaskResponse> listDesktopTasks(
             String ownerAccountId,
             String keyword,

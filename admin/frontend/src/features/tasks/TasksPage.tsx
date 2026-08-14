@@ -1,4 +1,4 @@
-import { CloseCircleOutlined, EditOutlined, PlusCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CloseCircleOutlined, DeleteOutlined, EditOutlined, PlusCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, Tag, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
@@ -6,7 +6,7 @@ import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
 import { appMessage } from '../../shared/appMessage';
 import { formatDateTime } from '../../shared/format';
-import { apiGet, apiGetPage, apiPatch, apiPost } from '../../shared/http';
+import { apiDelete, apiGet, apiGetPage, apiPatch, apiPost } from '../../shared/http';
 import { distributionTaskStatusColors, distributionTaskStatusLabel, distributionTaskStatusOptions, mediaPlatformLabel } from '../../shared/labels';
 import type { DistributionTask, DistributionTaskStatusCount } from '../../shared/types';
 
@@ -59,6 +59,24 @@ export function TasksPage() {
     await apiPost(`/admin/distribution-tasks/${id}/${name}`);
     appMessage.success(name === 'retry' ? '任务已重试' : '任务已取消');
     setVersion((value) => value + 1);
+  }
+
+  function deleteDramaTasks(task: DistributionTask) {
+    const title = task.dramaTitle || task.dramaId;
+    Modal.confirm({
+      title: '删除同剧全部任务',
+      content: `确认删除短剧“${title}”的全部分发任务吗？删除后这部剧会从分发任务队列中释放出来。`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        const result = await apiDelete<{ dramaId: string; dramaTitle?: string; deletedCount: number }>(
+          `/admin/distribution-tasks/${task.id}/drama`,
+        );
+        appMessage.success(`已删除 ${result.deletedCount} 个任务`);
+        setVersion((value) => value + 1);
+      },
+    });
   }
 
   function openStatusEditor(task: DistributionTask) {
@@ -147,7 +165,7 @@ export function TasksPage() {
             { title: '结束时间', dataIndex: 'finishedAt', width: 180, render: formatDateTime },
             {
               title: '操作',
-              width: 124,
+              width: 160,
               render: (_, record) => (
                 <Space size={4}>
                   <Tooltip title="改状态">
@@ -158,6 +176,16 @@ export function TasksPage() {
                   </Tooltip>
                   <Tooltip title="取消">
                     <Button className="table-action" size="small" type="text" danger icon={<CloseCircleOutlined />} onClick={() => action(record.id, 'cancel')} />
+                  </Tooltip>
+                  <Tooltip title="删同剧全部任务">
+                    <Button
+                      className="table-action"
+                      size="small"
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => deleteDramaTasks(record)}
+                    />
                   </Tooltip>
                 </Space>
               ),
