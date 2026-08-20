@@ -21,7 +21,8 @@ public class Account {
     private String passwordHash;
     private List<String> roles = new ArrayList<>();
     private boolean enabled = true;
-    private Integer dailyClaimLimit = DEFAULT_DAILY_CLAIM_LIMIT;
+    private String dailyClaimCountAdjustmentDate;
+    private Integer dailyClaimCountAdjustment = 0;
     private String boundDeviceId;
     private String lastLoginDeviceId;
     private Instant lastLoginAt;
@@ -40,15 +41,10 @@ public class Account {
     public void setRoles(List<String> roles) { this.roles = roles; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public int getDailyClaimLimit() {
-        if (dailyClaimLimit == null) {
-            return DEFAULT_DAILY_CLAIM_LIMIT;
-        }
-        return Math.max(dailyClaimLimit, 0);
-    }
-    public void setDailyClaimLimit(Integer dailyClaimLimit) {
-        this.dailyClaimLimit = dailyClaimLimit == null ? DEFAULT_DAILY_CLAIM_LIMIT : Math.max(dailyClaimLimit, 0);
-    }
+    public String getDailyClaimCountAdjustmentDate() { return dailyClaimCountAdjustmentDate; }
+    public void setDailyClaimCountAdjustmentDate(String dailyClaimCountAdjustmentDate) { this.dailyClaimCountAdjustmentDate = dailyClaimCountAdjustmentDate; }
+    public int getDailyClaimCountAdjustment() { return dailyClaimCountAdjustment == null ? 0 : dailyClaimCountAdjustment; }
+    public void setDailyClaimCountAdjustment(Integer dailyClaimCountAdjustment) { this.dailyClaimCountAdjustment = dailyClaimCountAdjustment == null ? 0 : dailyClaimCountAdjustment; }
     public String getBoundDeviceId() { return boundDeviceId; }
     public void setBoundDeviceId(String boundDeviceId) { this.boundDeviceId = boundDeviceId; }
     public String getLastLoginDeviceId() { return lastLoginDeviceId; }

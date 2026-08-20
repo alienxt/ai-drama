@@ -33,11 +33,11 @@ function AccountManagementPage({
   const [open, setOpen] = useState(false);
   const [bindingAccount, setBindingAccount] = useState<Account | null>(null);
   const [passwordAccount, setPasswordAccount] = useState<Account | null>(null);
-  const [claimLimitAccount, setClaimLimitAccount] = useState<Account | null>(null);
+  const [claimCountAccount, setClaimCountAccount] = useState<Account | null>(null);
   const [form] = Form.useForm();
   const [deviceForm] = Form.useForm<{ deviceId: string }>();
   const [passwordForm] = Form.useForm<{ password: string; confirmPassword: string }>();
-  const [claimLimitForm] = Form.useForm<{ dailyClaimLimit: number }>();
+  const [claimCountForm] = Form.useForm<{ todayClaimCount: number }>();
   const isDesktopUserPage = roles.includes('DESKTOP_USER');
 
   async function create(values: { username: string; password: string; roles: string[] }) {
@@ -87,19 +87,19 @@ function AccountManagementPage({
     passwordForm.resetFields();
   }
 
-  function showClaimLimitEdit(account: Account) {
-    setClaimLimitAccount(account);
-    claimLimitForm.setFieldsValue({ dailyClaimLimit: account.dailyClaimLimit ?? 20 });
+  function showClaimCountEdit(account: Account) {
+    setClaimCountAccount(account);
+    claimCountForm.setFieldsValue({ todayClaimCount: account.todayClaimCount ?? 0 });
   }
 
-  async function updateClaimLimit(values: { dailyClaimLimit: number }) {
-    if (!claimLimitAccount) return;
-    await apiPatch(`/admin/accounts/${claimLimitAccount.id}/daily-claim-limit`, {
-      dailyClaimLimit: values.dailyClaimLimit,
+  async function updateClaimCount(values: { todayClaimCount: number }) {
+    if (!claimCountAccount) return;
+    await apiPatch(`/admin/accounts/${claimCountAccount.id}/today-claim-count`, {
+      todayClaimCount: values.todayClaimCount,
     });
-    appMessage.success('今日领取额度已更新');
-    setClaimLimitAccount(null);
-    claimLimitForm.resetFields();
+    appMessage.success('今日已领取数已校准');
+    setClaimCountAccount(null);
+    claimCountForm.resetFields();
     setVersion((value) => value + 1);
   }
 
@@ -159,7 +159,7 @@ function AccountManagementPage({
           { title: '状态', dataIndex: 'enabled', render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'red'}>{enabled ? '启用' : '禁用'}</Tag> },
           ...(isDesktopUserPage
             ? [{
-              title: '今日领取额度',
+              title: '今日已领取',
               render: (_: unknown, record: Account) => renderClaimQuota(record),
             }]
             : []),
@@ -172,13 +172,13 @@ function AccountManagementPage({
               <Space size={4}>
                 {isDesktopUserPage ? (
                   <>
-                    <Tooltip title="编辑今日领取额度">
+                    <Tooltip title="校准今日已领取数">
                       <Button
                         className="table-action"
                         size="small"
                         type="text"
                         icon={<EditOutlined />}
-                        onClick={() => showClaimLimitEdit(record)}
+                        onClick={() => showClaimCountEdit(record)}
                       />
                     </Tooltip>
                     <Tooltip title="绑定设备">
@@ -291,23 +291,23 @@ function AccountManagementPage({
         </Form>
       </Modal>
       <Modal
-        title={`编辑今日领取额度：${claimLimitAccount?.username ?? ''}`}
-        open={!!claimLimitAccount}
-        onCancel={() => setClaimLimitAccount(null)}
-        onOk={() => claimLimitForm.submit()}
+        title={`校准今日已领取数：${claimCountAccount?.username ?? ''}`}
+        open={!!claimCountAccount}
+        onCancel={() => setClaimCountAccount(null)}
+        onOk={() => claimCountForm.submit()}
         destroyOnClose
       >
-        <Form form={claimLimitForm} layout="vertical" onFinish={updateClaimLimit}>
+        <Form form={claimCountForm} layout="vertical" onFinish={updateClaimCount}>
           <Form.Item
-            name="dailyClaimLimit"
-            label="今日领取额度"
-            extra="统计口径为该桌面端用户名下的视频号任务领取数；设置为 0 时，今天将不能继续领取。"
+            name="todayClaimCount"
+            label="今日已领取数"
+            extra="额度固定为 20；这里校准的是今天已领取数。设置为 20 或更高时，今天将不能继续领取。"
             rules={[
-              { required: true, message: '请输入今日领取额度' },
-              { type: 'number', min: 0, message: '今日领取额度不能小于 0' },
+              { required: true, message: '请输入今日已领取数' },
+              { type: 'number', min: 0, message: '今日已领取数不能小于 0' },
             ]}
           >
-            <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder="例如 20" />
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder="例如 14" />
           </Form.Item>
         </Form>
       </Modal>

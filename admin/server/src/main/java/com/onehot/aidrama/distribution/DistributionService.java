@@ -614,10 +614,10 @@ public class DistributionService {
             }
             String limitClientKey = dailyLimitClientKey(media);
             if (!limitExceptionByClient.containsKey(limitClientKey)) {
-                int dailyClaimLimit = dailyClaimLimitFor(media);
+                int dailyClaimCountAdjustment = dailyClaimCountAdjustmentFor(media);
                 limitExceptionByClient.put(
                         limitClientKey,
-                        dailyAutomationLimitException(dailyLimitMediaAccountIds(mediaAccounts, media), dailyClaimLimit)
+                        dailyAutomationLimitException(dailyLimitMediaAccountIds(mediaAccounts, media), dailyClaimCountAdjustment)
                 );
             }
             if (limitExceptionByClient.get(limitClientKey) == null) {
@@ -654,9 +654,9 @@ public class DistributionService {
         );
     }
 
-    private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds, int dailyClaimLimit) {
-        if (!isDailyClaimLimitAvailable(mediaAccountIds, dailyClaimLimit)) {
-            return dailyClaimLimitReachedException(dailyClaimLimit);
+    private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds, int dailyClaimCountAdjustment) {
+        if (!isDailyClaimLimitAvailable(mediaAccountIds, dailyClaimCountAdjustment)) {
+            return dailyClaimLimitReachedException();
         }
         if (!isDailySuccessfulUploadLimitAvailable(mediaAccountIds)) {
             return dailySuccessfulUploadLimitReachedException();
@@ -664,15 +664,16 @@ public class DistributionService {
         return null;
     }
 
-    private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds, int dailyClaimLimit) {
+    private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds, int dailyClaimCountAdjustment) {
         Instant dayStart = dailyLimitDayStart();
-        long todayCount = dailyClaimCount(mediaAccountIds, dayStart)
+        long rawTodayCount = dailyClaimCount(mediaAccountIds, dayStart)
                 + taskRepository.countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
                         mediaAccountIds,
                         dayStart,
                         DAILY_CLAIMED_TASK_STATUSES
                 );
-        return todayCount < dailyClaimLimit;
+        long todayCount = Math.max(0, rawTodayCount + dailyClaimCountAdjustment);
+        return todayCount < DAILY_CLAIM_LIMIT;
     }
 
     private long dailyClaimCount(List<String> mediaAccountIds, Instant dayStart) {
@@ -708,13 +709,9 @@ public class DistributionService {
     }
 
     private BusinessException dailyClaimLimitReachedException() {
-        return dailyClaimLimitReachedException(DAILY_CLAIM_LIMIT);
-    }
-
-    private BusinessException dailyClaimLimitReachedException(int dailyClaimLimit) {
         return new BusinessException(
                 "DAILY_CLAIM_LIMIT_REACHED",
-                "当前客户端今日领取任务次数已达 " + dailyClaimLimit + " 次（视频号任务），请明天再执行。",
+                "当前客户端今日领取任务次数已达 " + DAILY_CLAIM_LIMIT + " 次（视频号任务），请明天再执行。",
                 HttpStatus.TOO_MANY_REQUESTS
         );
     }
@@ -728,10 +725,18 @@ public class DistributionService {
     }
 
     private Instant dailyLimitDayStart() {
-        return ZonedDateTime.now(DAILY_LIMIT_ZONE)
+        return dailyLimitDateTime()
                 .toLocalDate()
                 .atStartOfDay(DAILY_LIMIT_ZONE)
                 .toInstant();
+    }
+
+    private String dailyLimitDateKey() {
+        return dailyLimitDateTime().toLocalDate().toString();
+    }
+
+    private ZonedDateTime dailyLimitDateTime() {
+        return ZonedDateTime.now(DAILY_LIMIT_ZONE);
     }
 
     private boolean requiresDailyAutomationLimit(MediaAccount media) {
@@ -760,13 +765,20 @@ public class DistributionService {
         return ids;
     }
 
-    private int dailyClaimLimitFor(MediaAccount media) {
+    private int dailyClaimCountAdjustmentFor(MediaAccount media) {
         if (media == null || accountRepository == null || !hasText(media.getOwnerAccountId())) {
-            return DAILY_CLAIM_LIMIT;
+            return 0;
         }
         return accountRepository.findById(media.getOwnerAccountId())
-                .map(Account::getDailyClaimLimit)
-                .orElse(DAILY_CLAIM_LIMIT);
+                .map(this::dailyClaimCountAdjustment)
+                .orElse(0);
+    }
+
+    private int dailyClaimCountAdjustment(Account account) {
+        if (account == null || !dailyLimitDateKey().equals(account.getDailyClaimCountAdjustmentDate())) {
+            return 0;
+        }
+        return account.getDailyClaimCountAdjustment();
     }
 
     private String dailyLimitClientKey(MediaAccount media) {

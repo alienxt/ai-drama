@@ -141,19 +141,24 @@ public class AccountService {
         return toDto(repository.save(account));
     }
 
-    public AccountDto updateDailyClaimLimit(String id, Integer dailyClaimLimit) {
+    public AccountDto updateTodayClaimCount(String id, Integer todayClaimCount) {
         Account account = repository.findById(id)
                 .orElseThrow(() -> new BusinessException("ACCOUNT_NOT_FOUND", "账号不存在", HttpStatus.NOT_FOUND));
         if (!account.getRoles().contains("DESKTOP_USER")) {
-            throw new BusinessException("DAILY_CLAIM_LIMIT_NOT_ALLOWED", "只有桌面端用户可以设置今日领取额度", HttpStatus.BAD_REQUEST);
+            throw new BusinessException("TODAY_CLAIM_COUNT_NOT_ALLOWED", "只有桌面端用户可以校准今日已领取数", HttpStatus.BAD_REQUEST);
         }
-        if (dailyClaimLimit == null) {
-            throw new BusinessException("DAILY_CLAIM_LIMIT_REQUIRED", "请输入今日领取额度", HttpStatus.BAD_REQUEST);
+        if (todayClaimCount == null) {
+            throw new BusinessException("TODAY_CLAIM_COUNT_REQUIRED", "请输入今日已领取数", HttpStatus.BAD_REQUEST);
         }
-        if (dailyClaimLimit < 0) {
-            throw new BusinessException("DAILY_CLAIM_LIMIT_INVALID", "今日领取额度不能小于 0", HttpStatus.BAD_REQUEST);
+        if (todayClaimCount < 0) {
+            throw new BusinessException("TODAY_CLAIM_COUNT_INVALID", "今日已领取数不能小于 0", HttpStatus.BAD_REQUEST);
         }
-        account.setDailyClaimLimit(dailyClaimLimit);
+        long adjustment = (long) todayClaimCount - rawTodayClaimCount(account);
+        if (adjustment < Integer.MIN_VALUE || adjustment > Integer.MAX_VALUE) {
+            throw new BusinessException("TODAY_CLAIM_COUNT_INVALID", "今日已领取数超出可设置范围", HttpStatus.BAD_REQUEST);
+        }
+        account.setDailyClaimCountAdjustmentDate(dailyLimitDateKey());
+        account.setDailyClaimCountAdjustment((int) adjustment);
         return toDto(repository.save(account));
     }
 
@@ -199,10 +204,15 @@ public class AccountService {
     }
 
     private AccountDto toDto(Account account) {
-        return AccountDto.from(account, todayClaimCount(account));
+        return AccountDto.from(account, adjustedTodayClaimCount(account));
     }
 
-    private long todayClaimCount(Account account) {
+    private long adjustedTodayClaimCount(Account account) {
+        long count = rawTodayClaimCount(account) + dailyClaimCountAdjustment(account);
+        return Math.max(0, count);
+    }
+
+    private long rawTodayClaimCount(Account account) {
         if (account == null || !account.getRoles().contains("DESKTOP_USER")) {
             return 0;
         }
@@ -227,6 +237,13 @@ public class AccountService {
                 );
     }
 
+    private int dailyClaimCountAdjustment(Account account) {
+        if (account == null || !dailyLimitDateKey().equals(account.getDailyClaimCountAdjustmentDate())) {
+            return 0;
+        }
+        return account.getDailyClaimCountAdjustment();
+    }
+
     private long dailyClaimCount(List<String> mediaAccountIds, Instant dayStart) {
         if (taskClaimRepository != null) {
             return taskClaimRepository.countByMediaAccountIdInAndClaimedAtGreaterThanEqual(mediaAccountIds, dayStart);
@@ -242,9 +259,17 @@ public class AccountService {
     }
 
     private Instant dailyLimitDayStart() {
-        return ZonedDateTime.now(DAILY_LIMIT_ZONE)
+        return dailyLimitDateTime()
                 .toLocalDate()
                 .atStartOfDay(DAILY_LIMIT_ZONE)
                 .toInstant();
+    }
+
+    private String dailyLimitDateKey() {
+        return dailyLimitDateTime().toLocalDate().toString();
+    }
+
+    private ZonedDateTime dailyLimitDateTime() {
+        return ZonedDateTime.now(DAILY_LIMIT_ZONE);
     }
 }

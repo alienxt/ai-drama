@@ -46,9 +46,9 @@ public class AccountController {
         return ApiResponse.ok(service.resetPassword(id, request.password()), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
-    @PatchMapping("/{id}/daily-claim-limit")
-    ApiResponse<AccountDto> updateDailyClaimLimit(@PathVariable String id, @RequestBody DailyClaimLimitRequest request) {
-        return ApiResponse.ok(service.updateDailyClaimLimit(id, request.dailyClaimLimit()), MDC.get(TraceIdFilter.TRACE_ID));
+    @PatchMapping("/{id}/today-claim-count")
+    ApiResponse<AccountDto> updateTodayClaimCount(@PathVariable String id, @RequestBody TodayClaimCountRequest request) {
+        return ApiResponse.ok(service.updateTodayClaimCount(id, request.todayClaimCount()), MDC.get(TraceIdFilter.TRACE_ID));
     }
 
     @PatchMapping("/{id}/device-binding")
@@ -74,6 +74,6 @@ public class AccountController {
     public record DeviceBindingRequest(String deviceId) {
     }
 
-    public record DailyClaimLimitRequest(Integer dailyClaimLimit) {
+    public record TodayClaimCountRequest(Integer todayClaimCount) {
     }
 }

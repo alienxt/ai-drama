@@ -24,7 +24,7 @@ public record AccountDto(
                 account.getUsername(),
                 account.getRoles(),
                 account.isEnabled(),
-                account.getDailyClaimLimit(),
+                Account.DEFAULT_DAILY_CLAIM_LIMIT,
                 todayClaimCount,
                 account.getBoundDeviceId(),
                 account.getLastLoginDeviceId(),
