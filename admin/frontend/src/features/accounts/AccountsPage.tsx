@@ -1,5 +1,5 @@
-import { ApiOutlined, CheckCircleOutlined, DisconnectOutlined, KeyOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
-import { Button, Form, Input, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd';
+import { ApiOutlined, CheckCircleOutlined, DisconnectOutlined, EditOutlined, KeyOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
+import { Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag, Tooltip } from 'antd';
 import { useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
@@ -33,9 +33,11 @@ function AccountManagementPage({
   const [open, setOpen] = useState(false);
   const [bindingAccount, setBindingAccount] = useState<Account | null>(null);
   const [passwordAccount, setPasswordAccount] = useState<Account | null>(null);
+  const [claimLimitAccount, setClaimLimitAccount] = useState<Account | null>(null);
   const [form] = Form.useForm();
   const [deviceForm] = Form.useForm<{ deviceId: string }>();
   const [passwordForm] = Form.useForm<{ password: string; confirmPassword: string }>();
+  const [claimLimitForm] = Form.useForm<{ dailyClaimLimit: number }>();
   const isDesktopUserPage = roles.includes('DESKTOP_USER');
 
   async function create(values: { username: string; password: string; roles: string[] }) {
@@ -85,8 +87,31 @@ function AccountManagementPage({
     passwordForm.resetFields();
   }
 
+  function showClaimLimitEdit(account: Account) {
+    setClaimLimitAccount(account);
+    claimLimitForm.setFieldsValue({ dailyClaimLimit: account.dailyClaimLimit ?? 20 });
+  }
+
+  async function updateClaimLimit(values: { dailyClaimLimit: number }) {
+    if (!claimLimitAccount) return;
+    await apiPatch(`/admin/accounts/${claimLimitAccount.id}/daily-claim-limit`, {
+      dailyClaimLimit: values.dailyClaimLimit,
+    });
+    appMessage.success('今日领取额度已更新');
+    setClaimLimitAccount(null);
+    claimLimitForm.resetFields();
+    setVersion((value) => value + 1);
+  }
+
   function renderDevice(value?: string) {
     return value ? <Tag className="device-tag">{value}</Tag> : <span className="muted">未绑定</span>;
+  }
+
+  function renderClaimQuota(record: Account) {
+    const limit = record.dailyClaimLimit ?? 20;
+    const used = record.todayClaimCount ?? 0;
+    const color = limit <= 0 || used >= limit ? 'red' : used >= limit * 0.8 ? 'orange' : 'blue';
+    return <Tag color={color}>{used} / {limit}</Tag>;
   }
 
   return (
@@ -132,6 +157,12 @@ function AccountManagementPage({
             render: (roles: string[]) => roles.map((role) => <Tag key={role}>{accountRoleLabel(role)}</Tag>),
           },
           { title: '状态', dataIndex: 'enabled', render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'red'}>{enabled ? '启用' : '禁用'}</Tag> },
+          ...(isDesktopUserPage
+            ? [{
+              title: '今日领取额度',
+              render: (_: unknown, record: Account) => renderClaimQuota(record),
+            }]
+            : []),
           { title: '绑定设备', dataIndex: 'boundDeviceId', render: renderDevice },
           { title: '最后登录设备', dataIndex: 'lastLoginDeviceId', render: renderDevice },
           { title: '最后登录', dataIndex: 'lastLoginAt', render: (value?: string) => value || '-' },
@@ -141,6 +172,15 @@ function AccountManagementPage({
               <Space size={4}>
                 {isDesktopUserPage ? (
                   <>
+                    <Tooltip title="编辑今日领取额度">
+                      <Button
+                        className="table-action"
+                        size="small"
+                        type="text"
+                        icon={<EditOutlined />}
+                        onClick={() => showClaimLimitEdit(record)}
+                      />
+                    </Tooltip>
                     <Tooltip title="绑定设备">
                       <Button
                         className="table-action"
@@ -247,6 +287,27 @@ function AccountManagementPage({
             ]}
           >
             <Input.Password autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={`编辑今日领取额度：${claimLimitAccount?.username ?? ''}`}
+        open={!!claimLimitAccount}
+        onCancel={() => setClaimLimitAccount(null)}
+        onOk={() => claimLimitForm.submit()}
+        destroyOnClose
+      >
+        <Form form={claimLimitForm} layout="vertical" onFinish={updateClaimLimit}>
+          <Form.Item
+            name="dailyClaimLimit"
+            label="今日领取额度"
+            extra="统计口径为该桌面端用户名下的视频号任务领取数；设置为 0 时，今天将不能继续领取。"
+            rules={[
+              { required: true, message: '请输入今日领取额度' },
+              { type: 'number', min: 0, message: '今日领取额度不能小于 0' },
+            ]}
+          >
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder="例如 20" />
           </Form.Item>
         </Form>
       </Modal>

@@ -55,7 +55,7 @@ public class DistributionService {
     private static final int PREPARATION_RETRY_AFTER_SECONDS = 3;
     private static final String PREPARATION_FAILURE_PREFIX = "AI 素材生成失败：";
     private static final String FORCE_STOP_FAILURE_REASON = "用户强制停止任务";
-    private static final int DAILY_CLAIM_LIMIT = 20;
+    private static final int DAILY_CLAIM_LIMIT = Account.DEFAULT_DAILY_CLAIM_LIMIT;
     private static final int DAILY_SUCCESSFUL_UPLOAD_LIMIT = 10;
     private static final ZoneId DAILY_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
@@ -614,9 +614,10 @@ public class DistributionService {
             }
             String limitClientKey = dailyLimitClientKey(media);
             if (!limitExceptionByClient.containsKey(limitClientKey)) {
+                int dailyClaimLimit = dailyClaimLimitFor(media);
                 limitExceptionByClient.put(
                         limitClientKey,
-                        dailyAutomationLimitException(dailyLimitMediaAccountIds(mediaAccounts, media))
+                        dailyAutomationLimitException(dailyLimitMediaAccountIds(mediaAccounts, media), dailyClaimLimit)
                 );
             }
             if (limitExceptionByClient.get(limitClientKey) == null) {
@@ -653,9 +654,9 @@ public class DistributionService {
         );
     }
 
-    private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds) {
-        if (!isDailyClaimLimitAvailable(mediaAccountIds)) {
-            return dailyClaimLimitReachedException();
+    private BusinessException dailyAutomationLimitException(List<String> mediaAccountIds, int dailyClaimLimit) {
+        if (!isDailyClaimLimitAvailable(mediaAccountIds, dailyClaimLimit)) {
+            return dailyClaimLimitReachedException(dailyClaimLimit);
         }
         if (!isDailySuccessfulUploadLimitAvailable(mediaAccountIds)) {
             return dailySuccessfulUploadLimitReachedException();
@@ -663,7 +664,7 @@ public class DistributionService {
         return null;
     }
 
-    private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds) {
+    private boolean isDailyClaimLimitAvailable(List<String> mediaAccountIds, int dailyClaimLimit) {
         Instant dayStart = dailyLimitDayStart();
         long todayCount = dailyClaimCount(mediaAccountIds, dayStart)
                 + taskRepository.countByMediaAccountIdInAndClaimedAtIsNullAndUpdatedAtGreaterThanEqualAndStatusIn(
@@ -671,7 +672,7 @@ public class DistributionService {
                         dayStart,
                         DAILY_CLAIMED_TASK_STATUSES
                 );
-        return todayCount < DAILY_CLAIM_LIMIT;
+        return todayCount < dailyClaimLimit;
     }
 
     private long dailyClaimCount(List<String> mediaAccountIds, Instant dayStart) {
@@ -707,9 +708,13 @@ public class DistributionService {
     }
 
     private BusinessException dailyClaimLimitReachedException() {
+        return dailyClaimLimitReachedException(DAILY_CLAIM_LIMIT);
+    }
+
+    private BusinessException dailyClaimLimitReachedException(int dailyClaimLimit) {
         return new BusinessException(
                 "DAILY_CLAIM_LIMIT_REACHED",
-                "当前客户端今日领取任务次数已达 " + DAILY_CLAIM_LIMIT + " 次（视频号任务），请明天再执行。",
+                "当前客户端今日领取任务次数已达 " + dailyClaimLimit + " 次（视频号任务），请明天再执行。",
                 HttpStatus.TOO_MANY_REQUESTS
         );
     }
@@ -753,6 +758,15 @@ public class DistributionService {
             return List.of(media.getId());
         }
         return ids;
+    }
+
+    private int dailyClaimLimitFor(MediaAccount media) {
+        if (media == null || accountRepository == null || !hasText(media.getOwnerAccountId())) {
+            return DAILY_CLAIM_LIMIT;
+        }
+        return accountRepository.findById(media.getOwnerAccountId())
+                .map(Account::getDailyClaimLimit)
+                .orElse(DAILY_CLAIM_LIMIT);
     }
 
     private String dailyLimitClientKey(MediaAccount media) {

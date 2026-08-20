@@ -11,6 +11,8 @@ export type Account = {
   username: string;
   roles: string[];
   enabled: boolean;
+  dailyClaimLimit: number;
+  todayClaimCount: number;
   boundDeviceId?: string;
   lastLoginDeviceId?: string;
   lastLoginAt?: string;
