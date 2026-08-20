@@ -161,6 +161,48 @@ def test_check_update_sends_platform_and_current_version(monkeypatch):
     ]
 
 
+def test_post_multipart_keeps_multipart_when_only_form_fields(monkeypatch):
+    requests = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"success": True, "data": {"ok": True}, "error": None}
+
+    class Client:
+        def __init__(self, base_url, timeout):
+            self.base_url = base_url
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method, path, json=None, data=None, files=None, headers=None):
+            requests.append((method, path, json, data, files, headers))
+            return Response()
+
+    monkeypatch.setattr("aidrama_desktop.api.client.httpx.Client", Client)
+    store = Store()
+    store.token = "token-1"
+    client = ApiClient("http://server/api", store)
+
+    assert client.post_multipart("/admin/dramas/sync-assets/client-complete/drama-1", data={"summary": "简介"}) == {"ok": True}
+    assert requests == [
+        (
+            "POST",
+            "/admin/dramas/sync-assets/client-complete/drama-1",
+            None,
+            None,
+            [("summary", (None, "简介"))],
+            {"Authorization": "Bearer token-1"},
+        )
+    ]
+
+
 def test_authenticated_request_refreshes_token_once_for_expired_auth(monkeypatch):
     requests = []
 

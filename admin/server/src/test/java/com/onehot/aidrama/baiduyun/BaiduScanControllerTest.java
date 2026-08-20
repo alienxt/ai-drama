@@ -57,6 +57,24 @@ class BaiduScanControllerTest {
         verify(scanner).syncImportedAssets(List.of("drama-1", "drama-2"));
     }
 
+    @Test
+    void acceptsClientCompleteFormSubmissionForSummaryOnlySync() {
+        BaiduDramaScanner scanner = mock(BaiduDramaScanner.class);
+        BaiduScanController controller = new BaiduScanController(scanner, Runnable::run, systemTaskService());
+        com.onehot.aidrama.dramas.Drama drama = new com.onehot.aidrama.dramas.Drama();
+        drama.setId("drama-1");
+        drama.setSummary("原始简介");
+        drama.setCoverUrl("/covers/cover.jpg");
+        when(scanner.applyClientAssetSync("drama-1", "原始简介", null, null)).thenReturn(drama);
+
+        var response = controller.clientSyncCompleteForm("drama-1", "原始简介", null);
+
+        assertThat(response.data().dramaId()).isEqualTo("drama-1");
+        assertThat(response.data().summary()).isEqualTo("原始简介");
+        assertThat(response.data().coverUrl()).isEqualTo("/covers/cover.jpg");
+        verify(scanner).applyClientAssetSync("drama-1", "原始简介", null, null);
+    }
+
     private SystemTaskService systemTaskService() {
         SystemTaskRepository repository = mock(SystemTaskRepository.class);
         when(repository.save(any(SystemTask.class))).thenAnswer(invocation -> invocation.getArgument(0));

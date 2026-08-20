@@ -59,7 +59,7 @@ class ApiClient:
         files: dict[str, tuple[str, bytes, str]] | None = None,
         auth: bool = True,
     ) -> Any:
-        return self._request("POST", path, auth=auth, data=data, files=files)
+        return self._request("POST", path, auth=auth, files=self._multipart_parts(data, files))
 
     def put(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request("PUT", path, payload)
@@ -88,7 +88,12 @@ class ApiClient:
             headers = self._headers() if auth else {}
             try:
                 with httpx.Client(base_url=self.base_url, timeout=API_REQUEST_TIMEOUT_SECONDS) as client:
-                    response = client.request(method, path, json=payload, data=data, files=files, headers=headers)
+                    request_kwargs: dict[str, Any] = {"json": payload, "headers": headers}
+                    if data is not None:
+                        request_kwargs["data"] = data
+                    if files is not None:
+                        request_kwargs["files"] = files
+                    response = client.request(method, path, **request_kwargs)
             except httpx.TimeoutException as exception:
                 raise ApiError("服务请求超时，请稍后重试。") from exception
             except httpx.RequestError as exception:
@@ -104,6 +109,20 @@ class ApiClient:
                 error = body.get("error") or {}
                 raise ApiError(error.get("message", "API request failed"))
             return body.get("data")
+
+    @staticmethod
+    def _multipart_parts(
+        data: dict[str, Any] | None,
+        files: dict[str, tuple[str, bytes, str]] | None,
+    ) -> list[tuple[str, Any]]:
+        parts: list[tuple[str, Any]] = []
+        for key, value in (data or {}).items():
+            if value is None:
+                continue
+            parts.append((key, (None, str(value))))
+        for key, value in (files or {}).items():
+            parts.append((key, value))
+        return parts
 
     def _refresh_auth(self) -> bool:
         if not self.auth_refresher:

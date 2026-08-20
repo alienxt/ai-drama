@@ -107,6 +107,19 @@ class UploadLocalDramasTest(unittest.TestCase):
             self.assertFalse(readiness.ready)
             self.assertEqual(readiness.reason, "episode files 3/2")
 
+    def test_connection_reset_is_wrapped_as_retryable_upload_error(self):
+        original_urlopen = uploader.urlopen
+
+        def raise_connection_reset(*_args, **_kwargs):
+            raise ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。")
+
+        uploader.urlopen = raise_connection_reset
+        try:
+            with self.assertRaisesRegex(uploader.UploadError, "Network error"):
+                uploader.request_json("https://d.pcs.baidu.com/rest/2.0/pcs/superfile2")
+        finally:
+            uploader.urlopen = original_urlopen
+
 
 if __name__ == "__main__":
     unittest.main()

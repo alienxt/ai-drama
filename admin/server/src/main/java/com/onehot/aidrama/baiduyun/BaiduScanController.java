@@ -114,6 +114,24 @@ public class BaiduScanController {
             @RequestPart(required = false) MultipartFile cover
     ) throws IOException {
         byte[] coverBytes = cover == null || cover.isEmpty() ? null : cover.getBytes();
+        return completeClientAssetSync(id, summary, coverPath, coverBytes);
+    }
+
+    @PostMapping(value = "/sync-assets/client-complete/{id}", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ApiResponse<ClientSyncCompleteResponse> clientSyncCompleteForm(
+            @PathVariable String id,
+            @RequestParam(required = false) String summary,
+            @RequestParam(required = false) String coverPath
+    ) {
+        return completeClientAssetSync(id, summary, coverPath, null);
+    }
+
+    private ApiResponse<ClientSyncCompleteResponse> completeClientAssetSync(
+            String id,
+            String summary,
+            String coverPath,
+            byte[] coverBytes
+    ) {
         Drama drama = scanner.applyClientAssetSync(id, summary, coverPath, coverBytes);
         return ApiResponse.ok(new ClientSyncCompleteResponse(drama.getId(), drama.getCoverUrl(), drama.getSummary()), MDC.get(TraceIdFilter.TRACE_ID));
     }

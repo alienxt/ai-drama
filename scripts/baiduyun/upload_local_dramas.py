@@ -30,6 +30,8 @@ XPAN_FILE_URL = "https://pan.baidu.com/rest/2.0/xpan/file"
 PCS_UPLOAD_URL = "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2"
 DEFAULT_USER_AGENT = "pan.baidu.com"
 DEFAULT_REFERER = "https://pan.baidu.com/"
+DEFAULT_TIMEOUT_SECONDS = 180
+DEFAULT_UPLOAD_RETRIES = 6
 CHUNK_SIZE = 4 * 1024 * 1024
 SLICE_MD5_SIZE = 256 * 1024
 MARKER_NAME = ".baidu-uploaded.json"
@@ -276,6 +278,8 @@ def request_json(
         raise UploadError(f"HTTP {exc.code}: {body}") from exc
     except URLError as exc:
         raise UploadError(f"Network error: {exc}") from exc
+    except OSError as exc:
+        raise UploadError(f"Network error: {exc}") from exc
     if not raw:
         return {}
     try:
@@ -383,11 +387,11 @@ def upload_file(
             if remote_size == local_size:
                 log(f"  skip existing: {display} -> {remote_path} ({format_size(local_size)}, elapsed={format_duration(elapsed)})")
                 return remote_path
-            log(
-                f"  skip different existing file: {display} -> {remote_path} "
-                f"(remoteSize={format_size(remote_size)}, localSize={format_size(local_size)}, elapsed={format_duration(elapsed)})"
+            raise UploadError(
+                f"Remote file exists with different size: {remote_path} "
+                f"(remoteSize={format_size(remote_size)}, localSize={format_size(local_size)}, elapsed={format_duration(elapsed)}). "
+                "Delete the remote file or rerun with --on-duplicate overwrite."
             )
-            return remote_path
 
         md5_info = calculate_md5s(local_path)
         block_list_json = json.dumps(md5_info["block_md5s"], ensure_ascii=False)
@@ -595,12 +599,12 @@ def retry_call(callback, *, retries: int, label: str) -> Any:
     while True:
         try:
             return callback()
-        except UploadError:
+        except UploadError as exc:
             attempt += 1
             if attempt > retries:
                 raise
             wait = min(2**attempt, 10)
-            log(f"  retry {attempt}/{retries}: {label}; wait {wait}s")
+            log(f"  retry {attempt}/{retries}: {label}; wait {wait}s; error={exc}")
             time.sleep(wait)
 
 
@@ -1046,17 +1050,22 @@ def scan_once(args: argparse.Namespace, access_token: str | None = None) -> int:
         config = load_config(args.config)
         access_token = ensure_access_token(config, force_refresh=args.refresh_token, timeout=args.timeout)
 
+    failed_count = 0
     for plan in plans:
-        marker = upload_drama_plan(
-            access_token,
-            plan,
-            on_duplicate=args.on_duplicate,
-            timeout=args.timeout,
-            retries=args.retries,
-            write_marker=not args.no_marker,
-        )
-        log(f"Uploaded marker ready: {marker['remoteDir']} files={len(marker['uploadedFiles'])}")
-    return 0
+        try:
+            marker = upload_drama_plan(
+                access_token,
+                plan,
+                on_duplicate=args.on_duplicate,
+                timeout=args.timeout,
+                retries=args.retries,
+                write_marker=not args.no_marker,
+            )
+            log(f"Uploaded marker ready: {marker['remoteDir']} files={len(marker['uploadedFiles'])}")
+        except UploadError as exc:
+            failed_count += 1
+            log(f"Upload skipped after failure: {plan.title} ({exc})", error=True)
+    return 1 if failed_count else 0
 
 
 def watch(args: argparse.Namespace) -> int:
@@ -1095,8 +1104,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--on-duplicate", choices=("skip", "overwrite", "rename"), default="skip", help="How to handle existing remote files.")
     parser.add_argument("--no-marker", action="store_true", help=f"Do not write {MARKER_NAME} after upload.")
     parser.add_argument("--refresh-token", action="store_true", help="Force refresh Baidu access token before upload.")
-    parser.add_argument("--timeout", type=float, default=120, help="HTTP timeout seconds.")
-    parser.add_argument("--retries", type=int, default=2, help="Retry count for each upload block.")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
+    parser.add_argument("--retries", type=int, default=DEFAULT_UPLOAD_RETRIES, help="Retry count for each upload block.")
     return parser
 
 
