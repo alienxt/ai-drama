@@ -32,16 +32,16 @@ class BaiduDramaScannerTest {
         BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
 
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）", "1.神医归来（80集）", true, 1L, 0)
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）", "1.神医归来（1集）", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/cover.jpg", "cover.jpg", false, 2L, 100),
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/简介.txt", "简介.txt", false, 3L, 100),
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/1.神医归来（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/cover.jpg", "cover.jpg", false, 2L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/简介.txt", "简介.txt", false, 3L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(assetStorage.storeCover("/root/6月15日/1.神医归来（80集）/cover.jpg", baiduPanClient)).thenReturn("/uploads/covers/cover.jpg");
-        when(baiduPanClient.readTextFile("/root/6月15日/1.神医归来（80集）/简介.txt")).thenReturn("真正的剧情简介");
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of());
+        when(assetStorage.storeCover("/root/6月15日/1.神医归来（1集）/cover.jpg", baiduPanClient)).thenReturn("/uploads/covers/cover.jpg");
+        when(baiduPanClient.readTextFile("/root/6月15日/1.神医归来（1集）/简介.txt")).thenReturn("真正的剧情简介");
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/1.神医归来（1集）")).thenReturn(List.of());
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama imported = scanner.scanDateDirectory("/root/6月15日").getFirst();
@@ -62,19 +62,19 @@ class BaiduDramaScannerTest {
 
         when(configService.get("baidu.scanDownloadAssets")).thenReturn(Optional.of("false"));
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）", "1.神医归来（80集）", true, 1L, 0)
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）", "1.神医归来（1集）", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/cover.jpg", "cover.jpg", false, 2L, 100),
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/简介.txt", "简介.txt", false, 3L, 100),
-                new BaiduPanEntry("/root/6月15日/1.神医归来（80集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/1.神医归来（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/cover.jpg", "cover.jpg", false, 2L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/简介.txt", "简介.txt", false, 3L, 100),
+                new BaiduPanEntry("/root/6月15日/1.神医归来（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/1.神医归来（80集）")).thenReturn(List.of());
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/1.神医归来（1集）")).thenReturn(List.of());
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama imported = scanner.scanDateDirectory("/root/6月15日").getFirst();
 
-        assertThat(imported.getSummary()).isEqualTo("神医归来（80集）");
+        assertThat(imported.getSummary()).isEqualTo("神医归来（1集）");
         assertThat(imported.getCoverUrl()).isNull();
         verify(baiduPanClient, never()).readTextFile(any());
         verify(assetStorage, never()).storeCover(any(), any());
@@ -90,20 +90,20 @@ class BaiduDramaScannerTest {
 
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
                 new BaiduPanEntry("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩", "1.百度返回-9（61集）尹洋&邬倩", true, 1L, 0),
-                new BaiduPanEntry("/root/6月15日/2.正常短剧（20集）", "2.正常短剧（20集）", true, 2L, 0)
+                new BaiduPanEntry("/root/6月15日/2.正常短剧（1集）", "2.正常短剧（1集）", true, 2L, 0)
         ));
         when(baiduPanClient.listDirectory("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩"))
                 .thenThrow(new BaiduPanException("Baidu API error -9 for https://pan.baidu.com/rest/2.0/xpan/file?access_token=***"));
-        when(baiduPanClient.listDirectory("/root/6月15日/2.正常短剧（20集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/2.正常短剧（20集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/2.正常短剧（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/2.正常短剧（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/2.正常短剧（20集）")).thenReturn(List.of());
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/2.正常短剧（1集）")).thenReturn(List.of());
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         List<Drama> imported = scanner.scanDateDirectory("/root/6月15日");
 
         assertThat(imported).hasSize(1);
-        assertThat(imported.getFirst().getSourcePath()).isEqualTo("/root/6月15日/2.正常短剧（20集）");
+        assertThat(imported.getFirst().getSourcePath()).isEqualTo("/root/6月15日/2.正常短剧（1集）");
         verify(dramaRepository, never()).findAllBySourcePath("/root/6月15日/1.百度返回-9（61集）尹洋&邬倩");
     }
 
@@ -161,6 +161,30 @@ class BaiduDramaScannerTest {
     }
 
     @Test
+    void skipsIncompleteDramaDirectoryUntilAllEpisodesAreUploaded() {
+        BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        SystemConfigService configService = mock(SystemConfigService.class);
+        BaiduAssetStorage assetStorage = mock(BaiduAssetStorage.class);
+        BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
+
+        when(baiduPanClient.listDirectory("/root/8月18日")).thenReturn(List.of(
+                new BaiduPanEntry("/root/8月18日/他的偏爱成光（3集）", "他的偏爱成光（3集）", true, 1L, 0)
+        ));
+        when(baiduPanClient.listDirectory("/root/8月18日/他的偏爱成光（3集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/8月18日/他的偏爱成光（3集）/简介.txt", "简介.txt", false, 2L, 100),
+                new BaiduPanEntry("/root/8月18日/他的偏爱成光（3集）/第01集.mp4", "第01集.mp4", false, 3L, 100),
+                new BaiduPanEntry("/root/8月18日/他的偏爱成光（3集）/第02集.mp4", "第02集.mp4", false, 4L, 100)
+        ));
+
+        List<Drama> imported = scanner.scanDateDirectory("/root/8月18日");
+
+        assertThat(imported).isEmpty();
+        verify(dramaRepository, never()).findAllBySourcePath(any());
+        verify(dramaRepository, never()).save(any(Drama.class));
+    }
+
+    @Test
     void failedLatestDateScanDoesNotUpdateLastScanTime() {
         BaiduPanClient baiduPanClient = mock(BaiduPanClient.class);
         DramaRepository dramaRepository = mock(DramaRepository.class);
@@ -184,20 +208,20 @@ class BaiduDramaScannerTest {
         BaiduDramaScanner scanner = new BaiduDramaScanner(baiduPanClient, dramaRepository, configService, assetStorage);
 
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（45集）主演", "2.花瓶千年第三季（45集）主演", true, 1L, 0)
+                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（1集）主演", "2.花瓶千年第三季（1集）主演", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月15日/2.花瓶千年第 三季（45集）主演")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（45集）主演/简介.txt", "简介.txt", false, 3L, 100),
-                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（45集）主演/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/2.花瓶千年第 三季（1集）主演")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（1集）主演/简介.txt", "简介.txt", false, 3L, 100),
+                new BaiduPanEntry("/root/6月15日/2.花瓶千年第 三季（1集）主演/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(baiduPanClient.readTextFile("/root/6月15日/2.花瓶千年第 三季（45集）主演/简介.txt"))
+        when(baiduPanClient.readTextFile("/root/6月15日/2.花瓶千年第 三季（1集）主演/简介.txt"))
                 .thenReturn("{\"error_code\":302,\"request_id\":378608807925327015}");
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/2.花瓶千年第 三季（45集）主演")).thenReturn(List.of());
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/2.花瓶千年第 三季（1集）主演")).thenReturn(List.of());
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama imported = scanner.scanDateDirectory("/root/6月15日").getFirst();
 
-        assertThat(imported.getSummary()).isEqualTo("花瓶千年第三季（45集）主演");
+        assertThat(imported.getSummary()).isEqualTo("花瓶千年第三季（1集）主演");
     }
 
     @Test
@@ -255,15 +279,15 @@ class BaiduDramaScannerTest {
         existing.setTitle("后台维护标题");
         existing.setSummary("后台维护简介");
         existing.setCoverUrl("/uploads/covers/existing.jpg");
-        existing.setSourcePath("/root/6月15日/3.重新扫描会缺素材（20集）");
+        existing.setSourcePath("/root/6月15日/3.重新扫描会缺素材（1集）");
 
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/3.重新扫描会缺素材（20集）", "3.重新扫描会缺素材（20集）", true, 1L, 0)
+                new BaiduPanEntry("/root/6月15日/3.重新扫描会缺素材（1集）", "3.重新扫描会缺素材（1集）", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月15日/3.重新扫描会缺素材（20集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/3.重新扫描会缺素材（20集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/3.重新扫描会缺素材（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/3.重新扫描会缺素材（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/3.重新扫描会缺素材（20集）")).thenReturn(List.of(existing));
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/3.重新扫描会缺素材（1集）")).thenReturn(List.of(existing));
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama rescanned = scanner.scanDateDirectory("/root/6月15日").getFirst();
@@ -287,15 +311,15 @@ class BaiduDramaScannerTest {
         existing.setAiTitle("AI 剧名");
         existing.setAiCoverUrl("/uploads/ai-covers/existing.jpg");
         existing.setStatus(DramaStatus.READY);
-        existing.setSourcePath("/root/6月15日/4.已准备短剧（20集）");
+        existing.setSourcePath("/root/6月15日/4.已准备短剧（1集）");
 
         when(baiduPanClient.listDirectory("/root/6月15日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/4.已准备短剧（20集）", "4.已准备短剧（20集）", true, 1L, 0)
+                new BaiduPanEntry("/root/6月15日/4.已准备短剧（1集）", "4.已准备短剧（1集）", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月15日/4.已准备短剧（20集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月15日/4.已准备短剧（20集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月15日/4.已准备短剧（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月15日/4.已准备短剧（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(dramaRepository.findAllBySourcePath("/root/6月15日/4.已准备短剧（20集）")).thenReturn(List.of(existing));
+        when(dramaRepository.findAllBySourcePath("/root/6月15日/4.已准备短剧（1集）")).thenReturn(List.of(existing));
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama rescanned = scanner.scanDateDirectory("/root/6月15日").getFirst();
@@ -313,19 +337,19 @@ class BaiduDramaScannerTest {
         Drama first = new Drama();
         first.setId("drama-1");
         first.setTitle("保留的后台标题");
-        first.setSourcePath("/root/6月19日/1.神医归来（80集）");
+        first.setSourcePath("/root/6月19日/1.神医归来（1集）");
         Drama duplicate = new Drama();
         duplicate.setId("drama-2");
         duplicate.setTitle("重复记录");
-        duplicate.setSourcePath("/root/6月19日/1.神医归来（80集）");
+        duplicate.setSourcePath("/root/6月19日/1.神医归来（1集）");
 
         when(baiduPanClient.listDirectory("/root/6月19日")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月19日/1.神医归来（80集）", "1.神医归来（80集）", true, 1L, 0)
+                new BaiduPanEntry("/root/6月19日/1.神医归来（1集）", "1.神医归来（1集）", true, 1L, 0)
         ));
-        when(baiduPanClient.listDirectory("/root/6月19日/1.神医归来（80集）")).thenReturn(List.of(
-                new BaiduPanEntry("/root/6月19日/1.神医归来（80集）/01.mp4", "01.mp4", false, 4L, 100)
+        when(baiduPanClient.listDirectory("/root/6月19日/1.神医归来（1集）")).thenReturn(List.of(
+                new BaiduPanEntry("/root/6月19日/1.神医归来（1集）/01.mp4", "01.mp4", false, 4L, 100)
         ));
-        when(dramaRepository.findAllBySourcePath("/root/6月19日/1.神医归来（80集）")).thenReturn(List.of(first, duplicate));
+        when(dramaRepository.findAllBySourcePath("/root/6月19日/1.神医归来（1集）")).thenReturn(List.of(first, duplicate));
         when(dramaRepository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama rescanned = scanner.scanDateDirectory("/root/6月19日").getFirst();

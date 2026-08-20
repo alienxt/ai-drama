@@ -348,6 +348,7 @@ public class BaiduDramaScanner {
         if (planned.episodes().isEmpty()) {
             throw new IllegalArgumentException("no episode video files found");
         }
+        validateCompleteEpisodes(planned);
         List<Drama> matches = dramaRepository.findAllBySourcePath(planned.sourcePath());
         Optional<Drama> existing = matches.stream().findFirst();
         if (matches.size() > 1) {
@@ -384,6 +385,51 @@ public class BaiduDramaScanner {
         ensureTotalMinutes(drama);
         ensureCostAmountWan(drama);
         return dramaRepository.save(drama);
+    }
+
+    private void validateCompleteEpisodes(PlannedDrama planned) {
+        if (planned.episodeCount() <= 0) {
+            return;
+        }
+        Set<Integer> episodeNumbers = new HashSet<>();
+        List<Integer> duplicateNumbers = new ArrayList<>();
+        for (PlannedEpisode episode : planned.episodes()) {
+            if (episode.size() <= 0) {
+                throw new IllegalArgumentException(
+                        "episode file is empty: episodeNo=%d, path=%s".formatted(episode.episodeNo(), episode.path())
+                );
+            }
+            if (!episodeNumbers.add(episode.episodeNo())) {
+                duplicateNumbers.add(episode.episodeNo());
+            }
+        }
+        if (!duplicateNumbers.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "duplicate episode files: episodeNo=%s, expectedCount=%d, sourcePath=%s"
+                            .formatted(duplicateNumbers, planned.episodeCount(), planned.sourcePath())
+            );
+        }
+        List<Integer> missing = new ArrayList<>();
+        for (int episodeNo = 1; episodeNo <= planned.episodeCount(); episodeNo++) {
+            if (!episodeNumbers.contains(episodeNo)) {
+                missing.add(episodeNo);
+            }
+        }
+        if (planned.episodes().size() != planned.episodeCount() || !missing.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "incomplete episode files: expected=%d, actual=%d, missing=%s, sourcePath=%s"
+                            .formatted(planned.episodeCount(), planned.episodes().size(), compactNumbers(missing), planned.sourcePath())
+            );
+        }
+    }
+
+    private String compactNumbers(List<Integer> numbers) {
+        if (numbers.isEmpty()) {
+            return "[]";
+        }
+        int limit = Math.min(numbers.size(), 20);
+        String suffix = numbers.size() > limit ? ", ... total=" + numbers.size() : "";
+        return numbers.subList(0, limit) + suffix;
     }
 
     private void skipIfOriginalTitleAndEpisodeCountAlreadyExist(PlannedDrama planned) {
