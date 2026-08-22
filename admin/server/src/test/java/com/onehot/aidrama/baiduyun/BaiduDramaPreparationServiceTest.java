@@ -79,7 +79,6 @@ class BaiduDramaPreparationServiceTest {
         ready.setAiTitle("已有剧名");
         ready.setAiSummary("已有简介...");
         ready.setAiCoverUrl("/uploads/ai-covers/existing.jpg");
-        ready.setAiVideoCoverUrl("/uploads/ai-covers/existing-video.jpg");
         Drama pending = drama("pending");
         pending.setCoverUrl("/uploads/covers/original.jpg");
         Drama titled = drama("pending");
@@ -91,7 +90,6 @@ class BaiduDramaPreparationServiceTest {
         covered.setAiTitle("新剧名");
         covered.setAiSummary("AI简介...");
         covered.setAiCoverUrl("/uploads/ai-covers/new.jpg");
-        covered.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         when(repository.findAll()).thenReturn(List.of(noCover, ready, pending));
         when(repository.findById("pending")).thenReturn(Optional.of(pending));
         when(aiService.generateTitleForDistribution("pending")).thenReturn(titled);
@@ -121,7 +119,6 @@ class BaiduDramaPreparationServiceTest {
         covered.setAiTitle("已有剧名");
         covered.setAiSummary("已有简介...");
         covered.setAiCoverUrl("/uploads/ai-covers/new.jpg");
-        covered.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         when(aiService.generateCover("drama-1")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -150,7 +147,6 @@ class BaiduDramaPreparationServiceTest {
         covered.setAiTitle("已有剧名");
         covered.setAiSummary("新简介...");
         covered.setAiCoverUrl("/uploads/ai-covers/new.jpg");
-        covered.setAiVideoCoverUrl("/uploads/ai-covers/video.jpg");
         when(aiService.generateSummary("drama-1")).thenReturn(summarized);
         when(aiService.generateCover("drama-1")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -185,7 +181,6 @@ class BaiduDramaPreparationServiceTest {
         Drama drama = preparedDrama("drama-1");
         Drama covered = preparedDrama("drama-1");
         covered.setAiCoverEnUrl("/uploads/ai-covers/en.jpg");
-        covered.setAiVideoCoverEnUrl("/uploads/ai-covers/en-video.jpg");
         when(aiService.generateEnglishCover("drama-1")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -239,7 +234,6 @@ class BaiduDramaPreparationServiceTest {
         drama.setAiTitleEn("English Title");
         drama.setAiSummaryEn("English summary.");
         drama.setAiCoverUrl("/uploads/ai-covers/" + id + ".jpg");
-        drama.setAiVideoCoverUrl("/uploads/ai-covers/" + id + "-video.jpg");
         return drama;
     }
 }

@@ -120,6 +120,89 @@ class UploadLocalDramasTest(unittest.TestCase):
         finally:
             uploader.urlopen = original_urlopen
 
+    def test_upload_file_can_use_cached_existing_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = Path(tmpdir) / "one.txt"
+            local_path.write_bytes(b"one")
+            original_remote_entry = uploader.remote_entry
+
+            def fail_remote_entry(*_args, **_kwargs):
+                raise AssertionError("remote_entry should not be called")
+
+            uploader.remote_entry = fail_remote_entry
+            try:
+                result = uploader.upload_file(
+                    "token",
+                    local_path,
+                    "/remote/one.txt",
+                    existing_entry={"size": local_path.stat().st_size},
+                    skip_remote_check=True,
+                )
+            finally:
+                uploader.remote_entry = original_remote_entry
+
+            self.assertEqual(result, "/remote/one.txt")
+
+    def test_upload_drama_plan_keeps_episode_order_with_workers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            drama_dir = Path(tmpdir) / "并发上传"
+            drama_dir.mkdir()
+            (drama_dir / "视频信息.txt").write_text("名称：并发上传\n集数：3\n", encoding="utf-8")
+            (drama_dir / "第01集.mp4").write_bytes(b"one")
+            (drama_dir / "第02集.mp4").write_bytes(b"two")
+            (drama_dir / "第03集.mp4").write_bytes(b"three")
+            plan = uploader.build_drama_plan(drama_dir, "/root", "8月20日")
+
+            original_ensure_remote_dir = uploader.ensure_remote_dir
+            original_remote_entries_by_path = uploader.remote_entries_by_path
+            original_upload_bytes = uploader.upload_bytes
+            original_upload_file = uploader.upload_file
+            file_calls = []
+
+            def fake_ensure_remote_dir(*_args, **_kwargs):
+                return None
+
+            def fake_remote_entries_by_path(*_args, **_kwargs):
+                return {}
+
+            def fake_upload_bytes(_access_token, _content, remote_path, **_kwargs):
+                return remote_path
+
+            def fake_upload_file(_access_token, _local_path, remote_path, **kwargs):
+                file_calls.append((remote_path, kwargs.get("skip_remote_check")))
+                return remote_path
+
+            uploader.ensure_remote_dir = fake_ensure_remote_dir
+            uploader.remote_entries_by_path = fake_remote_entries_by_path
+            uploader.upload_bytes = fake_upload_bytes
+            uploader.upload_file = fake_upload_file
+            try:
+                marker = uploader.upload_drama_plan(
+                    "token",
+                    plan,
+                    on_duplicate="skip",
+                    timeout=1,
+                    retries=0,
+                    write_marker=False,
+                    upload_workers=2,
+                )
+            finally:
+                uploader.ensure_remote_dir = original_ensure_remote_dir
+                uploader.remote_entries_by_path = original_remote_entries_by_path
+                uploader.upload_bytes = original_upload_bytes
+                uploader.upload_file = original_upload_file
+
+            self.assertEqual(
+                marker["uploadedFiles"],
+                [
+                    "/root/8月20日/并发上传（3集）/简介.txt",
+                    "/root/8月20日/并发上传（3集）/第01集.mp4",
+                    "/root/8月20日/并发上传（3集）/第02集.mp4",
+                    "/root/8月20日/并发上传（3集）/第03集.mp4",
+                ],
+            )
+            self.assertTrue(all(skip_remote_check for _remote_path, skip_remote_check in file_calls))
+
 
 if __name__ == "__main__":
     unittest.main()

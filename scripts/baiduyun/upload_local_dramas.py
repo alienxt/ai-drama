@@ -12,6 +12,7 @@ import re
 import sys
 import tempfile
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -347,6 +348,18 @@ def remote_entry(access_token: str, remote_path: str, *, timeout: float = 60) ->
     return None
 
 
+def remote_entries_by_path(access_token: str, remote_dir: str, *, timeout: float = 60) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in list_directory(access_token, remote_dir, timeout=timeout):
+        path = entry.get("path")
+        if path:
+            entries[str(path)] = entry
+        name = entry.get("server_filename")
+        if name:
+            entries[posixpath.join(remote_dir, str(name))] = entry
+    return entries
+
+
 def ensure_remote_dir(access_token: str, remote_dir: str, *, timeout: float = 60) -> None:
     current = ""
     for part in [item for item in remote_dir.strip("/").split("/") if item]:
@@ -372,6 +385,8 @@ def upload_file(
     timeout: float = 120,
     retries: int = 2,
     label: str | None = None,
+    existing_entry: dict[str, Any] | None = None,
+    skip_remote_check: bool = False,
 ) -> str:
     local_path = local_path.expanduser()
     if not local_path.is_file():
@@ -380,7 +395,9 @@ def upload_file(
     local_size = local_path.stat().st_size
     display = label or local_path.name
     try:
-        existing = remote_entry(access_token, remote_path, timeout=timeout)
+        existing = existing_entry
+        if on_duplicate == "skip" and existing is None and not skip_remote_check:
+            existing = remote_entry(access_token, remote_path, timeout=timeout)
         if existing and on_duplicate == "skip":
             elapsed = time.perf_counter() - started_at
             remote_size = int(existing.get("size", -1))
@@ -480,6 +497,8 @@ def upload_bytes(
     timeout: float = 120,
     retries: int = 2,
     label: str | None = None,
+    existing_entry: dict[str, Any] | None = None,
+    skip_remote_check: bool = False,
 ) -> str:
     temp_dir = Path(tempfile.gettempdir())
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +513,8 @@ def upload_bytes(
             timeout=timeout,
             retries=retries,
             label=label,
+            existing_entry=existing_entry,
+            skip_remote_check=skip_remote_check,
         )
     finally:
         try:
@@ -913,6 +934,7 @@ def upload_drama_plan(
     timeout: float,
     retries: int,
     write_marker: bool,
+    upload_workers: int = 1,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     total_bytes = len(summary_file_content(plan).encode("utf-8"))
@@ -926,43 +948,73 @@ def upload_drama_plan(
     uploaded: list[str] = []
     try:
         ensure_remote_dir(access_token, plan.remote_dir, timeout=timeout)
+        known_remote_entries: dict[str, dict[str, Any]] | None = None
+        if on_duplicate == "skip":
+            try:
+                known_remote_entries = remote_entries_by_path(access_token, plan.remote_dir, timeout=timeout)
+            except UploadError as exc:
+                log(f"  remote listing failed; fallback to per-file duplicate checks: {exc}", error=True)
 
         summary_content = summary_file_content(plan).encode("utf-8")
+        summary_remote_path = posixpath.join(plan.remote_dir, "简介.txt")
         uploaded.append(
             upload_bytes(
                 access_token,
                 summary_content,
-                posixpath.join(plan.remote_dir, "简介.txt"),
+                summary_remote_path,
                 on_duplicate=on_duplicate,
                 timeout=timeout,
                 retries=retries,
                 label="summary: 简介.txt",
+                existing_entry=known_remote_entries.get(summary_remote_path) if known_remote_entries is not None else None,
+                skip_remote_check=known_remote_entries is not None,
             )
         )
         if plan.cover_path and plan.cover_remote_name:
+            cover_remote_path = posixpath.join(plan.remote_dir, plan.cover_remote_name)
             uploaded.append(
                 upload_file(
                     access_token,
                     plan.cover_path,
-                    posixpath.join(plan.remote_dir, plan.cover_remote_name),
+                    cover_remote_path,
                     on_duplicate=on_duplicate,
                     timeout=timeout,
                     retries=retries,
                     label=f"cover: {plan.cover_remote_name}",
+                    existing_entry=known_remote_entries.get(cover_remote_path) if known_remote_entries is not None else None,
+                    skip_remote_check=known_remote_entries is not None,
                 )
             )
-        for episode in plan.episodes:
-            uploaded.append(
-                upload_file(
-                    access_token,
-                    episode.path,
-                    posixpath.join(plan.remote_dir, episode.remote_name),
-                    on_duplicate=on_duplicate,
-                    timeout=timeout,
-                    retries=retries,
-                    label=f"episode {episode.episode_no}/{plan.episode_count}: {episode.remote_name}",
-                )
+        episode_workers = max(int(upload_workers), 1)
+        episode_results: list[str] = []
+        if episode_workers > 1 and len(plan.episodes) > 1:
+            log(f"  uploading episodes with {min(episode_workers, len(plan.episodes))} workers")
+            episode_results = upload_episodes_concurrently(
+                access_token,
+                plan,
+                on_duplicate=on_duplicate,
+                timeout=timeout,
+                retries=retries,
+                upload_workers=episode_workers,
+                known_remote_entries=known_remote_entries,
             )
+        else:
+            for episode in plan.episodes:
+                remote_path = posixpath.join(plan.remote_dir, episode.remote_name)
+                episode_results.append(
+                    upload_file(
+                        access_token,
+                        episode.path,
+                        remote_path,
+                        on_duplicate=on_duplicate,
+                        timeout=timeout,
+                        retries=retries,
+                        label=f"episode {episode.episode_no}/{plan.episode_count}: {episode.remote_name}",
+                        existing_entry=known_remote_entries.get(remote_path) if known_remote_entries is not None else None,
+                        skip_remote_check=known_remote_entries is not None,
+                    )
+                )
+        uploaded.extend(episode_results)
 
         elapsed = time.perf_counter() - started_at
         marker = {
@@ -984,6 +1036,47 @@ def upload_drama_plan(
         elapsed = time.perf_counter() - started_at
         log(f"Drama upload failed: {plan.title} (elapsed={format_duration(elapsed)}, error={exc})", error=True)
         raise
+
+
+def upload_episodes_concurrently(
+    access_token: str,
+    plan: LocalDramaPlan,
+    *,
+    on_duplicate: str,
+    timeout: float,
+    retries: int,
+    upload_workers: int,
+    known_remote_entries: dict[str, dict[str, Any]] | None,
+) -> list[str]:
+    results: list[str | None] = [None] * len(plan.episodes)
+    futures: dict[Future[str], int] = {}
+    executor = ThreadPoolExecutor(max_workers=min(upload_workers, len(plan.episodes)))
+    try:
+        for index, episode in enumerate(plan.episodes):
+            remote_path = posixpath.join(plan.remote_dir, episode.remote_name)
+            future = executor.submit(
+                upload_file,
+                access_token,
+                episode.path,
+                remote_path,
+                on_duplicate=on_duplicate,
+                timeout=timeout,
+                retries=retries,
+                label=f"episode {episode.episode_no}/{plan.episode_count}: {episode.remote_name}",
+                existing_entry=known_remote_entries.get(remote_path) if known_remote_entries is not None else None,
+                skip_remote_check=known_remote_entries is not None,
+            )
+            futures[future] = index
+        for future in as_completed(futures):
+            try:
+                results[futures[future]] = future.result()
+            except Exception:
+                for pending in futures:
+                    pending.cancel()
+                raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    return [result for result in results if result is not None]
 
 
 def summary_file_content(plan: LocalDramaPlan) -> str:
@@ -1060,6 +1153,7 @@ def scan_once(args: argparse.Namespace, access_token: str | None = None) -> int:
                 timeout=args.timeout,
                 retries=args.retries,
                 write_marker=not args.no_marker,
+                upload_workers=args.upload_workers,
             )
             log(f"Uploaded marker ready: {marker['remoteDir']} files={len(marker['uploadedFiles'])}")
         except UploadError as exc:
@@ -1106,6 +1200,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--refresh-token", action="store_true", help="Force refresh Baidu access token before upload.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
     parser.add_argument("--retries", type=int, default=DEFAULT_UPLOAD_RETRIES, help="Retry count for each upload block.")
+    parser.add_argument("--upload-workers", type=int, default=1, help="Parallel episode upload workers. Use 1 for serial uploads; try 3-4 for faster batches.")
     return parser
 
 

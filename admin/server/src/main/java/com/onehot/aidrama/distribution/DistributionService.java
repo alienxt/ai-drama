@@ -1235,12 +1235,10 @@ public class DistributionService {
         return hasText(drama.getAiTitle())
                 && hasText(drama.getAiSummary())
                 && hasText(drama.getAiCoverUrl())
-                && hasText(drama.getAiVideoCoverUrl())
                 && (!requireTikTokAssets
                 || (hasText(drama.getAiTitleEn())
                         && hasText(drama.getAiSummaryEn())
-                        && hasText(drama.getAiCoverEnUrl())
-                        && hasText(drama.getAiVideoCoverEnUrl())))
+                        && hasText(drama.getAiCoverEnUrl())))
                 && !drama.isAiCoverGenerating()
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
@@ -1474,9 +1472,9 @@ public class DistributionService {
 
     private String preparationFailedReason(boolean requireTikTokAssets) {
         if (requireTikTokAssets) {
-            return "AI 剧名、AI 简介、AI 封面、视频封面或 TK 英文封面生成失败，请检查 OpenAI 配置后重试";
+            return "AI 剧名、AI 简介、AI 封面或 TK 英文封面生成失败，请检查 OpenAI 配置后重试";
         }
-        return "AI 剧名、AI 简介、AI 封面或视频封面生成失败，请检查 OpenAI 配置后重试";
+        return "AI 剧名、AI 简介或 AI 封面生成失败，请检查 OpenAI 配置后重试";
     }
 
     private boolean requiresTikTokAssets(DistributionTask task) {

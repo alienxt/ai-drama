@@ -52,25 +52,10 @@ public class DramaAiService {
             画面文字只能出现“封面剧名”，必须逐字准确呈现，不增字、不漏字、不换字，不要出现原始剧名、旧标题、副标题或其他额外文字。
             不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
             """;
-    private static final String DEFAULT_VIDEO_COVER_PROMPT = """
-            你是短剧视频封面视觉总监。根据封面剧名、简介和原始封面信息，生成一张横版中文短剧视频封面。
-            画面要求：16:9 横版构图，适合 1280x720 视频首帧和视频缩略图；保持美感和人物吸引力；人物好看、有情绪、有关系张力；氛围精致，有悬念和看点，让用户看了想点进内容。
-            封面中要嵌入“封面剧名”的中文标题，标题清晰醒目但不要生成大段文字；标题和人物不要贴边，避免被视频平台裁切。
-            标题字体必须使用端正宋体/明朝体印刷字风格，横平竖直、笔画完整、字形规范；不要使用草书、行书、书法飞白、手写笔刷、连笔、异体字或艺术变形。
-            画面文字只能出现“封面剧名”，必须逐字准确呈现，不增字、不漏字、不换字，不要出现原始剧名、旧标题、副标题或其他额外文字。
-            不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
-            """;
     private static final String DEFAULT_COVER_EN_PROMPT = """
             你是 TikTok 短剧封面视觉总监。根据英文封面剧名、简介和参考封面信息，生成一张竖版英文短剧封面。
             画面要求：9:16 竖版海报；适合 TikTok Drama；保持人物吸引力、情绪张力和戏剧悬念。
             封面中只能出现“英文封面剧名”的英文标题，标题清晰醒目但不要生成大段文字；不要出现中文、原始剧名、旧标题、副标题或其他额外文字。
-            如果参考封面里有中文剧名，请理解为需要把中文剧名替换成英文封面剧名，而不是保留中文。
-            不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
-            """;
-    private static final String DEFAULT_VIDEO_COVER_EN_PROMPT = """
-            你是 TikTok 短剧视频封面视觉总监。根据英文封面剧名、简介和参考封面信息，生成一张横版英文短剧视频封面。
-            画面要求：16:9 横版构图，适合 1280x720 视频首帧和视频缩略图；保持人物吸引力、情绪张力和戏剧悬念。
-            封面中只能出现“英文封面剧名”的英文标题，标题和人物不要贴边，避免被视频平台裁切；不要出现中文、原始剧名、旧标题、副标题或其他额外文字。
             如果参考封面里有中文剧名，请理解为需要把中文剧名替换成英文封面剧名，而不是保留中文。
             不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
             """;
@@ -125,87 +110,41 @@ public class DramaAiService {
 
     public Drama generateCover(String id) {
         Drama drama = get(id);
+        if (!trimToEmpty(drama.getAiCoverUrl()).isBlank()) {
+            drama.setAiCoverGenerating(false);
+            return repository.save(drama);
+        }
         String coverPrompt = config("openai.prompts.dramaCover", DEFAULT_COVER_PROMPT) + "\n\n" + coverContext(drama);
-        String videoCoverPrompt = config("openai.prompts.dramaVideoCover", DEFAULT_VIDEO_COVER_PROMPT) + "\n\n" + videoCoverContext(drama);
         return withAiErrors(() -> {
-            if (trimToEmpty(drama.getAiCoverUrl()).isBlank()) {
-                final String coverImageBase64 = aiTaskService.run(
-                        imageTask(AiTaskType.DRAMA_COVER, drama, coverPrompt, aiService.imageSize()),
-                        () -> aiService.generateImageBase64(coverPrompt, aiService.imageSize()),
-                        result -> Map.of(
-                                "outputFormat", aiService.imageOutputFormat(),
-                                "size", aiService.imageSize()
-                        )
-                );
-                return aiTaskService.run(
-                        imageTask(AiTaskType.DRAMA_VIDEO_COVER, drama, videoCoverPrompt, aiService.videoCoverImageSize()),
-                        () -> saveCoverResult(
-                                drama,
-                                coverImageBase64,
-                                aiService.generateImageBase64(videoCoverPrompt, aiService.videoCoverImageSize())
-                        ),
-                        result -> mapOf(
-                                "aiCoverUrl", result.getAiCoverUrl(),
-                                "aiVideoCoverUrl", result.getAiVideoCoverUrl(),
-                                "size", aiService.videoCoverImageSize(),
-                                "outputFormat", aiService.imageOutputFormat()
-                        )
-                );
-            }
-            return aiTaskService.run(
-                    imageTask(AiTaskType.DRAMA_VIDEO_COVER, drama, videoCoverPrompt, aiService.videoCoverImageSize()),
-                    () -> saveCoverResult(
-                            drama,
-                            null,
-                            aiService.generateImageBase64(videoCoverPrompt, aiService.videoCoverImageSize())
-                    ),
-                    result -> mapOf(
-                            "aiCoverUrl", result.getAiCoverUrl(),
-                            "aiVideoCoverUrl", result.getAiVideoCoverUrl(),
-                            "size", aiService.videoCoverImageSize(),
-                            "outputFormat", aiService.imageOutputFormat()
+            String coverImageBase64 = aiTaskService.run(
+                    imageTask(AiTaskType.DRAMA_COVER, drama, coverPrompt, aiService.imageSize()),
+                    () -> aiService.generateImageBase64(coverPrompt, aiService.imageSize()),
+                    result -> Map.of(
+                            "outputFormat", aiService.imageOutputFormat(),
+                            "size", aiService.imageSize()
                     )
             );
+            return saveCoverResult(drama, coverImageBase64, null);
         });
     }
 
     public Drama generateEnglishCover(String id) {
         Drama drama = get(id);
+        if (!trimToEmpty(drama.getAiCoverEnUrl()).isBlank()) {
+            drama.setAiCoverGenerating(false);
+            return repository.save(drama);
+        }
         String coverPrompt = config("openai.prompts.dramaCoverEn", DEFAULT_COVER_EN_PROMPT) + "\n\n" + englishCoverContext(drama);
-        String videoCoverPrompt = config("openai.prompts.dramaVideoCoverEn", DEFAULT_VIDEO_COVER_EN_PROMPT) + "\n\n" + englishVideoCoverContext(drama);
         return withAiErrors(() -> {
-            String coverImageBase64 = null;
-            if (trimToEmpty(drama.getAiCoverEnUrl()).isBlank()) {
-                coverImageBase64 = aiTaskService.run(
-                        imageTask(AiTaskType.DRAMA_COVER_EN, drama, coverPrompt, aiService.imageSize()),
-                        () -> aiService.generateImageBase64(coverPrompt, aiService.imageSize()),
-                        result -> Map.of(
-                                "outputFormat", aiService.imageOutputFormat(),
-                                "size", aiService.imageSize()
-                        )
-                );
-            }
-            if (trimToEmpty(drama.getAiVideoCoverEnUrl()).isBlank()) {
-                final String finalCoverImageBase64 = coverImageBase64;
-                return aiTaskService.run(
-                        imageTask(AiTaskType.DRAMA_VIDEO_COVER_EN, drama, videoCoverPrompt, aiService.videoCoverImageSize()),
-                        () -> saveEnglishCoverResult(
-                                drama,
-                                finalCoverImageBase64,
-                                aiService.generateImageBase64(videoCoverPrompt, aiService.videoCoverImageSize())
-                        ),
-                        result -> mapOf(
-                                "aiCoverEnUrl", result.getAiCoverEnUrl(),
-                                "aiVideoCoverEnUrl", result.getAiVideoCoverEnUrl(),
-                                "size", aiService.videoCoverImageSize(),
-                                "outputFormat", aiService.imageOutputFormat()
-                        )
-                );
-            }
-            if (coverImageBase64 != null) {
-                return saveEnglishCoverResult(drama, coverImageBase64, null);
-            }
-            return drama;
+            String coverImageBase64 = aiTaskService.run(
+                    imageTask(AiTaskType.DRAMA_COVER_EN, drama, coverPrompt, aiService.imageSize()),
+                    () -> aiService.generateImageBase64(coverPrompt, aiService.imageSize()),
+                    result -> Map.of(
+                            "outputFormat", aiService.imageOutputFormat(),
+                            "size", aiService.imageSize()
+                    )
+            );
+            return saveEnglishCoverResult(drama, coverImageBase64, null);
         });
     }
 
@@ -402,7 +341,9 @@ public class DramaAiService {
         if (coverImageBase64 != null && !coverImageBase64.isBlank()) {
             drama.setAiCoverUrl(coverStorage.store(coverImageBase64, outputFormat));
         }
-        drama.setAiVideoCoverUrl(coverStorage.store(videoCoverImageBase64, outputFormat));
+        if (videoCoverImageBase64 != null && !videoCoverImageBase64.isBlank()) {
+            drama.setAiVideoCoverUrl(coverStorage.store(videoCoverImageBase64, outputFormat));
+        }
         drama.setAiCoverGenerating(false);
         return repository.save(drama);
     }
@@ -450,10 +391,6 @@ public class DramaAiService {
         );
     }
 
-    private String videoCoverContext(Drama drama) {
-        return coverContext(drama) + "\n视频目标：横版视频首帧和缩略图，最终会用于 1280x720 横屏视频。";
-    }
-
     private String englishCoverContext(Drama drama) {
         return """
                 英文封面剧名：%s
@@ -470,10 +407,6 @@ public class DramaAiService {
                 blankToNone(firstText(drama.getAiCoverUrl(), drama.getCoverUrl())),
                 blankToNone(drama.getAiCoverUrl())
         );
-    }
-
-    private String englishVideoCoverContext(Drama drama) {
-        return englishCoverContext(drama) + "\n视频目标：横版视频首帧和缩略图，最终会用于 1280x720 横屏视频。";
     }
 
     private String coverTitle(Drama drama) {

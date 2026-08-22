@@ -137,9 +137,7 @@ TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON = "TK表单上传待时间。"
 DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME = "用户1182"
 DRAMA_ASSET_FILENAMES = (
     "fengmian.jpg",
-    "video-cover.jpg",
     "fengmian-en.jpg",
-    "video-cover-en.jpg",
     TIKTOK_COVER_FILENAME,
     "meta.json",
     DOWNLOAD_EPISODE_MANIFEST_FILENAME,
@@ -2483,7 +2481,18 @@ class TaskRunner:
         single_transcode = getattr(self.processor, "transcode_for_wechat_video", None)
         if not callable(single_transcode):
             return source_items
-        config = (self.video_reassembly_config or VideoReassemblyConfig(method="none")).normalized()
+        config = (
+            self.video_reassembly_config.normalized()
+            if self.video_reassembly_config is not None
+            else VideoReassemblyConfig(
+                method="none",
+                trim_head_seconds=0.0,
+                trim_tail_seconds=0.0,
+                speed_min_percent=0.0,
+                speed_max_percent=0.0,
+                bgm_volume_percent=0.0,
+            ).normalized()
+        )
         bgm_files = self._video_reassembly_bgm_files(config, task_id, drama_title)
         cover_file: Path | None = None
         upload_items: list[EpisodeMediaFile] = []
@@ -2580,20 +2589,25 @@ class TaskRunner:
             transcode_stage = f"视频转码/第 {episode_no} 集"
             transcode_started_at = self._timed_stage_start(transcode_stage, task_id, detail=action)
             try:
+                transcode_kwargs = {}
+                if custom_processing_required:
+                    transcode_kwargs = {
+                        "trim_head_seconds": config.trim_head_seconds,
+                        "trim_tail_seconds": config.trim_tail_seconds,
+                        "speed_factor": self._single_video_speed_factor(config, source_file),
+                        "swap_orientation": config.swap_orientation,
+                        "bgm_files": bgm_files,
+                        "bgm_volume_percent": config.bgm_volume_percent,
+                        "audio_pitch_semitones": config.audio_pitch_semitones,
+                        "border_percent": config.border_percent,
+                        "mirror_horizontal": config.mirror_horizontal,
+                        "rotate_degrees": config.rotate_degrees,
+                    }
                 processed_file = single_transcode(
                     source_file,
                     target,
                     cover_path=None,
-                    trim_head_seconds=config.trim_head_seconds if custom_processing_required else 0.0,
-                    trim_tail_seconds=config.trim_tail_seconds if custom_processing_required else 0.0,
-                    speed_factor=self._single_video_speed_factor(config, source_file) if custom_processing_required else 1.0,
-                    swap_orientation=config.swap_orientation if custom_processing_required else False,
-                    bgm_files=bgm_files if custom_processing_required else None,
-                    bgm_volume_percent=config.bgm_volume_percent if custom_processing_required else 0.0,
-                    audio_pitch_semitones=config.audio_pitch_semitones if custom_processing_required else 0.0,
-                    border_percent=config.border_percent if custom_processing_required else 0.0,
-                    mirror_horizontal=config.mirror_horizontal if custom_processing_required else False,
-                    rotate_degrees=config.rotate_degrees if custom_processing_required else 0.0,
+                    **transcode_kwargs,
                 )
                 self._write_processed_media_signature(processed_file, signature)
                 processed_item = EpisodeMediaFile(
@@ -2990,15 +3004,7 @@ class TaskRunner:
             return None
         asset_dir = self._source_asset_dir(source_files[0])
         poster_cover = asset_dir / "fengmian.jpg"
-        video_cover = asset_dir / "video-cover.jpg"
-        first_source = source_files[0]
-        dimensions = self._video_dimensions(first_source)
-        if dimensions:
-            width, height = dimensions
-            if width > height:
-                return video_cover if video_cover.exists() and video_cover.is_file() else self._existing_file(poster_cover)
-            return self._existing_file(poster_cover)
-        return self._existing_file(poster_cover) or self._existing_file(video_cover)
+        return self._existing_file(poster_cover)
 
     @staticmethod
     def _source_asset_dir(source_file: Path) -> Path:
@@ -3460,8 +3466,6 @@ class TaskRunner:
         cover_file = asset_dir / "fengmian.jpg"
         cover_en_file = asset_dir / "fengmian-en.jpg"
         tiktok_cover_en_file = asset_dir / TIKTOK_COVER_FILENAME
-        video_cover_file = asset_dir / "video-cover.jpg"
-        video_cover_en_file = asset_dir / "video-cover-en.jpg"
         publish_title = self._platform_publish_title(download_plan, platform)
         publish_summary = self._platform_publish_summary(download_plan, platform)
         return {
@@ -3479,8 +3483,8 @@ class TaskRunner:
             "coverFile": cover_file if cover_file.exists() else None,
             "coverEnFile": cover_en_file if cover_en_file.exists() else None,
             "tiktokCoverEnFile": tiktok_cover_en_file if tiktok_cover_en_file.exists() else None,
-            "videoCoverFile": video_cover_file if video_cover_file.exists() else None,
-            "videoCoverEnFile": video_cover_en_file if video_cover_en_file.exists() else None,
+            "videoCoverFile": None,
+            "videoCoverEnFile": None,
             "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
             "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
             "coverEnUrl": download_plan.get("aiCoverEnUrl"),
@@ -3709,15 +3713,7 @@ def download_episodes(
         should_pause=should_pause,
         should_skip=should_skip,
     )
-    video_cover_file = download_video_cover(
-        download_plan,
-        target_dir,
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
+    video_cover_file = None
     cover_en_file = download_english_cover(
         download_plan,
         target_dir,
@@ -3728,15 +3724,7 @@ def download_episodes(
         should_skip=should_skip,
     )
     tiktok_cover_en_file = prepare_tiktok_cover(cover_en_file, target_dir)
-    video_cover_en_file = download_english_video_cover(
-        download_plan,
-        target_dir,
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
+    video_cover_en_file = None
     episodes = download_plan["episodes"]
     total = len(episodes)
     if not episodes:
@@ -4278,26 +4266,6 @@ def download_cover(
     )
 
 
-def download_video_cover(
-    download_plan: dict,
-    target_dir: Path,
-    base_url: str,
-    headers: dict[str, str] | None = None,
-    should_stop: Callable[[], bool] | None = None,
-    should_pause: Callable[[], bool] | None = None,
-    should_skip: Callable[[], bool] | None = None,
-) -> Path | None:
-    return download_plan_asset(
-        download_plan.get("aiVideoCoverUrl"),
-        target_dir / "video-cover.jpg",
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
-
-
 def download_english_cover(
     download_plan: dict,
     target_dir: Path,
@@ -4310,26 +4278,6 @@ def download_english_cover(
     return download_plan_asset(
         download_plan.get("aiCoverEnUrl"),
         target_dir / "fengmian-en.jpg",
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
-
-
-def download_english_video_cover(
-    download_plan: dict,
-    target_dir: Path,
-    base_url: str,
-    headers: dict[str, str] | None = None,
-    should_stop: Callable[[], bool] | None = None,
-    should_pause: Callable[[], bool] | None = None,
-    should_skip: Callable[[], bool] | None = None,
-) -> Path | None:
-    return download_plan_asset(
-        download_plan.get("aiVideoCoverEnUrl"),
-        target_dir / "video-cover-en.jpg",
         base_url,
         headers=headers,
         should_stop=should_stop,

@@ -61,14 +61,6 @@ public class BootstrapConfig {
             aiSummaryEn：适合 TikTok 的英文简介，不超过 160 个英文字符，突出人物关系、反转和悬念，不要编造原简介没有的核心设定。
             不要把温柔、美感、情感向的原题改成血腥暴力、恐怖猎奇或过度复仇表达；避免使用灭门、血洗、屠、虐杀、杀疯、索命等词。
             """;
-    private static final String DEFAULT_VIDEO_COVER_PROMPT = """
-            你是短剧视频封面视觉总监。根据封面剧名、简介和原始封面信息，生成一张横版中文短剧视频封面。
-            画面要求：16:9 横版构图，适合 1280x720 视频首帧和视频缩略图；保持美感和人物吸引力；人物好看、有情绪、有关系张力；氛围精致，有悬念和看点，让用户看了想点进内容。
-            封面中要出现“封面剧名”的中文标题，标题清晰醒目但不要生成大段文字；标题和人物不要贴边，避免被视频平台裁切。
-            画面文字只能出现“封面剧名”，不要出现原始剧名、旧标题、副标题或其他额外文字。
-            不要出现血腥、暴力、伤口、血迹、刀枪、尸体、恐怖猎奇或过度复仇画面；避免品牌水印和平台 Logo。
-            """;
-
     @Bean
     CommandLineRunner bootstrapAdmin(
             AccountService accountService,
@@ -139,7 +131,6 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.textModel", "gpt-5.5", false);
         configService.putIfAbsent("openai.imageModel", "gpt-image-2", false);
         configService.putIfAbsent("openai.imageSize", "1024x1536", false);
-        configService.putIfAbsent("openai.videoCoverImageSize", "1536x1024", false);
         configService.putIfAbsent("openai.imageQuality", "medium", false);
         configService.putIfAbsent("openai.imageOutputFormat", "jpeg", false);
         configService.putIfAbsent("openai.connectTimeoutSeconds", "30", false);
@@ -149,7 +140,6 @@ public class BootstrapConfig {
         configService.putIfAbsent("openai.thirdParty.textModel", "gpt-5.5", false);
         configService.putIfAbsent("openai.thirdParty.imageModel", "gpt-image-2", false);
         configService.putIfAbsent("openai.thirdParty.imageSize", "1024x1536", false);
-        configService.putIfAbsent("openai.thirdParty.videoCoverImageSize", "1536x1024", false);
         configService.putIfAbsent("openai.thirdParty.imageQuality", "medium", false);
         configService.putIfAbsent("openai.thirdParty.imageOutputFormat", "jpeg", false);
         configService.putIfAbsent(
@@ -162,7 +152,6 @@ public class BootstrapConfig {
         putDefaultSummaryPrompt(configService);
         putDefaultMetadataPrompt(configService);
         putDefaultCoverPrompt(configService);
-        putDefaultVideoCoverPrompt(configService);
     }
 
     private void bootstrapStoryboardConfig(SystemConfigService configService) {
@@ -198,10 +187,6 @@ public class BootstrapConfig {
                 || current.equals(OLD_DEFAULT_COVER_PROMPT_WITH_ORIGINAL_TITLE)) {
             configService.put(key, DEFAULT_COVER_PROMPT, false);
         }
-    }
-
-    private void putDefaultVideoCoverPrompt(SystemConfigService configService) {
-        configService.putIfAbsent("openai.prompts.dramaVideoCover", DEFAULT_VIDEO_COVER_PROMPT, false);
     }
 
     private void put(SystemConfigService configService, String key, Object value, boolean secret) {

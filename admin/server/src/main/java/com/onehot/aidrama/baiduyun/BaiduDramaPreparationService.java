@@ -75,11 +75,11 @@ public class BaiduDramaPreparationService {
                     || (requireEnglishCover && (isBlank(prepared.getAiTitleEn()) || isBlank(prepared.getAiSummaryEn())))) {
                 prepared = aiService.generateSummary(drama.getId());
             }
-            if (isBlank(prepared.getAiCoverUrl()) || isBlank(prepared.getAiVideoCoverUrl())) {
+            if (isBlank(prepared.getAiCoverUrl())) {
                 markCoverGenerating(drama.getId(), true);
                 prepared = aiService.generateCover(drama.getId());
             }
-            if (requireEnglishCover && (isBlank(prepared.getAiCoverEnUrl()) || isBlank(prepared.getAiVideoCoverEnUrl()))) {
+            if (requireEnglishCover && isBlank(prepared.getAiCoverEnUrl())) {
                 markCoverGenerating(drama.getId(), true);
                 prepared = aiService.generateEnglishCover(drama.getId());
             }
@@ -119,17 +119,13 @@ public class BaiduDramaPreparationService {
                 && !drama.getAiSummary().isBlank()
                 && drama.getAiCoverUrl() != null
                 && !drama.getAiCoverUrl().isBlank()
-                && drama.getAiVideoCoverUrl() != null
-                && !drama.getAiVideoCoverUrl().isBlank()
                 && (!requireEnglishCover
                 || (drama.getAiTitleEn() != null
                         && !drama.getAiTitleEn().isBlank()
                         && drama.getAiSummaryEn() != null
                         && !drama.getAiSummaryEn().isBlank()
                         && drama.getAiCoverEnUrl() != null
-                        && !drama.getAiCoverEnUrl().isBlank()
-                        && drama.getAiVideoCoverEnUrl() != null
-                        && !drama.getAiVideoCoverEnUrl().isBlank()))
+                        && !drama.getAiCoverEnUrl().isBlank()))
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
     }
@@ -149,8 +145,7 @@ public class BaiduDramaPreparationService {
         }
         return drama.getAiTitle() == null || drama.getAiTitle().isBlank()
                 || drama.getAiSummary() == null || drama.getAiSummary().isBlank()
-                || drama.getAiCoverUrl() == null || drama.getAiCoverUrl().isBlank()
-                || drama.getAiVideoCoverUrl() == null || drama.getAiVideoCoverUrl().isBlank();
+                || drama.getAiCoverUrl() == null || drama.getAiCoverUrl().isBlank();
     }
 
     private boolean isCoolingDown(Drama drama) {

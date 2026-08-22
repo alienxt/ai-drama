@@ -651,7 +651,7 @@ class DistributionServiceTest {
         when(taskRepository.save(pending)).thenReturn(pending);
 
         assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1"))
-                .hasMessageContaining("AI 剧名、AI 简介、AI 封面或视频封面生成失败");
+                .hasMessageContaining("AI 剧名、AI 简介或 AI 封面生成失败");
 
         assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.FAILED);
         assertThat(pending.getFailureReason()).contains("AI 素材生成失败");

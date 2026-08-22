@@ -682,7 +682,7 @@ class TikTokPublisher(WeChatVideoPublisher):
 
     @staticmethod
     def _tiktok_cover_file(metadata: dict[str, Any]) -> Path | None:
-        for key in ("tiktokCoverEnFile", "coverEnFile", "coverFile", "videoCoverEnFile", "videoCoverFile"):
+        for key in ("tiktokCoverEnFile", "coverEnFile", "coverFile"):
             value = metadata.get(key)
             if value and Path(value).exists():
                 return Path(value)

@@ -33,7 +33,6 @@ class DramaAiServiceTest {
         when(aiService.textModel()).thenReturn(AiService.DEFAULT_TEXT_MODEL);
         when(aiService.imageModel()).thenReturn(AiService.DEFAULT_IMAGE_MODEL);
         when(aiService.imageSize()).thenReturn(AiService.DEFAULT_IMAGE_SIZE);
-        when(aiService.videoCoverImageSize()).thenReturn(AiService.DEFAULT_VIDEO_COVER_IMAGE_SIZE);
         when(aiService.imageQuality()).thenReturn(AiService.DEFAULT_IMAGE_QUALITY);
         when(aiService.imageOutputFormat()).thenReturn(AiService.DEFAULT_IMAGE_FORMAT);
         when(aiTaskService.run(any(), any(), any())).thenAnswer(invocation -> {
@@ -278,15 +277,14 @@ class DramaAiServiceTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
-        when(aiService.generateImageBase64(any(), any())).thenReturn("aW1hZ2U=", "dmlkZW8=");
+        when(aiService.generateImageBase64(any(), any())).thenReturn("aW1hZ2U=");
         when(coverStorage.store(eq("aW1hZ2U="), eq("jpeg"))).thenReturn("/uploads/ai-covers/new.jpg");
-        when(coverStorage.store(eq("dmlkZW8="), eq("jpeg"))).thenReturn("/uploads/ai-covers/video.jpg");
 
         Drama updated = service.generateCover("drama-1");
 
         assertThat(updated.getCoverUrl()).isEqualTo("/uploads/covers/source.jpg");
         assertThat(updated.getAiCoverUrl()).isEqualTo("/uploads/ai-covers/new.jpg");
-        assertThat(updated.getAiVideoCoverUrl()).isEqualTo("/uploads/ai-covers/video.jpg");
+        assertThat(updated.getAiVideoCoverUrl()).isNull();
         assertThat(updated.isAiCoverGenerating()).isFalse();
     }
 
@@ -307,7 +305,7 @@ class DramaAiServiceTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
-        when(aiService.generateImageBase64(any(), any())).thenReturn("aW1hZ2U=", "dmlkZW8=");
+        when(aiService.generateImageBase64(any(), any())).thenReturn("aW1hZ2U=");
         when(coverStorage.store(any(), any())).thenReturn("/uploads/ai-covers/new.jpg");
 
         service.generateCover("drama-1");
@@ -326,17 +324,13 @@ class DramaAiServiceTest {
                         && !prompt.contains("一念情深一念仇")
                         && !prompt.contains("封面剧名：一念情深一念仇")
         ), eq(AiService.DEFAULT_IMAGE_SIZE));
-        verify(aiService).generateImageBase64(org.mockito.ArgumentMatchers.argThat(prompt ->
+        verify(aiService, never()).generateImageBase64(org.mockito.ArgumentMatchers.argThat(prompt ->
                 prompt.contains("横版中文短剧视频封面")
-                        && prompt.contains("1280x720")
-                        && prompt.contains("视频首帧和缩略图")
-                        && prompt.contains("端正宋体")
-                        && prompt.contains("逐字准确呈现")
-        ), eq(AiService.DEFAULT_VIDEO_COVER_IMAGE_SIZE));
+        ), any());
     }
 
     @Test
-    void generateEnglishCoverStoresEnglishCoverUrls() {
+    void generateEnglishCoverStoresEnglishPosterCoverOnly() {
         DramaRepository repository = mock(DramaRepository.class);
         AiService aiService = mock(AiService.class);
         DramaAiCoverStorage coverStorage = mock(DramaAiCoverStorage.class);
@@ -357,24 +351,22 @@ class DramaAiServiceTest {
         when(repository.findById("drama-1")).thenReturn(Optional.of(drama));
         when(repository.save(any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(configService.get(any())).thenReturn(Optional.empty());
-        when(aiService.generateImageBase64(any(), any())).thenReturn("ZW4tY292ZXI=", "ZW4tdmlkZW8=");
+        when(aiService.generateImageBase64(any(), any())).thenReturn("ZW4tY292ZXI=");
         when(coverStorage.store(eq("ZW4tY292ZXI="), eq("jpeg"))).thenReturn("/uploads/ai-covers/en.jpg");
-        when(coverStorage.store(eq("ZW4tdmlkZW8="), eq("jpeg"))).thenReturn("/uploads/ai-covers/en-video.jpg");
 
         Drama updated = service.generateEnglishCover("drama-1");
 
         assertThat(updated.getAiCoverEnUrl()).isEqualTo("/uploads/ai-covers/en.jpg");
-        assertThat(updated.getAiVideoCoverEnUrl()).isEqualTo("/uploads/ai-covers/en-video.jpg");
+        assertThat(updated.getAiVideoCoverEnUrl()).isNull();
         assertThat(updated.isAiCoverGenerating()).isFalse();
         verify(aiService).generateImageBase64(org.mockito.ArgumentMatchers.argThat(prompt ->
                 prompt.contains("英文封面剧名：Her Secret Fate")
                         && prompt.contains("不要出现中文")
                         && prompt.contains("替换成英文封面剧名")
         ), eq(AiService.DEFAULT_IMAGE_SIZE));
-        verify(aiService).generateImageBase64(org.mockito.ArgumentMatchers.argThat(prompt ->
+        verify(aiService, never()).generateImageBase64(org.mockito.ArgumentMatchers.argThat(prompt ->
                 prompt.contains("横版英文短剧视频封面")
-                        && prompt.contains("1280x720")
-        ), eq(AiService.DEFAULT_VIDEO_COVER_IMAGE_SIZE));
+        ), any());
     }
 
     private static DramaEpisode episode(int episodeNo) {

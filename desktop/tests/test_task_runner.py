@@ -1195,16 +1195,18 @@ def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypa
     progress_events = []
     assets = {
         "fengmian.jpg": b"cover",
-        "video-cover.jpg": b"video-cover",
         "fengmian-en.jpg": b"cover-en",
-        "video-cover-en.jpg": b"video-cover-en",
         "tiktok-cover-en.jpg": b"tiktok-cover-en",
         "meta.json": b'{"title":"asset metadata"}',
+    }
+    ignored_assets = {
+        "video-cover.jpg": b"video-cover",
+        "video-cover-en.jpg": b"video-cover-en",
     }
 
     def fake_download(download_plan, target_dir, base_url, headers=None, progress_callback=None, should_stop=None, should_pause=None, should_skip=None, max_concurrent_downloads=6):
         target_dir.mkdir(parents=True, exist_ok=True)
-        for filename, body in assets.items():
+        for filename, body in (assets | ignored_assets).items():
             (target_dir / filename).write_bytes(body)
         target = target_dir / "001.mp4"
         target.write_bytes(b"video")
@@ -1226,7 +1228,9 @@ def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypa
     processed_dir = drama_processed_dir(tmp_path)
     for filename, body in assets.items():
         assert (processed_dir / filename).read_bytes() == body
-    assert ("资料已同步到处理目录：神医归来（6 个）", "task-1") in progress_events
+    for filename in ignored_assets:
+        assert not (processed_dir / filename).exists()
+    assert ("资料已同步到处理目录：神医归来（4 个）", "task-1") in progress_events
 
 
 def test_publish_once_waits_for_async_preparation_before_download(tmp_path, monkeypatch):
@@ -2687,11 +2691,9 @@ def test_publish_once_does_not_embed_video_cover_for_horizontal_videos(tmp_path,
     assert runner.publish_once() == "succeeded"
 
     processed_1 = drama_processed_dir(tmp_path) / "001.mp4"
-    assert processor.calls[0] == (
-        drama_download_dir(tmp_path) / "001.mp4",
-        processed_1,
-        None,
-    )
+    assert processor.calls[0][0] == drama_download_dir(tmp_path) / "001.mp4"
+    assert processor.calls[0][1] == processed_1
+    assert processor.calls[0][2] is None
     marker = processed_1.with_name("001.mp4.aidrama.json")
     assert json.loads(marker.read_text(encoding="utf-8"))["cover"] is None
 
@@ -3344,9 +3346,9 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     episode_file = tmp_path / "drama-1" / "神医归来AI-第1集.mp4"
     assert files == [episode_file]
     assert (tmp_path / "drama-1" / "fengmian.jpg").read_bytes() == b"cover"
-    assert (tmp_path / "drama-1" / "video-cover.jpg").read_bytes() == b"video-cover"
+    assert not (tmp_path / "drama-1" / "video-cover.jpg").exists()
     assert (tmp_path / "drama-1" / "fengmian-en.jpg").read_bytes() == b"cover-en"
-    assert (tmp_path / "drama-1" / "video-cover-en.jpg").read_bytes() == b"video-cover-en"
+    assert not (tmp_path / "drama-1" / "video-cover-en.jpg").exists()
     assert episode_file.read_bytes() == b"video"
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
     assert metadata["title"] == "神医归来"
@@ -3358,8 +3360,8 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert metadata["originalSummary"] == "简介"
     assert metadata["coverFile"] == "fengmian.jpg"
     assert metadata["coverEnFile"] == "fengmian-en.jpg"
-    assert metadata["videoCoverFile"] == "video-cover.jpg"
-    assert metadata["videoCoverEnFile"] == "video-cover-en.jpg"
+    assert metadata["videoCoverFile"] is None
+    assert metadata["videoCoverEnFile"] is None
     assert metadata["videoCoverUrl"] == "/uploads/covers/video.jpg"
     assert metadata["coverEnUrl"] == "/uploads/covers/drama-en.jpg"
     assert metadata["videoCoverEnUrl"] == "/uploads/covers/video-en.jpg"
@@ -3368,9 +3370,7 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert metadata["episodes"][0]["size"] is None
     assert opened_urls == [
         "http://server/uploads/covers/drama.jpg",
-        "http://server/uploads/covers/video.jpg",
         "http://server/uploads/covers/drama-en.jpg",
-        "http://server/uploads/covers/video-en.jpg",
         "http://server/files/1.mp4",
     ]
 
