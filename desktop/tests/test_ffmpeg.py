@@ -121,6 +121,33 @@ def test_ffmpeg_processor_detects_low_wechat_video_resolution(monkeypatch, tmp_p
     assert processor.needs_wechat_video_transcode(source) is True
 
 
+def test_ffmpeg_processor_uses_display_dimensions_for_rotated_video(monkeypatch, tmp_path):
+    source = tmp_path / "rotated.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False):
+        if "stream=width,height" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 1920, "height": 1080}]}),
+            )
+        if "stream_tags=rotate:stream_side_data=rotation" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"side_data_list": [{"rotation": -90}]}]}),
+            )
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"streams": []}))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg")
+
+    assert processor.video_dimensions(source) == (1080, 1920)
+    assert processor.needs_wechat_video_resolution_transcode(source) is False
+
+
 def test_ffmpeg_processor_keeps_compliant_wechat_video_resolution(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     source.write_text("video")
@@ -710,7 +737,7 @@ def test_ffmpeg_processor_reassembly_effects_reset_sar_before_concat(monkeypatch
     assert (
         "rotate=0.4*PI/180:fillcolor=black,"
         "scale=trunc(iw*0.98/2)*2:trunc(ih*0.98/2)*2,"
-        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "pad=ceil(max(1280\\,iw)/2)*2:ceil(max(720\\,ih)/2)*2:(ow-iw)/2:(oh-ih)/2:color=black,"
         "setsar=1,fps=30,format=yuv420p"
     ) in filter_complex
 

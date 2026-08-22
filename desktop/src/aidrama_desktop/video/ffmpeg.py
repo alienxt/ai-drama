@@ -25,7 +25,7 @@ WECHAT_VIDEO_MIN_HEIGHT = 1280
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_TARGET_FPS = 30
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
-WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v9"
+WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v10-safe-pad"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
 FFMPEG_FILTER_SCRIPT_MIN_CHARS = 8_000
 WINDOWS_COMMAND_LINE_SAFE_CHARS = 24_000
@@ -1063,7 +1063,7 @@ class FfmpegProcessor:
                 f"trunc(ih*{self._format_filter_number(scale_ratio)}/2)*2"
             )
             if target_width and target_height:
-                filters.append(f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black")
+                filters.append(self._safe_pad_filter(target_width, target_height))
         if not filters or filters[-1] != "setsar=1":
             filters.append("setsar=1")
         filters.extend([f"fps={WECHAT_VIDEO_TARGET_FPS}", "format=yuv420p"])
@@ -1121,6 +1121,17 @@ class FfmpegProcessor:
     @staticmethod
     def _wechat_video_frame_filter(width: int, height: int) -> str:
         return ",".join(FfmpegProcessor._wechat_video_frame_filters(width, height))
+
+    @staticmethod
+    def _safe_pad_filter(width: int, height: int, color: str = "black") -> str:
+        safe_width = FfmpegProcessor._safe_even_max_expression(width, "iw")
+        safe_height = FfmpegProcessor._safe_even_max_expression(height, "ih")
+        return f"pad={safe_width}:{safe_height}:(ow-iw)/2:(oh-ih)/2:color={color}"
+
+    @staticmethod
+    def _safe_even_max_expression(target: int, input_dimension: str) -> str:
+        safe_target = max(2, int(target))
+        return f"ceil(max({safe_target}\\,{input_dimension})/2)*2"
 
     @staticmethod
     def _wechat_video_frame_filters(width: int, height: int) -> list[str]:
@@ -1250,7 +1261,36 @@ class FfmpegProcessor:
             width = self._positive_even_int(stream.get("width"))
             height = self._positive_even_int(stream.get("height"))
             if width and height:
+                rotation = self._stream_rotation_degrees(stream)
+                if rotation is None:
+                    rotation = self.video_rotation_degrees(source)
+                if self._is_quarter_turn_rotation(rotation):
+                    return height, width
                 return width, height
+        return None
+
+    def video_rotation_degrees(self, source: Path) -> float | None:
+        command = [
+            self.ffprobe_path(),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream_tags=rotate:stream_side_data=rotation",
+            "-of",
+            "json",
+            str(source),
+        ]
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True, **hidden_subprocess_kwargs())
+            payload = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+            return None
+        for stream in payload.get("streams") or []:
+            rotation = self._stream_rotation_degrees(stream)
+            if rotation is not None:
+                return rotation
         return None
 
     def video_duration_seconds(self, source: Path) -> float | None:
@@ -1499,6 +1539,35 @@ class FfmpegProcessor:
         if not parsed:
             return None
         return parsed if parsed % 2 == 0 else parsed - 1
+
+    @staticmethod
+    def _is_quarter_turn_rotation(rotation: float | None) -> bool:
+        if rotation is None:
+            return False
+        normalized = abs(round(rotation)) % 360
+        return normalized in {90, 270}
+
+    @classmethod
+    def _stream_rotation_degrees(cls, stream: dict) -> float | None:
+        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        for value in (tags.get("rotate"), tags.get("rotation")):
+            parsed = cls._float_value(value)
+            if parsed is not None:
+                return parsed
+        for item in stream.get("side_data_list") or []:
+            if not isinstance(item, dict):
+                continue
+            parsed = cls._float_value(item.get("rotation"))
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def _float_value(value: object) -> float | None:
+        try:
+            return float(str(value))
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _concat_clip_file_content(cls, clips: list[VideoReassemblySourceClip]) -> str:
