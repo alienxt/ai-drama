@@ -25,7 +25,7 @@ WECHAT_VIDEO_MIN_HEIGHT = 1280
 WECHAT_VIDEO_TARGET_BITRATE = "5000k"
 WECHAT_VIDEO_TARGET_FPS = 30
 WECHAT_VIDEO_COVER_FRAME_SECONDS = 1
-WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v10-safe-pad"
+WECHAT_VIDEO_TRANSCODE_VERSION = "wechat-video-transcode-v11-normalize-reassembly"
 WECHAT_VIDEO_COVER_FRAME_VERSION = WECHAT_VIDEO_TRANSCODE_VERSION
 FFMPEG_FILTER_SCRIPT_MIN_CHARS = 8_000
 WINDOWS_COMMAND_LINE_SAFE_CHARS = 24_000
@@ -1039,13 +1039,13 @@ class FfmpegProcessor:
             if swap_orientation:
                 target_width = height
                 target_height = width
-                filters.extend(self._wechat_video_frame_filters(height, width))
             elif self._is_below_wechat_video_minimum(width, height):
                 target_width, target_height = minimum_wechat_video_dimensions(width, height)
-                filters.extend(self._wechat_video_frame_filters(target_width, target_height))
             else:
                 target_width = width
                 target_height = height
+            if target_width and target_height:
+                filters.extend(self._wechat_video_frame_filters(target_width, target_height))
         if filters and filters[-1] == "format=yuv420p":
             filters.pop()
         if mirror_horizontal:
@@ -1063,7 +1063,7 @@ class FfmpegProcessor:
                 f"trunc(ih*{self._format_filter_number(scale_ratio)}/2)*2"
             )
             if target_width and target_height:
-                filters.append(self._safe_pad_filter(target_width, target_height))
+                filters.append(self._pad_filter(target_width, target_height))
         if not filters or filters[-1] != "setsar=1":
             filters.append("setsar=1")
         filters.extend([f"fps={WECHAT_VIDEO_TARGET_FPS}", "format=yuv420p"])
@@ -1123,15 +1123,8 @@ class FfmpegProcessor:
         return ",".join(FfmpegProcessor._wechat_video_frame_filters(width, height))
 
     @staticmethod
-    def _safe_pad_filter(width: int, height: int, color: str = "black") -> str:
-        safe_width = FfmpegProcessor._safe_even_max_expression(width, "iw")
-        safe_height = FfmpegProcessor._safe_even_max_expression(height, "ih")
-        return f"pad={safe_width}:{safe_height}:(ow-iw)/2:(oh-ih)/2:color={color}"
-
-    @staticmethod
-    def _safe_even_max_expression(target: int, input_dimension: str) -> str:
-        safe_target = max(2, int(target))
-        return f"ceil(max({safe_target}\\,{input_dimension})/2)*2"
+    def _pad_filter(width: int, height: int, color: str = "black") -> str:
+        return f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={color}"
 
     @staticmethod
     def _wechat_video_frame_filters(width: int, height: int) -> list[str]:

@@ -14,6 +14,9 @@ SPEC.loader.exec_module(uploader)
 
 
 class UploadLocalDramasTest(unittest.TestCase):
+    def test_disable_windows_quick_edit_mode_is_noop_off_windows(self):
+        self.assertFalse(uploader.disable_windows_quick_edit_mode())
+
     def test_build_plan_from_video_info(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             drama_dir = Path(tmpdir) / "白龙渡恩记"

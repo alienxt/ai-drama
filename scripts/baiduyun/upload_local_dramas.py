@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import mimetypes
+import os
 import posixpath
 import re
 import sys
@@ -53,6 +55,28 @@ STOP_SUMMARY_HEADERS = {"演员信息", "演员", "饰演", "演员简介", "角
 
 class UploadError(RuntimeError):
     """Raised when local planning or Baidu upload fails."""
+
+
+def disable_windows_quick_edit_mode() -> bool:
+    """Prevent accidental console selection from pausing long uploads on Windows."""
+    if os.name != "nt":
+        return False
+    try:
+        kernel32 = ctypes.windll.kernel32
+        stdin_handle = kernel32.GetStdHandle(-10)
+        if stdin_handle in (0, -1):
+            return False
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
+            return False
+        enable_quick_edit_mode = 0x0040
+        enable_extended_flags = 0x0080
+        new_mode = (mode.value | enable_extended_flags) & ~enable_quick_edit_mode
+        if new_mode == mode.value:
+            return False
+        return bool(kernel32.SetConsoleMode(stdin_handle, new_mode))
+    except Exception:
+        return False
 
 
 def now_text() -> str:
@@ -1205,6 +1229,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if disable_windows_quick_edit_mode():
+        log("Windows console QuickEdit mode disabled to avoid accidental upload pause.")
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

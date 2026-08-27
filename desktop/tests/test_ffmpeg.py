@@ -735,11 +735,54 @@ def test_ffmpeg_processor_reassembly_effects_reset_sar_before_concat(monkeypatch
     timeline_command = commands[0]
     filter_complex = timeline_command[timeline_command.index("-filter_complex") + 1]
     assert (
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,"
         "rotate=0.4*PI/180:fillcolor=black,"
         "scale=trunc(iw*0.98/2)*2:trunc(ih*0.98/2)*2,"
-        "pad=ceil(max(1280\\,iw)/2)*2:ceil(max(720\\,ih)/2)*2:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
         "setsar=1,fps=30,format=yuv420p"
     ) in filter_complex
+
+
+def test_ffmpeg_processor_reassembly_normalizes_clips_before_concat(monkeypatch, tmp_path):
+    source_1 = tmp_path / "001.mp4"
+    source_2 = tmp_path / "002.mp4"
+    source_1.write_text("video-1")
+    source_2.write_text("video-2")
+    processor = FfmpegProcessor("ffmpeg")
+
+    monkeypatch.setattr(processor, "video_dimensions", lambda _source: (720, 1280))
+    monkeypatch.setattr(processor, "has_audio_stream", lambda _source: True)
+
+    filter_complex = processor._reassembly_filter_complex(
+        [
+            VideoReassemblySourceClip(source_1, 1.0, 60.0),
+            VideoReassemblySourceClip(source_2, 1.0, 60.0),
+        ],
+        speed_factor=1.0,
+        swap_orientation=False,
+        bgm_files=[],
+        reuse_bgm_inputs=False,
+        bgm_volume_percent=0.0,
+        audio_pitch_semitones=0.0,
+        border_percent=1.2,
+        mirror_horizontal=False,
+        rotate_degrees=0.4,
+        drop_audio=False,
+    )
+
+    expected_frame_filter = (
+        "scale=720:1280:force_original_aspect_ratio=decrease,"
+        "pad=720:1280:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,"
+        "rotate=0.4*PI/180:fillcolor=black,"
+        "scale=trunc(iw*0.976/2)*2:trunc(ih*0.976/2)*2,"
+        "pad=720:1280:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1,fps=30,format=yuv420p"
+    )
+    assert expected_frame_filter in filter_complex
+    assert filter_complex.count(expected_frame_filter) == 2
 
 
 def test_ffmpeg_processor_uses_filter_complex_script_for_long_reassembly(monkeypatch, tmp_path):
