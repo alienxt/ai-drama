@@ -586,7 +586,7 @@ class DistributionServiceTest {
     }
 
     @Test
-    void tiktokPreparationEndpointRequiresEnglishAssets() {
+    void tiktokPreparationEndpointRequiresEnglishMetadata() {
         DramaRepository dramaRepository = mock(DramaRepository.class);
         MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
         DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
@@ -2025,8 +2025,6 @@ class DistributionServiceTest {
     private static void markTiktokPrepared(Drama drama) {
         drama.setAiTitleEn("English Title");
         drama.setAiSummaryEn("English summary.");
-        drama.setAiCoverEnUrl("/uploads/ai-covers/" + drama.getId() + "-en.jpg");
-        drama.setAiVideoCoverEnUrl("/uploads/ai-covers/" + drama.getId() + "-en-video.jpg");
     }
 
     private static void markCreatedNow(Drama drama) {

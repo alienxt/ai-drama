@@ -174,21 +174,39 @@ class BaiduDramaPreparationServiceTest {
     }
 
     @Test
-    void tiktokPreparationGeneratesEnglishCoverWhenMissing() {
+    void tiktokPreparationDoesNotGenerateEnglishCoverWhenMissing() {
         DramaRepository repository = mock(DramaRepository.class);
         DramaAiService aiService = mock(DramaAiService.class);
         BaiduDramaPreparationService service = service(repository, aiService);
         Drama drama = preparedDrama("drama-1");
-        Drama covered = preparedDrama("drama-1");
-        covered.setAiCoverEnUrl("/uploads/ai-covers/en.jpg");
-        when(aiService.generateEnglishCover("drama-1")).thenReturn(covered);
         when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Drama prepared = service.prepareForDistribution(drama, true);
 
         assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
-        assertThat(prepared.getAiCoverEnUrl()).isEqualTo("/uploads/ai-covers/en.jpg");
-        verify(aiService).generateEnglishCover("drama-1");
+        assertThat(prepared.getAiCoverEnUrl()).isNull();
+        verify(aiService, never()).generateEnglishCover("drama-1");
+    }
+
+    @Test
+    void tiktokPreparationGeneratesEnglishMetadataButNotEnglishCoverWhenMissing() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService aiService = mock(DramaAiService.class);
+        BaiduDramaPreparationService service = service(repository, aiService);
+        Drama drama = preparedDrama("drama-1");
+        drama.setAiTitleEn(null);
+        drama.setAiSummaryEn(null);
+        Drama summarized = preparedDrama("drama-1");
+        when(aiService.generateSummary("drama-1")).thenReturn(summarized);
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Drama prepared = service.prepareForDistribution(drama, true);
+
+        assertThat(prepared.getStatus()).isEqualTo(DramaStatus.READY);
+        assertThat(prepared.getAiTitleEn()).isEqualTo("English Title");
+        assertThat(prepared.getAiCoverEnUrl()).isNull();
+        verify(aiService).generateSummary("drama-1");
+        verify(aiService, never()).generateEnglishCover("drama-1");
     }
 
     @Test

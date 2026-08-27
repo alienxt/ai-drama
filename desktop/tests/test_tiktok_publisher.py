@@ -77,8 +77,9 @@ def test_tiktok_publisher_connects_to_draft_page_and_pauses_before_submit(tmp_pa
     profile_dir = tmp_path / "tiktok" / "media-tk"
     assert opened == [(profile_dir, "about:blank", remote_debugging_port_for_profile(profile_dir))]
     assert connected == [f"http://127.0.0.1:{remote_debugging_port_for_profile(profile_dir)}"]
-    assert filled == [(fallback_context.pages[0], [media_file], "English Title", "English summary", {"episodeCount": 1})]
-    assert fallback_context.pages[0].url == TikTokPublisher.draft_url
+    assert len(filled) == 1
+    assert filled[0] == (fallback_context.pages[-1], [media_file], "English Title", "English summary", {"episodeCount": 1})
+    assert fallback_context.pages[-1].url == TikTokPublisher.draft_url
 
 
 def test_tiktok_publisher_fill_draft_uses_expected_field_steps(tmp_path: Path, monkeypatch):
@@ -174,7 +175,7 @@ def test_tiktok_publisher_fill_draft_uses_expected_field_steps(tmp_path: Path, m
     assert ("fill", "title", "AI English Title", "TK剧集名", True) in calls
     assert ("fill", "description", "AI English summary", "TK剧集描述", True) in calls
     assert ("first", "contract", "TK关联合同", True) in calls
-    assert ("file", "coverStruct", tiktok_cover_en, "TK封面图") in calls
+    assert ("file", "coverStruct", cover, "TK封面图") in calls
     assert ("videos", [video]) in calls
     assert ("first", "targetAudienceTag", "TK目标观众", True) in calls
     assert ("first", "themeTag", "TK题材类型", True) in calls

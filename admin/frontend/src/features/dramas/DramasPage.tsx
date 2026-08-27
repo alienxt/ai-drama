@@ -632,8 +632,6 @@ export function DramasPage() {
       coverUrl: values.coverUrl,
       aiCoverUrl: values.aiCoverUrl,
       aiVideoCoverUrl: values.aiVideoCoverUrl,
-      aiCoverEnUrl: values.aiCoverEnUrl,
-      aiVideoCoverEnUrl: values.aiVideoCoverEnUrl,
       rating: values.rating ?? 5,
       costAmountWan: values.costAmountWan,
       categoryIds: values.categoryIds,
@@ -1605,12 +1603,6 @@ export function DramasPage() {
             <Input />
           </Form.Item>
           <Form.Item name="aiVideoCoverUrl" label="横版视频封面地址">
-            <Input />
-          </Form.Item>
-          <Form.Item name="aiCoverEnUrl" label="英文封面地址（预留）">
-            <Input />
-          </Form.Item>
-          <Form.Item name="aiVideoCoverEnUrl" label="英文横版封面地址（预留）">
             <Input />
           </Form.Item>
           <Form.Item name="rating" label="评分" rules={[{ required: true }]}>

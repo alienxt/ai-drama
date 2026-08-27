@@ -59,7 +59,7 @@ public class BaiduDramaPreparationService {
         return prepareForDistribution(drama, false);
     }
 
-    public Drama prepareForDistribution(Drama drama, boolean requireEnglishCover) {
+    public Drama prepareForDistribution(Drama drama, boolean requireEnglishMetadata) {
         if (drama == null || drama.getId() == null || drama.getId().isBlank()) {
             return drama;
         }
@@ -72,18 +72,14 @@ public class BaiduDramaPreparationService {
                 prepared = aiService.generateTitleForDistribution(drama.getId());
             }
             if (isBlank(prepared.getAiSummary())
-                    || (requireEnglishCover && (isBlank(prepared.getAiTitleEn()) || isBlank(prepared.getAiSummaryEn())))) {
+                    || (requireEnglishMetadata && (isBlank(prepared.getAiTitleEn()) || isBlank(prepared.getAiSummaryEn())))) {
                 prepared = aiService.generateSummary(drama.getId());
             }
             if (isBlank(prepared.getAiCoverUrl())) {
                 markCoverGenerating(drama.getId(), true);
                 prepared = aiService.generateCover(drama.getId());
             }
-            if (requireEnglishCover && isBlank(prepared.getAiCoverEnUrl())) {
-                markCoverGenerating(drama.getId(), true);
-                prepared = aiService.generateEnglishCover(drama.getId());
-            }
-            if (isPrepared(prepared, requireEnglishCover)) {
+            if (isPrepared(prepared, requireEnglishMetadata)) {
                 prepared.setStatus(DramaStatus.READY);
                 prepared.setAiCoverGenerating(false);
                 prepared.setAiPreparationFailedAt(null);
@@ -111,7 +107,7 @@ public class BaiduDramaPreparationService {
         return isPrepared(drama, false);
     }
 
-    private boolean isPrepared(Drama drama, boolean requireEnglishCover) {
+    private boolean isPrepared(Drama drama, boolean requireEnglishMetadata) {
         return drama != null
                 && drama.getAiTitle() != null
                 && !drama.getAiTitle().isBlank()
@@ -119,13 +115,11 @@ public class BaiduDramaPreparationService {
                 && !drama.getAiSummary().isBlank()
                 && drama.getAiCoverUrl() != null
                 && !drama.getAiCoverUrl().isBlank()
-                && (!requireEnglishCover
+                && (!requireEnglishMetadata
                 || (drama.getAiTitleEn() != null
                         && !drama.getAiTitleEn().isBlank()
                         && drama.getAiSummaryEn() != null
-                        && !drama.getAiSummaryEn().isBlank()
-                        && drama.getAiCoverEnUrl() != null
-                        && !drama.getAiCoverEnUrl().isBlank()))
+                        && !drama.getAiSummaryEn().isBlank()))
                 && drama.getEpisodes() != null
                 && !drama.getEpisodes().isEmpty();
     }

@@ -75,7 +75,6 @@ VIDEO_REASSEMBLY_DIRNAME = "reassembled"
 VIDEO_REASSEMBLY_MIN_EPISODE_COUNT = 50
 VIDEO_REASSEMBLY_MAX_EPISODE_COUNT = 120
 VIDEO_REASSEMBLY_BGM_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"}
-TIKTOK_COVER_FILENAME = "tiktok-cover-en.jpg"
 DOWNLOAD_EPISODE_MANIFEST_FILENAME = ".downloaded-episodes.json"
 CONTRACT_MATERIALS_MANIFEST_FILENAME = ".contract-materials.json"
 STORYBOARD_MATERIALS_MANIFEST_FILENAME = ".storyboard-materials.json"
@@ -130,15 +129,10 @@ MATERIAL_METADATA_LIST_PATH_KEYS = (
     "storyboardImages",
     "jianyingProjectScreenshots",
 )
-TIKTOK_COVER_WIDTH = 768
-TIKTOK_COVER_HEIGHT = 1024
-TIKTOK_COVER_MAX_BYTES = 10 * 1024 * 1024
 TIKTOK_UPLOAD_NOT_READY_FAILURE_REASON = "TK表单上传待时间。"
 DEFAULT_STORYBOARD_MEDIA_ACCOUNT_NAME = "用户1182"
 DRAMA_ASSET_FILENAMES = (
     "fengmian.jpg",
-    "fengmian-en.jpg",
-    TIKTOK_COVER_FILENAME,
     "meta.json",
     DOWNLOAD_EPISODE_MANIFEST_FILENAME,
 )
@@ -3464,8 +3458,6 @@ class TaskRunner:
         episodes = download_plan.get("episodes") or []
         asset_dir = self._drama_download_dir(download_plan)
         cover_file = asset_dir / "fengmian.jpg"
-        cover_en_file = asset_dir / "fengmian-en.jpg"
-        tiktok_cover_en_file = asset_dir / TIKTOK_COVER_FILENAME
         publish_title = self._platform_publish_title(download_plan, platform)
         publish_summary = self._platform_publish_summary(download_plan, platform)
         return {
@@ -3481,14 +3473,9 @@ class TaskRunner:
             "aiSummaryEn": download_plan.get("aiSummaryEn"),
             "originalSummary": download_plan.get("summary"),
             "coverFile": cover_file if cover_file.exists() else None,
-            "coverEnFile": cover_en_file if cover_en_file.exists() else None,
-            "tiktokCoverEnFile": tiktok_cover_en_file if tiktok_cover_en_file.exists() else None,
             "videoCoverFile": None,
-            "videoCoverEnFile": None,
             "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
             "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
-            "coverEnUrl": download_plan.get("aiCoverEnUrl"),
-            "videoCoverEnUrl": download_plan.get("aiVideoCoverEnUrl"),
             "rating": download_plan.get("rating"),
             "categoryIds": download_plan.get("categoryIds") or [],
             "totalMinutes": download_plan.get("totalMinutes"),
@@ -3714,17 +3701,6 @@ def download_episodes(
         should_skip=should_skip,
     )
     video_cover_file = None
-    cover_en_file = download_english_cover(
-        download_plan,
-        target_dir,
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
-    tiktok_cover_en_file = prepare_tiktok_cover(cover_en_file, target_dir)
-    video_cover_en_file = None
     episodes = download_plan["episodes"]
     total = len(episodes)
     if not episodes:
@@ -3733,9 +3709,6 @@ def download_episodes(
             target_dir,
             cover_file,
             video_cover_file,
-            cover_en_file,
-            video_cover_en_file,
-            tiktok_cover_en_file,
         )
         return []
 
@@ -3802,9 +3775,6 @@ def download_episodes(
         target_dir,
         cover_file,
         video_cover_file,
-        cover_en_file,
-        video_cover_en_file,
-        tiktok_cover_en_file,
     )
     return compacted_files
 
@@ -4266,81 +4236,6 @@ def download_cover(
     )
 
 
-def download_english_cover(
-    download_plan: dict,
-    target_dir: Path,
-    base_url: str,
-    headers: dict[str, str] | None = None,
-    should_stop: Callable[[], bool] | None = None,
-    should_pause: Callable[[], bool] | None = None,
-    should_skip: Callable[[], bool] | None = None,
-) -> Path | None:
-    return download_plan_asset(
-        download_plan.get("aiCoverEnUrl"),
-        target_dir / "fengmian-en.jpg",
-        base_url,
-        headers=headers,
-        should_stop=should_stop,
-        should_pause=should_pause,
-        should_skip=should_skip,
-    )
-
-
-def prepare_tiktok_cover(cover_file: Path | None, target_dir: Path) -> Path | None:
-    if not cover_file or not cover_file.exists() or not cover_file.is_file():
-        return None
-    target = target_dir / TIKTOK_COVER_FILENAME
-    if is_ready_tiktok_cover(target, cover_file):
-        return target
-    try:
-        from PySide6.QtCore import QRect, Qt
-        from PySide6.QtGui import QImage
-    except ImportError:
-        return None
-    source = QImage(str(cover_file))
-    if source.isNull() or source.width() <= 0 or source.height() <= 0:
-        return None
-    crop_rect = tiktok_cover_crop_rect(source.width(), source.height(), QRect)
-    cropped = source.copy(crop_rect)
-    scaled = cropped.scaled(
-        TIKTOK_COVER_WIDTH,
-        TIKTOK_COVER_HEIGHT,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    output = scaled.convertToFormat(QImage.Format.Format_RGB888)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    for quality in (92, 86, 80, 74, 68):
-        if output.save(str(target), "JPEG", quality) and target.stat().st_size <= TIKTOK_COVER_MAX_BYTES:
-            return target
-    return target if target.exists() and target.is_file() else None
-
-
-def is_ready_tiktok_cover(target: Path, source: Path) -> bool:
-    if not target.exists() or not target.is_file() or target.stat().st_size <= 0:
-        return False
-    if target.stat().st_size > TIKTOK_COVER_MAX_BYTES or target.stat().st_mtime_ns < source.stat().st_mtime_ns:
-        return False
-    try:
-        from PySide6.QtGui import QImage
-    except ImportError:
-        return True
-    image = QImage(str(target))
-    return not image.isNull() and image.width() == TIKTOK_COVER_WIDTH and image.height() == TIKTOK_COVER_HEIGHT
-
-
-def tiktok_cover_crop_rect(width: int, height: int, rect_factory):
-    target_ratio = TIKTOK_COVER_WIDTH / TIKTOK_COVER_HEIGHT
-    source_ratio = width / height
-    if source_ratio > target_ratio:
-        crop_width = max(1, round(height * target_ratio))
-        x = max((width - crop_width) // 2, 0)
-        return rect_factory(x, 0, crop_width, height)
-    crop_height = max(1, round(width / target_ratio))
-    y = max((height - crop_height) // 2, 0)
-    return rect_factory(0, y, width, crop_height)
-
-
 def download_plan_asset(
     asset_url: object,
     target: Path,
@@ -4369,9 +4264,6 @@ def write_drama_metadata(
     target_dir: Path,
     cover_file: Path | None,
     video_cover_file: Path | None = None,
-    cover_en_file: Path | None = None,
-    video_cover_en_file: Path | None = None,
-    tiktok_cover_en_file: Path | None = None,
 ) -> Path:
     episodes = download_plan.get("episodes") or []
     publish_summary = download_plan.get("aiSummary") or download_plan.get("summary")
@@ -4386,14 +4278,9 @@ def write_drama_metadata(
         "aiSummaryEn": download_plan.get("aiSummaryEn"),
         "originalSummary": download_plan.get("summary"),
         "coverFile": cover_file.name if cover_file else None,
-        "coverEnFile": cover_en_file.name if cover_en_file else None,
-        "tiktokCoverEnFile": tiktok_cover_en_file.name if tiktok_cover_en_file else None,
         "videoCoverFile": video_cover_file.name if video_cover_file else None,
-        "videoCoverEnFile": video_cover_en_file.name if video_cover_en_file else None,
         "coverUrl": download_plan.get("effectiveCoverUrl") or download_plan.get("aiCoverUrl") or download_plan.get("coverUrl"),
         "videoCoverUrl": download_plan.get("aiVideoCoverUrl"),
-        "coverEnUrl": download_plan.get("aiCoverEnUrl"),
-        "videoCoverEnUrl": download_plan.get("aiVideoCoverEnUrl"),
         "rating": download_plan.get("rating"),
         "categoryIds": download_plan.get("categoryIds") or [],
         "totalMinutes": download_plan.get("totalMinutes"),

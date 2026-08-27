@@ -1195,11 +1195,11 @@ def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypa
     progress_events = []
     assets = {
         "fengmian.jpg": b"cover",
-        "fengmian-en.jpg": b"cover-en",
-        "tiktok-cover-en.jpg": b"tiktok-cover-en",
         "meta.json": b'{"title":"asset metadata"}',
     }
     ignored_assets = {
+        "fengmian-en.jpg": b"cover-en",
+        "tiktok-cover-en.jpg": b"tiktok-cover-en",
         "video-cover.jpg": b"video-cover",
         "video-cover-en.jpg": b"video-cover-en",
     }
@@ -1230,7 +1230,7 @@ def test_publish_once_copies_download_assets_to_processed_dir(tmp_path, monkeypa
         assert (processed_dir / filename).read_bytes() == body
     for filename in ignored_assets:
         assert not (processed_dir / filename).exists()
-    assert ("资料已同步到处理目录：神医归来（4 个）", "task-1") in progress_events
+    assert ("资料已同步到处理目录：神医归来（2 个）", "task-1") in progress_events
 
 
 def test_publish_once_waits_for_async_preparation_before_download(tmp_path, monkeypatch):
@@ -1336,7 +1336,7 @@ def test_publish_once_passes_playlet_metadata_to_publisher(tmp_path, monkeypatch
     assert publisher.metadata["dramaId"] == "drama-1"
     assert publisher.metadata["publishTitle"] == "神医归来"
     assert publisher.metadata["coverFile"] == drama_download_dir(tmp_path) / "fengmian.jpg"
-    assert publisher.metadata["coverEnFile"] == drama_download_dir(tmp_path) / "fengmian-en.jpg"
+    assert "coverEnFile" not in publisher.metadata
     assert publisher.metadata["totalMinutes"] == 20
     assert publisher.metadata["costAmountWan"] == 3
     assert publisher.metadata["productionCostWan"] == 3
@@ -3315,10 +3315,6 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
             return FakeResponse(b"cover")
         if request.full_url.endswith("/uploads/covers/video.jpg"):
             return FakeResponse(b"video-cover")
-        if request.full_url.endswith("/uploads/covers/drama-en.jpg"):
-            return FakeResponse(b"cover-en")
-        if request.full_url.endswith("/uploads/covers/video-en.jpg"):
-            return FakeResponse(b"video-cover-en")
         return FakeResponse(b"video")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -3347,7 +3343,7 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert files == [episode_file]
     assert (tmp_path / "drama-1" / "fengmian.jpg").read_bytes() == b"cover"
     assert not (tmp_path / "drama-1" / "video-cover.jpg").exists()
-    assert (tmp_path / "drama-1" / "fengmian-en.jpg").read_bytes() == b"cover-en"
+    assert not (tmp_path / "drama-1" / "fengmian-en.jpg").exists()
     assert not (tmp_path / "drama-1" / "video-cover-en.jpg").exists()
     assert episode_file.read_bytes() == b"video"
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
@@ -3359,30 +3355,23 @@ def test_download_episodes_writes_cover_and_metadata(tmp_path, monkeypatch):
     assert metadata["aiSummaryEn"] == "English summary."
     assert metadata["originalSummary"] == "简介"
     assert metadata["coverFile"] == "fengmian.jpg"
-    assert metadata["coverEnFile"] == "fengmian-en.jpg"
     assert metadata["videoCoverFile"] is None
-    assert metadata["videoCoverEnFile"] is None
     assert metadata["videoCoverUrl"] == "/uploads/covers/video.jpg"
-    assert metadata["coverEnUrl"] == "/uploads/covers/drama-en.jpg"
-    assert metadata["videoCoverEnUrl"] == "/uploads/covers/video-en.jpg"
+    assert "coverEnFile" not in metadata
+    assert "tiktokCoverEnFile" not in metadata
+    assert "videoCoverEnFile" not in metadata
+    assert "coverEnUrl" not in metadata
+    assert "videoCoverEnUrl" not in metadata
     assert metadata["episodeCount"] == 1
     assert metadata["episodes"][0]["fileName"] == "神医归来AI-第1集.mp4"
     assert metadata["episodes"][0]["size"] is None
     assert opened_urls == [
         "http://server/uploads/covers/drama.jpg",
-        "http://server/uploads/covers/drama-en.jpg",
         "http://server/files/1.mp4",
     ]
 
 
-def test_download_episodes_prepares_tiktok_cover_from_english_cover(tmp_path, monkeypatch):
-    from PySide6.QtGui import QColor, QImage
-
-    source_cover = tmp_path / "source-cover.jpg"
-    image = QImage(1024, 1536, QImage.Format.Format_RGB32)
-    image.fill(QColor("red"))
-    image.save(str(source_cover), "JPEG")
-    cover_bytes = source_cover.read_bytes()
+def test_download_episodes_ignores_english_cover_url(tmp_path, monkeypatch):
     opened_urls = []
 
     class FakeResponse:
@@ -3406,8 +3395,6 @@ def test_download_episodes_prepares_tiktok_cover_from_english_cover(tmp_path, mo
 
     def fake_urlopen(request):
         opened_urls.append(request.full_url)
-        if request.full_url.endswith("/uploads/covers/drama-en.jpg"):
-            return FakeResponse(cover_bytes)
         return FakeResponse(b"video")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -3422,17 +3409,12 @@ def test_download_episodes_prepares_tiktok_cover_from_english_cover(tmp_path, mo
 
     download_episodes(download_plan, tmp_path / "drama-1", "http://server/api")
 
-    tiktok_cover = tmp_path / "drama-1" / "tiktok-cover-en.jpg"
-    assert tiktok_cover.exists()
-    prepared = QImage(str(tiktok_cover))
-    assert prepared.width() == 768
-    assert prepared.height() == 1024
-    assert tiktok_cover.stat().st_size < 10 * 1024 * 1024
+    assert not (tmp_path / "drama-1" / "fengmian-en.jpg").exists()
+    assert not (tmp_path / "drama-1" / "tiktok-cover-en.jpg").exists()
     metadata = json.loads((tmp_path / "drama-1" / "meta.json").read_text(encoding="utf-8"))
-    assert metadata["coverEnFile"] == "fengmian-en.jpg"
-    assert metadata["tiktokCoverEnFile"] == "tiktok-cover-en.jpg"
+    assert "coverEnFile" not in metadata
+    assert "tiktokCoverEnFile" not in metadata
     assert opened_urls == [
-        "http://server/uploads/covers/drama-en.jpg",
         "http://server/files/1.mp4",
     ]
 
