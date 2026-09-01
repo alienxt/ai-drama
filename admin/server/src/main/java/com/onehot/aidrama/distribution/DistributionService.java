@@ -1454,10 +1454,7 @@ public class DistributionService {
     }
 
     private Drama prepareForTaskPlatform(Drama drama, boolean requireTikTokAssets) {
-        if (requireTikTokAssets) {
-            return preparationService.prepareForDistribution(drama, true);
-        }
-        return preparationService.prepareForDistribution(drama);
+        return preparationService.prepareForDistributionOrThrow(drama, requireTikTokAssets);
     }
 
     private Drama markDramaReadyIfPrepared(Drama drama, boolean requireTikTokAssets) {

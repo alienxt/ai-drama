@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -66,6 +67,30 @@ class BaiduDramaPreparationServiceTest {
         assertThat(prepared.getStatus()).isEqualTo(DramaStatus.DRAFT);
         assertThat(prepared.isAiCoverGenerating()).isFalse();
         assertThat(prepared.getAiPreparationFailedAt()).isNotNull();
+    }
+
+    @Test
+    void prepareForDistributionOrThrowRethrowsAfterMarkingFailure() {
+        DramaRepository repository = mock(DramaRepository.class);
+        DramaAiService aiService = mock(DramaAiService.class);
+        BaiduDramaPreparationService service = service(repository, aiService);
+        Drama drama = drama("drama-1");
+        drama.setStatus(DramaStatus.DRAFT);
+        drama.setAiCoverGenerating(true);
+        Drama titled = drama("drama-1");
+        titled.setAiTitle("新剧名");
+        titled.setAiSummary("AI简介...");
+        when(aiService.generateTitleForDistribution("drama-1")).thenReturn(titled);
+        when(aiService.generateCover("drama-1")).thenThrow(new IllegalStateException("image failed"));
+        when(repository.save(org.mockito.ArgumentMatchers.any(Drama.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThatThrownBy(() -> service.prepareForDistributionOrThrow(drama, false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("image failed");
+
+        assertThat(drama.getStatus()).isEqualTo(DramaStatus.DRAFT);
+        assertThat(drama.isAiCoverGenerating()).isFalse();
+        assertThat(drama.getAiPreparationFailedAt()).isNotNull();
     }
 
     @Test

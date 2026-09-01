@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aidrama_desktop.config.settings import (
+    DEFAULT_FFMPEG_TIMEOUT_SECONDS,
     ffprobe_path_for_ffmpeg,
     find_existing_ffmpeg_path,
     find_ffmpeg_fallback_path,
@@ -89,6 +90,7 @@ class _PreparedFfmpegCommand:
 @dataclass
 class FfmpegProcessor:
     ffmpeg_path: str
+    timeout_seconds: float | None = None
 
     def transcode_for_wechat_video(
         self,
@@ -314,29 +316,30 @@ class FfmpegProcessor:
 
     def _run_ffmpeg(self, command: list[str], target: Path) -> Path:
         prepared_command = self._prepare_ffmpeg_command(command, target)
+        timeout_seconds = self._effective_timeout_seconds()
         try:
-            subprocess.run(
-                prepared_command.command,
-                check=True,
-                capture_output=True,
-                text=True,
-                **hidden_subprocess_kwargs(),
-            )
+            self._run_ffmpeg_subprocess(prepared_command.command, timeout_seconds)
         except FileNotFoundError as exception:
             fallback_command = self._ffmpeg_fallback_command(prepared_command.command)
             if fallback_command:
                 try:
-                    subprocess.run(
-                        fallback_command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        **hidden_subprocess_kwargs(),
-                    )
+                    self._run_ffmpeg_subprocess(fallback_command, timeout_seconds)
                     self.ffmpeg_path = fallback_command[0]
                     return target
                 except FileNotFoundError:
                     pass
+                except subprocess.TimeoutExpired as fallback_exception:
+                    self._cleanup_failed_target(target)
+                    raise FfmpegError(
+                        self._format_ffmpeg_timeout_message(
+                            fallback_command,
+                            fallback_exception,
+                            target,
+                            timeout_seconds=timeout_seconds,
+                            filter_script_path=prepared_command.filter_script_path,
+                            filter_script_content=prepared_command.filter_script_content,
+                        )
+                    ) from fallback_exception
                 except subprocess.CalledProcessError as fallback_exception:
                     self._cleanup_failed_target(target)
                     raise FfmpegError(
@@ -363,6 +366,18 @@ class FfmpegProcessor:
                     filter_script_content=prepared_command.filter_script_content,
                 )
             ) from exception
+        except subprocess.TimeoutExpired as exception:
+            self._cleanup_failed_target(target)
+            raise FfmpegError(
+                self._format_ffmpeg_timeout_message(
+                    prepared_command.command,
+                    exception,
+                    target,
+                    timeout_seconds=timeout_seconds,
+                    filter_script_path=prepared_command.filter_script_path,
+                    filter_script_content=prepared_command.filter_script_content,
+                )
+            ) from exception
         except subprocess.CalledProcessError as exception:
             self._cleanup_failed_target(target)
             raise FfmpegError(
@@ -382,6 +397,27 @@ class FfmpegProcessor:
         finally:
             self._cleanup_filter_script(prepared_command.filter_script_path)
         return target
+
+    @staticmethod
+    def _run_ffmpeg_subprocess(command: list[str], timeout_seconds: float | None) -> subprocess.CompletedProcess[str]:
+        kwargs: dict[str, object] = {
+            "check": True,
+            "capture_output": True,
+            "text": True,
+            **hidden_subprocess_kwargs(),
+        }
+        if timeout_seconds is not None:
+            kwargs["timeout"] = timeout_seconds
+        return subprocess.run(command, **kwargs)
+
+    def _effective_timeout_seconds(self) -> float | None:
+        if self.timeout_seconds is None:
+            return None
+        try:
+            seconds = float(self.timeout_seconds)
+        except (TypeError, ValueError):
+            seconds = float(DEFAULT_FFMPEG_TIMEOUT_SECONDS)
+        return seconds if seconds > 0 else None
 
     def _stage_reassembly_clips(
         self,
@@ -1613,14 +1649,22 @@ class FfmpegProcessor:
             filters.append(preserve_tempo)
         return ",".join(filters)
 
-    @staticmethod
-    def _process_output_tail(stdout: str | None, stderr: str | None, max_lines: int = 8, max_chars: int = 1000) -> str:
-        text = "\n".join(part for part in (stderr, stdout) if part)
+    @classmethod
+    def _process_output_tail(cls, stdout: object | None, stderr: object | None, max_lines: int = 8, max_chars: int = 1000) -> str:
+        text = "\n".join(part for part in (cls._process_output_text(stderr), cls._process_output_text(stdout)) if part)
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             return "没有返回错误详情"
         tail = "\n".join(lines[-max_lines:])
         return tail[-max_chars:]
+
+    @staticmethod
+    def _process_output_text(value: object | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
 
     @staticmethod
     def _format_process_returncode(returncode: int) -> str:
@@ -1645,16 +1689,51 @@ class FfmpegProcessor:
         cls,
         command: list[str],
         returncode: int,
-        stdout: str | None,
-        stderr: str | None,
+        stdout: object | None,
+        stderr: object | None,
         target: Path,
         *,
         filter_script_path: Path | None = None,
         filter_script_content: str | None = None,
     ) -> str:
+        stdout_text = cls._process_output_text(stdout)
+        stderr_text = cls._process_output_text(stderr)
         detail = cls._process_output_tail(stdout, stderr)
         sections = [
             f"FFmpeg 转码退出码 {cls._format_process_returncode(returncode)}：{detail}",
+            f"目标文件：{target}",
+            f"FFmpeg 命令：{cls._command_text(command)}",
+        ]
+        if filter_script_path:
+            sections.append(f"FFmpeg filter_complex_script：{filter_script_path}")
+        if filter_script_content:
+            sections.extend(["FFmpeg filter_complex 内容：", filter_script_content])
+        sections.extend(
+            [
+            "FFmpeg stderr：",
+            (stderr_text or "").strip() or "（空）",
+            "FFmpeg stdout：",
+            (stdout_text or "").strip() or "（空）",
+            ]
+        )
+        return "\n".join(sections)
+
+    @classmethod
+    def _format_ffmpeg_timeout_message(
+        cls,
+        command: list[str],
+        exception: subprocess.TimeoutExpired,
+        target: Path,
+        *,
+        timeout_seconds: float | None,
+        filter_script_path: Path | None = None,
+        filter_script_content: str | None = None,
+    ) -> str:
+        stdout = cls._process_output_text(getattr(exception, "stdout", None) or getattr(exception, "output", None))
+        stderr = cls._process_output_text(getattr(exception, "stderr", None))
+        detail = cls._process_output_tail(stdout, stderr)
+        sections = [
+            f"FFmpeg 转码超时（超过 {cls._format_timeout_seconds(timeout_seconds)}）：{detail}",
             f"目标文件：{target}",
             f"FFmpeg 命令：{cls._command_text(command)}",
         ]
@@ -1671,6 +1750,18 @@ class FfmpegProcessor:
             ]
         )
         return "\n".join(sections)
+
+    @staticmethod
+    def _format_timeout_seconds(timeout_seconds: float | None) -> str:
+        if timeout_seconds is None:
+            return "配置时间"
+        if timeout_seconds >= 3600:
+            hours = timeout_seconds / 3600
+            return f"{hours:.1f} 小时"
+        if timeout_seconds >= 60:
+            minutes = timeout_seconds / 60
+            return f"{minutes:.1f} 分钟"
+        return f"{timeout_seconds:.0f} 秒"
 
     @staticmethod
     def _is_reassembly_audio_decode_error(exception: Exception) -> bool:

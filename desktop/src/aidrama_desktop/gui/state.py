@@ -60,6 +60,7 @@ def settings_rows(settings: Settings) -> list[SettingsRow]:
         SettingsRow("更新包目录", str(settings.updates_dir), "directory"),
         SettingsRow("浏览器登录态目录", str(settings.browser_profile_dir), "directory"),
         SettingsRow("FFmpeg", settings.ffmpeg_path),
+        SettingsRow("FFmpeg 单命令超时", f"{settings.ffmpeg_timeout_seconds} 秒" if settings.ffmpeg_timeout_seconds else "关闭"),
         SettingsRow("字幕引擎", settings.subtitle_provider),
         SettingsRow("faster-whisper Python", settings.faster_whisper_python_path or "自动探测"),
         SettingsRow("openai-whisper", settings.whisper_path or "自动探测"),

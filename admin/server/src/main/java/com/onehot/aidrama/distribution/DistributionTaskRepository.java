@@ -32,6 +32,10 @@ public interface DistributionTaskRepository extends MongoRepository<Distribution
             int priority,
             List<String> mediaAccountIds
     );
+    List<DistributionTask> findByStatusInAndUpdatedAtBefore(
+            List<DistributionTaskStatus> statuses,
+            Instant updatedAt
+    );
     List<DistributionTask> findByDramaId(String dramaId);
     List<DistributionTask> findByDramaIdIn(List<String> dramaIds);
     boolean existsByDramaIdAndPlatform(String dramaId, MediaPlatform platform);

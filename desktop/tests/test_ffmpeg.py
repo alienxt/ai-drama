@@ -1023,6 +1023,40 @@ def test_ffmpeg_processor_reports_transcode_stderr(monkeypatch, tmp_path):
     assert not target.exists()
 
 
+def test_ffmpeg_processor_times_out_transcode(monkeypatch, tmp_path):
+    source = tmp_path / "video.mp4"
+    target = tmp_path / "processed.mp4"
+    source.write_text("video")
+
+    def fake_run(command, check=False, capture_output=False, text=False, timeout=None, **kwargs):
+        assert check is True
+        assert capture_output is True
+        assert text is True
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": [{"width": 720, "height": 1280}]}),
+            )
+        assert timeout == 1
+        target.write_text("partial")
+        raise subprocess.TimeoutExpired(command, timeout, output="frame=1", stderr="still running")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    processor = FfmpegProcessor("ffmpeg", timeout_seconds=1)
+
+    with pytest.raises(FfmpegError) as error:
+        processor.transcode_for_wechat_video(source, target)
+
+    message = str(error.value)
+    assert "FFmpeg 转码超时" in message
+    assert "超过 1 秒" in message
+    assert "still running" in message
+    assert "FFmpeg 命令：" in message
+    assert not target.exists()
+
+
 def test_ffmpeg_processor_reports_windows_signed_returncode_without_stderr(monkeypatch, tmp_path):
     source = tmp_path / "video.mp4"
     target = tmp_path / "processed.mp4"

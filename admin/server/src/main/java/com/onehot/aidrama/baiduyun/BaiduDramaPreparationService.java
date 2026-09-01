@@ -60,6 +60,14 @@ public class BaiduDramaPreparationService {
     }
 
     public Drama prepareForDistribution(Drama drama, boolean requireEnglishMetadata) {
+        return prepareForDistribution(drama, requireEnglishMetadata, false);
+    }
+
+    public Drama prepareForDistributionOrThrow(Drama drama, boolean requireEnglishMetadata) {
+        return prepareForDistribution(drama, requireEnglishMetadata, true);
+    }
+
+    private Drama prepareForDistribution(Drama drama, boolean requireEnglishMetadata, boolean throwOnFailure) {
         if (drama == null || drama.getId() == null || drama.getId().isBlank()) {
             return drama;
         }
@@ -92,6 +100,9 @@ public class BaiduDramaPreparationService {
             drama.setAiCoverGenerating(false);
             drama.setAiPreparationFailedAt(Instant.now());
             repository.save(drama);
+            if (throwOnFailure) {
+                throw exception;
+            }
             return drama;
         }
     }

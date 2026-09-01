@@ -65,6 +65,7 @@ JIANYING_PROJECT_STRATEGY_PREFERENCE_LABELS = {
 WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MIN = 1
 WECHAT_VIDEO_DAILY_UPLOAD_LIMIT_MAX = 10
 DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT = 10
+DEFAULT_FFMPEG_TIMEOUT_SECONDS = 2 * 60 * 60
 
 
 def default_device_id() -> str:
@@ -365,6 +366,7 @@ class Settings(BaseSettings):
     device_id: str = Field(default_factory=default_device_id)
     chrome_path: str | None = None
     ffmpeg_path: str = "ffmpeg"
+    ffmpeg_timeout_seconds: int | None = DEFAULT_FFMPEG_TIMEOUT_SECONDS
     whisper_path: str | None = None
     subtitle_provider: str = DEFAULT_SUBTITLE_PROVIDER
     faster_whisper_python_path: str | None = None

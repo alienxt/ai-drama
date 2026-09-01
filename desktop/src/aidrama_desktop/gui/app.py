@@ -1799,7 +1799,7 @@ class DesktopWindow(QMainWindow):
         chrome = ChromeController(chrome_path, self.settings.browser_profile_dir)
         return TaskRunner(
             api=self.api(),
-            processor=FfmpegProcessor(self.settings.ffmpeg_path),
+            processor=FfmpegProcessor(self.settings.ffmpeg_path, timeout_seconds=self.settings.ffmpeg_timeout_seconds),
             publisher=get_publisher("WECHAT_VIDEO", chrome),
             publisher_factory=lambda media_account_id: self.publisher_for_media_account(chrome, media_account_id),
             work_dir=self.settings.work_dir,

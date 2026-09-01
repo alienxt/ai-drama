@@ -168,7 +168,7 @@ def build_runner(platform: str = "WECHAT_VIDEO") -> TaskRunner:
     ).load()
     return TaskRunner(
         api=build_api(),
-        processor=FfmpegProcessor(settings.ffmpeg_path),
+        processor=FfmpegProcessor(settings.ffmpeg_path, timeout_seconds=settings.ffmpeg_timeout_seconds),
         publisher=get_publisher(platform, chrome),
         work_dir=settings.work_dir,
         device_id=settings.device_id,

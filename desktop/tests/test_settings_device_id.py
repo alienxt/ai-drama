@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from aidrama_desktop.config.settings import (
+    DEFAULT_FFMPEG_TIMEOUT_SECONDS,
     DEFAULT_FREE_EPISODE_RATIO,
     DEFAULT_WECHAT_VIDEO_DAILY_UPLOAD_LIMIT,
     Settings,
@@ -38,6 +39,20 @@ def test_settings_download_concurrency_can_be_overridden_by_env(monkeypatch):
     settings = Settings()
 
     assert settings.download_concurrency == 8
+
+
+def test_settings_ffmpeg_timeout_defaults_and_can_be_overridden_by_env(monkeypatch):
+    monkeypatch.delenv("AIDRAMA_FFMPEG_TIMEOUT_SECONDS", raising=False)
+
+    settings = Settings()
+
+    assert settings.ffmpeg_timeout_seconds == DEFAULT_FFMPEG_TIMEOUT_SECONDS
+
+    monkeypatch.setenv("AIDRAMA_FFMPEG_TIMEOUT_SECONDS", "3600")
+
+    overridden = Settings()
+
+    assert overridden.ffmpeg_timeout_seconds == 3600
 
 
 def test_load_settings_creates_planned_directories(monkeypatch, tmp_path):

@@ -28,6 +28,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -68,6 +69,10 @@ class DistributionServiceTest {
         )).isNotNull();
         assertThat(new PartTree(
                 "findFirstByMediaAccountIdOrderByCreatedAtDesc",
+                DistributionTask.class
+        )).isNotNull();
+        assertThat(new PartTree(
+                "findByStatusInAndUpdatedAtBefore",
                 DistributionTask.class
         )).isNotNull();
     }
@@ -505,7 +510,7 @@ class DistributionServiceTest {
                 List.of("media-1")
         )).thenReturn(List.of(pending));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
-        when(preparationService.prepareForDistribution(drama)).thenReturn(prepared);
+        when(preparationService.prepareForDistributionOrThrow(drama, false)).thenReturn(prepared);
         when(taskRepository.save(pending)).thenReturn(pending);
 
         Optional<DistributionTask> claimed = service.claimForOwner("owner-1", "device-1");
@@ -513,7 +518,7 @@ class DistributionServiceTest {
         assertThat(claimed).contains(pending);
         assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(pending.getLockedByDeviceId()).isEqualTo("device-1");
-        verify(preparationService).prepareForDistribution(drama);
+        verify(preparationService).prepareForDistributionOrThrow(drama, false);
     }
 
     @Test
@@ -543,7 +548,7 @@ class DistributionServiceTest {
         assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
         assertThat(pending.getLockedByDeviceId()).isEqualTo("device-1");
         verify(dramaRepository, never()).findById("drama-1");
-        verify(preparationService, never()).prepareForDistribution(any());
+        verify(preparationService, never()).prepareForDistributionOrThrow(any(), anyBoolean());
     }
 
     @Test
@@ -575,14 +580,14 @@ class DistributionServiceTest {
         when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(unprepared), Optional.of(unprepared), Optional.of(prepared));
-        when(preparationService.prepareForDistribution(unprepared)).thenReturn(prepared);
+        when(preparationService.prepareForDistributionOrThrow(unprepared, false)).thenReturn(prepared);
 
         DistributionDtos.PreparationResponse first = service.prepareTaskDramaForOwner("owner-1", "task-1");
         DistributionDtos.PreparationResponse second = service.prepareTaskDramaForOwner("owner-1", "task-1");
 
         assertThat(first.preparing()).isTrue();
         assertThat(second.prepared()).isTrue();
-        verify(preparationService).prepareForDistribution(unprepared);
+        verify(preparationService).prepareForDistributionOrThrow(unprepared, false);
     }
 
     @Test
@@ -613,13 +618,13 @@ class DistributionServiceTest {
                 .thenReturn(List.of(activeMedia("media-tiktok", "owner-1", "urban", MediaPlatform.TIKTOK)));
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(task));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(unprepared), Optional.of(unprepared), Optional.of(prepared));
-        when(preparationService.prepareForDistribution(unprepared, true)).thenReturn(prepared);
+        when(preparationService.prepareForDistributionOrThrow(unprepared, true)).thenReturn(prepared);
 
         DistributionDtos.PreparationResponse response = service.prepareTaskDramaForOwner("owner-1", "task-1");
 
         assertThat(response.preparing()).isTrue();
-        verify(preparationService).prepareForDistribution(unprepared, true);
-        verify(preparationService, never()).prepareForDistribution(unprepared);
+        verify(preparationService).prepareForDistributionOrThrow(unprepared, true);
+        verify(preparationService, never()).prepareForDistributionOrThrow(unprepared, false);
     }
 
     @Test
@@ -647,7 +652,7 @@ class DistributionServiceTest {
                 List.of("media-1")
         )).thenReturn(List.of(pending));
         when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
-        when(preparationService.prepareForDistribution(drama)).thenReturn(drama);
+        when(preparationService.prepareForDistributionOrThrow(drama, false)).thenReturn(drama);
         when(taskRepository.save(pending)).thenReturn(pending);
 
         assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1"))
@@ -655,6 +660,49 @@ class DistributionServiceTest {
 
         assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.FAILED);
         assertThat(pending.getFailureReason()).contains("AI 素材生成失败");
+        assertThat(pending.getFinishedAt()).isNotNull();
+        verify(taskRepository).save(pending);
+    }
+
+    @Test
+    void claimFailureIncludesUnderlyingAiPreparationError() {
+        DramaRepository dramaRepository = mock(DramaRepository.class);
+        MediaAccountRepository mediaAccountRepository = mock(MediaAccountRepository.class);
+        DistributionTaskRepository taskRepository = mock(DistributionTaskRepository.class);
+        BaiduDramaPreparationService preparationService = mock(BaiduDramaPreparationService.class);
+        DistributionService service = new DistributionService(dramaRepository, mediaAccountRepository, taskRepository, preparationService);
+
+        DistributionTask pending = new DistributionTask();
+        pending.setId("task-1");
+        pending.setMediaAccountId("media-1");
+        pending.setDramaId("drama-1");
+        pending.setStatus(DistributionTaskStatus.PENDING);
+        Drama drama = readyDrama("drama-1", "urban");
+        drama.setAiTitle(null);
+        drama.setAiSummary(null);
+        drama.setAiCoverUrl(null);
+        drama.setAiVideoCoverUrl(null);
+        IllegalStateException openAiError = new IllegalStateException(
+                "调用 OpenAI 失败：provider=thirdParty path=/images/generations status=429 code=rate_limit_exceeded message=额度不足"
+        );
+
+        when(mediaAccountRepository.findByOwnerAccountId("owner-1")).thenReturn(List.of(activeMedia("media-1", "owner-1", "urban")));
+        when(taskRepository.findByStatusAndMediaAccountIdIn(
+                DistributionTaskStatus.PENDING,
+                List.of("media-1")
+        )).thenReturn(List.of(pending));
+        when(dramaRepository.findById("drama-1")).thenReturn(Optional.of(drama));
+        when(preparationService.prepareForDistributionOrThrow(drama, false)).thenThrow(openAiError);
+        when(taskRepository.save(pending)).thenReturn(pending);
+
+        assertThatThrownBy(() -> service.claimForOwner("owner-1", "device-1"))
+                .hasMessageContaining("status=429")
+                .hasMessageContaining("rate_limit_exceeded");
+
+        assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.FAILED);
+        assertThat(pending.getFailureReason()).contains("AI 素材生成失败");
+        assertThat(pending.getFailureReason()).contains("status=429");
+        assertThat(pending.getFailureReason()).contains("rate_limit_exceeded");
         assertThat(pending.getFinishedAt()).isNotNull();
         verify(taskRepository).save(pending);
     }
@@ -999,7 +1047,7 @@ class DistributionServiceTest {
         assertThat(claimed).contains(pending);
         assertThat(drama.getStatus()).isEqualTo(DramaStatus.READY);
         assertThat(pending.getStatus()).isEqualTo(DistributionTaskStatus.CLAIMED);
-        verify(preparationService, never()).prepareForDistribution(any());
+        verify(preparationService, never()).prepareForDistributionOrThrow(any(), anyBoolean());
         verify(dramaRepository).save(drama);
     }
 
