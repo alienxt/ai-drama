@@ -3,7 +3,10 @@ package com.onehot.aidrama.baiduyun;
 import com.onehot.aidrama.common.ApiResponse;
 import com.onehot.aidrama.common.TraceIdFilter;
 import com.onehot.aidrama.dramas.Drama;
+import com.onehot.aidrama.system.SystemTask;
+import com.onehot.aidrama.system.SystemTaskRepository;
 import com.onehot.aidrama.system.SystemTaskService;
+import com.onehot.aidrama.system.SystemTaskStatus;
 import com.onehot.aidrama.system.SystemTaskType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,15 +30,18 @@ public class BaiduScanController {
     private final BaiduDramaScanner scanner;
     private final TaskExecutor taskExecutor;
     private final SystemTaskService systemTaskService;
+    private final SystemTaskRepository systemTaskRepository;
 
     public BaiduScanController(
             BaiduDramaScanner scanner,
             TaskExecutor taskExecutor,
-            SystemTaskService systemTaskService
+            SystemTaskService systemTaskService,
+            SystemTaskRepository systemTaskRepository
     ) {
         this.scanner = scanner;
         this.taskExecutor = taskExecutor;
         this.systemTaskService = systemTaskService;
+        this.systemTaskRepository = systemTaskRepository;
     }
 
     @PostMapping("/scan-baidu")
@@ -138,13 +144,36 @@ public class BaiduScanController {
 
     @GetMapping("/scan-baidu/status")
     ApiResponse<ScanStatus> status() {
-        return ApiResponse.ok(new ScanStatus(scanner.lastScanAt().map(Instant::parse).orElse(null)), MDC.get(TraceIdFilter.TRACE_ID));
+        SystemTask task = systemTaskRepository.findFirstByTypeOrderByStartedAtDesc(SystemTaskType.BAIDU_PAN_SCAN)
+                .orElse(null);
+        return ApiResponse.ok(
+                new ScanStatus(
+                        scanner.lastScanAt().map(this::instantOrNull).orElse(null),
+                        task == null ? null : task.getId(),
+                        task == null ? null : task.getStatus(),
+                        task == null ? null : task.getSummary(),
+                        task == null ? null : task.getErrorMessage(),
+                        task == null ? null : task.getStartedAt(),
+                        task == null ? null : task.getFinishedAt(),
+                        importedCount(task)
+                ),
+                MDC.get(TraceIdFilter.TRACE_ID)
+        );
     }
 
     public record ScanRequest(String remoteRoot) {
     }
 
-    public record ScanStatus(Instant lastScanAt) {
+    public record ScanStatus(
+            Instant lastScanAt,
+            String taskId,
+            SystemTaskStatus taskStatus,
+            String taskSummary,
+            String taskErrorMessage,
+            Instant taskStartedAt,
+            Instant taskFinishedAt,
+            Integer importedCount
+    ) {
     }
 
     public record ScanAccepted(Instant acceptedAt) {
@@ -204,6 +233,32 @@ public class BaiduScanController {
                 "episodeCount", drama.getEpisodes() == null ? 0 : drama.getEpisodes().size(),
                 "status", drama.getStatus()
         );
+    }
+
+    private Instant instantOrNull(String value) {
+        try {
+            return value == null || value.isBlank() ? null : Instant.parse(value);
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private Integer importedCount(SystemTask task) {
+        if (task == null || task.getResultPayload() == null) {
+            return null;
+        }
+        Object count = task.getResultPayload().get("importedCount");
+        if (count instanceof Number number) {
+            return number.intValue();
+        }
+        if (count instanceof String string && !string.isBlank()) {
+            try {
+                return Integer.parseInt(string.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> mapOf(Object... pairs) {

@@ -141,6 +141,13 @@ export type HongguoCoverBackfillResponse = {
 
 export type BaiduScanStatus = {
   lastScanAt?: string;
+  taskId?: string;
+  taskStatus?: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  taskSummary?: string;
+  taskErrorMessage?: string;
+  taskStartedAt?: string;
+  taskFinishedAt?: string;
+  importedCount?: number;
 };
 
 export type BaiduScanAccepted = {

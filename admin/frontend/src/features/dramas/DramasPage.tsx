@@ -1,7 +1,7 @@
 import { AppstoreOutlined, CalendarOutlined, ClockCircleOutlined, CloudSyncOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, InfoCircleOutlined, PictureOutlined, PlusOutlined, RocketOutlined, SearchOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import { Alert, Button, Checkbox, Drawer, Form, Image, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { Key, ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AdminTable } from '../../components/AdminTable';
 import { DataPage } from '../../components/DataPage';
 import { TableToolbar } from '../../components/TableToolbar';
@@ -28,6 +28,7 @@ const OTHER_CHANNEL_IMPORT_TIMEOUT_MS = 180000;
 const ASSET_SYNC_ACCEPT_TIMEOUT_MS = 60000;
 const ASSET_SYNC_CLIENT_PLAN_TIMEOUT_MS = 180000;
 const ASSET_SYNC_CLIENT_COMPLETE_TIMEOUT_MS = 120000;
+const BAIDU_SCAN_POLL_INTERVAL_MS = 5000;
 const DOUYIN_OTHER_CHANNEL_CODE = 'DOUYIN';
 const XIFAN_SEARCH_CHANNEL_CODE = 'XIFAN';
 const XIFAN_TOP_CHANNEL_CODE = 'XIFAN_TOP';
@@ -162,6 +163,16 @@ function visibleOtherChannels(channels: OtherShortDramaChannel[]) {
   ));
 }
 
+function isTimestampAtOrAfter(timestamp?: string, floor?: string) {
+  if (!floor) {
+    return true;
+  }
+  if (!timestamp) {
+    return false;
+  }
+  return new Date(timestamp).getTime() >= new Date(floor).getTime();
+}
+
 export function DramasPage() {
   const [version, setVersion] = useState(0);
   const [filters, setFilters] = useState<Record<string, unknown>>({});
@@ -171,6 +182,7 @@ export function DramasPage() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [syncingAssets, setSyncingAssets] = useState(false);
+  const [scanAcceptedAt, setScanAcceptedAt] = useState<string>();
   const [freshing, setFreshing] = useState(false);
   const [backfillingMinutes, setBackfillingMinutes] = useState(false);
   const [backfillingAiSummaries, setBackfillingAiSummaries] = useState(false);
@@ -208,6 +220,9 @@ export function DramasPage() {
   const [clearAiAssetsForm] = Form.useForm();
   const { data: categories } = useAsyncData(() => apiGet<DramaCategory[]>('/desktop/categories'));
   const { data: scanStatus } = useAsyncData(() => apiGet<BaiduScanStatus>('/admin/dramas/scan-baidu/status'), [version]);
+  const scanTaskRelevant = isTimestampAtOrAfter(scanStatus?.taskStartedAt, scanAcceptedAt);
+  const currentScanStatus = scanTaskRelevant ? scanStatus?.taskStatus : undefined;
+  const scanningBaidu = Boolean(scanAcceptedAt && !scanTaskRelevant) || currentScanStatus === 'RUNNING';
   const selectedDramaIds = useMemo(() => selectedRowKeys.map(String), [selectedRowKeys]);
   const hasSelectedDramas = selectedDramaIds.length > 0;
   const categoryName = useMemo(
@@ -223,10 +238,38 @@ export function DramasPage() {
   );
 
   async function scan() {
-    await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
-    appMessage.success('已开始后台扫描，扫描成功后会更新上次扫描时间并继续生成 AI 剧名、AI 简介和封面');
+    const accepted = await apiPost<BaiduScanAccepted>('/admin/dramas/scan-baidu', {});
+    setScanAcceptedAt(accepted.acceptedAt ?? new Date().toISOString());
+    appMessage.success('已提交百度网盘扫描，页面会自动刷新进度');
     setVersion((value) => value + 1);
   }
+
+  useEffect(() => {
+    if (!scanningBaidu) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setVersion((value) => value + 1);
+    }, BAIDU_SCAN_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [scanningBaidu]);
+
+  useEffect(() => {
+    if (!scanAcceptedAt || !scanTaskRelevant || !scanStatus?.taskStatus) {
+      return;
+    }
+    if (scanStatus.taskStatus === 'SUCCEEDED') {
+      setScanAcceptedAt(undefined);
+      const suffix = scanStatus.importedCount == null ? '' : `，导入 ${scanStatus.importedCount} 部`;
+      appMessage.success(`百度网盘扫描完成${suffix}`);
+      setVersion((value) => value + 1);
+      return;
+    }
+    if (scanStatus.taskStatus === 'FAILED') {
+      setScanAcceptedAt(undefined);
+      appMessage.error(`百度网盘扫描失败：${scanStatus.taskErrorMessage || '请到系统任务查看详情'}`);
+    }
+  }, [scanAcceptedAt, scanStatus?.importedCount, scanStatus?.taskErrorMessage, scanStatus?.taskStatus, scanTaskRelevant]);
 
   async function openHongguoMangaSearch() {
     setHongguoMode('manga');
@@ -901,7 +944,7 @@ export function DramasPage() {
       actions={(
         <>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditor()}>新增短剧</Button>
-          <Button icon={<CloudSyncOutlined />} onClick={scan}>扫描</Button>
+          <Button icon={<CloudSyncOutlined />} loading={scanningBaidu} onClick={scan}>扫描</Button>
           <Button icon={<SearchOutlined />} onClick={openHongguoMangaSearch}>红果漫剧搜索</Button>
           <Button icon={<CalendarOutlined />} onClick={openHongguoNewDramas}>红果新剧</Button>
           <Button icon={<TrophyOutlined />} onClick={openHongguoAiPlayletNewTopDramas}>AI剧新剧榜</Button>
@@ -949,7 +992,11 @@ export function DramasPage() {
           >
             批量上新{selectedDramaIds.length ? `（${selectedDramaIds.length}）` : ''}
           </Button>
-          <span className="scan-meta">上次扫描：{formatDateTime(scanStatus?.lastScanAt)}</span>
+          <span className="scan-meta">
+            {scanningBaidu
+              ? '百度扫描中...'
+              : `上次扫描：${formatDateTime(scanStatus?.lastScanAt)}`}
+          </span>
         </>
       )}
       extra={(

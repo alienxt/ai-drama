@@ -464,7 +464,7 @@ class BaiduDramaScannerTest {
         assertThat(first.getSummary()).isEqualTo("同步后的简介");
         assertThat(first.getCoverUrl()).isEqualTo("/uploads/covers/synced.png");
         assertThat(first.getAiTitle()).isEqualTo("AI 剧名保留");
-        assertThat(first.getAiCoverUrl()).isEqualTo("/uploads/ai-cover.jpg");
+        assertThat(first.getAiCoverUrl()).isNull();
     }
 
     @Test
