@@ -171,6 +171,10 @@ class InvalidEpisodeVideoError(RuntimeError):
     pass
 
 
+class IncompleteEpisodeDownloadError(RuntimeError):
+    pass
+
+
 @dataclass
 class EpisodeMediaFile:
     episode: dict[str, Any]
@@ -3945,7 +3949,9 @@ def download_episode(
             if not is_downloaded_file_complete(part_file, episode):
                 expected_size = episode_size(episode)
                 actual_size = part_file.stat().st_size if part_file.exists() else 0
-                raise RuntimeError(f"第 {episode['episodeNo']} 集下载不完整：{actual_size}/{expected_size} bytes")
+                raise IncompleteEpisodeDownloadError(
+                    f"第 {episode['episodeNo']} 集下载不完整：{actual_size}/{expected_size} bytes"
+                )
             if episode_file_validator and not episode_file_validator(part_file):
                 raise InvalidEpisodeVideoError(
                     f"第 {episode_number(episode, index)} 集下载后无法读取视频时长，文件可能损坏或不是有效 MP4。"
@@ -4154,6 +4160,8 @@ def cleanup_part_file(part_file: Path) -> None:
 
 def is_retryable_download_error(exception: BaseException) -> bool:
     if isinstance(exception, InvalidEpisodeVideoError):
+        return True
+    if isinstance(exception, IncompleteEpisodeDownloadError):
         return True
     if isinstance(exception, DownloadHttpError):
         if exception.error_code in NON_RETRYABLE_DOWNLOAD_ERROR_CODES:

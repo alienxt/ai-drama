@@ -57,6 +57,7 @@ public class DistributionService {
     private static final String FORCE_STOP_FAILURE_REASON = "用户强制停止任务";
     private static final int DAILY_CLAIM_LIMIT = Account.DEFAULT_DAILY_CLAIM_LIMIT;
     private static final int DAILY_SUCCESSFUL_UPLOAD_LIMIT = 10;
+    private static final int RECENT_TASK_CANDIDATE_DAYS = 30;
     private static final ZoneId DAILY_LIMIT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<DistributionTaskStatus> ACTIVE_TASK_STATUSES = List.of(
             DistributionTaskStatus.CLAIMED,
@@ -1048,7 +1049,11 @@ public class DistributionService {
             throw new BusinessException("DRAMA_NOT_READY", "短剧不可分发", HttpStatus.BAD_REQUEST);
         }
         if (!isRecentCreatedDrama(drama)) {
-            throw new BusinessException("DRAMA_NOT_IN_RECENT_POOL", "短剧不在近 7 天创建剧池内", HttpStatus.BAD_REQUEST);
+            throw new BusinessException(
+                    "DRAMA_NOT_IN_RECENT_POOL",
+                    "短剧不在近 " + RECENT_TASK_CANDIDATE_DAYS + " 天创建剧池内",
+                    HttpStatus.BAD_REQUEST
+            );
         }
         List<MediaAccount> ownerMediaAccounts = mediaAccountRepository.findByOwnerAccountId(ownerAccountId);
         List<String> ownedMediaAccountIds = ownerMediaAccounts.stream()
@@ -1248,7 +1253,7 @@ public class DistributionService {
     }
 
     private Instant recentCreatedFrom() {
-        return Instant.now().minus(7, ChronoUnit.DAYS);
+        return Instant.now().minus(RECENT_TASK_CANDIDATE_DAYS, ChronoUnit.DAYS);
     }
 
     private boolean hasSavedLoginState(MediaAccount media) {

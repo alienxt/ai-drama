@@ -110,6 +110,15 @@ class UploadLocalDramasTest(unittest.TestCase):
             self.assertFalse(readiness.ready)
             self.assertEqual(readiness.reason, "episode files 3/2")
 
+    def test_ensure_quota_available_rejects_insufficient_space(self):
+        original_request_json = uploader.request_json
+        uploader.request_json = lambda *_args, **_kwargs: {"errno": 0, "total": 100, "used": 90}
+        try:
+            with self.assertRaisesRegex(uploader.UploadError, "quota is not enough"):
+                uploader.ensure_quota_available("token", 20)
+        finally:
+            uploader.request_json = original_request_json
+
     def test_connection_reset_is_wrapped_as_retryable_upload_error(self):
         original_urlopen = uploader.urlopen
 
@@ -145,6 +154,170 @@ class UploadLocalDramasTest(unittest.TestCase):
                 uploader.remote_entry = original_remote_entry
 
             self.assertEqual(result, "/remote/one.txt")
+
+    def test_upload_file_retries_transient_create_errno(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = Path(tmpdir) / "one.txt"
+            local_path.write_bytes(b"one")
+            original_api_post_form_json = uploader.api_post_form_json
+            original_upload_block = uploader.upload_block
+            original_locate_upload_url = uploader.locate_upload_url
+            original_upload_direct_small_file = uploader.upload_direct_small_file
+            original_sleep = uploader.time.sleep
+            create_attempts = 0
+
+            def fake_api_post_form_json(_url, params, form, **_kwargs):
+                nonlocal create_attempts
+                if params["method"] == "precreate":
+                    return {"uploadid": "upload-1", "block_list": [0]}
+                if params["method"] == "create":
+                    create_attempts += 1
+                    if create_attempts == 1:
+                        raise uploader.UploadError('Baidu API error -10: {"errno": -10, "path": ""}')
+                    return {"path": form["path"]}
+                raise AssertionError(f"unexpected method: {params['method']}")
+
+            uploader.api_post_form_json = fake_api_post_form_json
+            uploader.upload_block = lambda *_args, **_kwargs: {"md5": "ok"}
+            uploader.locate_upload_url = lambda *_args, **_kwargs: "https://upload.example.com/rest/2.0/pcs/superfile2"
+            uploader.upload_direct_small_file = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("direct upload should not run when create retry succeeds")
+            )
+            uploader.time.sleep = lambda _seconds: None
+            try:
+                result = uploader.upload_file(
+                    "token",
+                    local_path,
+                    "/remote/one.txt",
+                    on_duplicate="skip",
+                    retries=1,
+                    skip_remote_check=True,
+                )
+            finally:
+                uploader.api_post_form_json = original_api_post_form_json
+                uploader.upload_block = original_upload_block
+                uploader.locate_upload_url = original_locate_upload_url
+                uploader.upload_direct_small_file = original_upload_direct_small_file
+                uploader.time.sleep = original_sleep
+
+            self.assertEqual(result, "/remote/one.txt")
+            self.assertEqual(create_attempts, 2)
+
+    def test_upload_file_falls_back_to_direct_upload_for_small_file_create_errno(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = Path(tmpdir) / "one.txt"
+            local_path.write_bytes(b"one")
+            original_api_post_form_json = uploader.api_post_form_json
+            original_upload_block = uploader.upload_block
+            original_locate_upload_url = uploader.locate_upload_url
+            original_upload_direct_small_file = uploader.upload_direct_small_file
+            original_sleep = uploader.time.sleep
+            direct_attempts = 0
+
+            def fake_api_post_form_json(_url, params, form, **_kwargs):
+                if params["method"] == "precreate":
+                    return {"uploadid": "upload-1", "block_list": [0]}
+                if params["method"] == "create":
+                    raise uploader.UploadError('Baidu API error -10: {"errno": -10, "path": ""}')
+                raise AssertionError(f"unexpected method: {params['method']}")
+
+            def fake_upload_direct_small_file(_token, _local_path, remote_path, **_kwargs):
+                nonlocal direct_attempts
+                direct_attempts += 1
+                return {"path": remote_path}
+
+            uploader.api_post_form_json = fake_api_post_form_json
+            uploader.upload_block = lambda *_args, **_kwargs: {"md5": "ok"}
+            uploader.locate_upload_url = lambda *_args, **_kwargs: "https://upload.example.com/rest/2.0/pcs/superfile2"
+            uploader.upload_direct_small_file = fake_upload_direct_small_file
+            uploader.time.sleep = lambda _seconds: None
+            try:
+                result = uploader.upload_file(
+                    "token",
+                    local_path,
+                    "/remote/one.txt",
+                    on_duplicate="skip",
+                    retries=1,
+                    skip_remote_check=True,
+                )
+            finally:
+                uploader.api_post_form_json = original_api_post_form_json
+                uploader.upload_block = original_upload_block
+                uploader.locate_upload_url = original_locate_upload_url
+                uploader.upload_direct_small_file = original_upload_direct_small_file
+                uploader.time.sleep = original_sleep
+
+            self.assertEqual(result, "/remote/one.txt")
+            self.assertEqual(direct_attempts, 1)
+
+    def test_upload_file_returns_when_precreate_rapid_upload_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = Path(tmpdir) / "one.txt"
+            local_path.write_bytes(b"one")
+            original_api_post_form_json = uploader.api_post_form_json
+            original_upload_block = uploader.upload_block
+
+            def fake_api_post_form_json(_url, params, form, **_kwargs):
+                if params["method"] == "precreate":
+                    return {"return_type": 2, "path": form["path"]}
+                raise AssertionError(f"unexpected method: {params['method']}")
+
+            def fail_upload_block(*_args, **_kwargs):
+                raise AssertionError("rapid upload should not upload blocks")
+
+            uploader.api_post_form_json = fake_api_post_form_json
+            uploader.upload_block = fail_upload_block
+            try:
+                result = uploader.upload_file(
+                    "token",
+                    local_path,
+                    "/remote/one.txt",
+                    on_duplicate="skip",
+                    skip_remote_check=True,
+                )
+            finally:
+                uploader.api_post_form_json = original_api_post_form_json
+                uploader.upload_block = original_upload_block
+
+            self.assertEqual(result, "/remote/one.txt")
+
+    def test_upload_drama_plan_continues_when_summary_upload_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            drama_dir = Path(tmpdir) / "简介失败"
+            drama_dir.mkdir()
+            (drama_dir / "视频信息.txt").write_text("名称：简介失败\n集数：1\n简介：能导入即可\n", encoding="utf-8")
+            (drama_dir / "第01集.mp4").write_bytes(b"one")
+            plan = uploader.build_drama_plan(drama_dir, "/root", "8月20日")
+
+            original_ensure_remote_dir = uploader.ensure_remote_dir
+            original_remote_entries_by_path = uploader.remote_entries_by_path
+            original_upload_bytes = uploader.upload_bytes
+            original_upload_file = uploader.upload_file
+
+            def fake_upload_bytes(*_args, **_kwargs):
+                raise uploader.UploadError("Baidu API error -10")
+
+            uploader.ensure_remote_dir = lambda *_args, **_kwargs: None
+            uploader.remote_entries_by_path = lambda *_args, **_kwargs: {}
+            uploader.upload_bytes = fake_upload_bytes
+            uploader.upload_file = lambda _token, _path, remote_path, **_kwargs: remote_path
+            try:
+                marker = uploader.upload_drama_plan(
+                    "token",
+                    plan,
+                    on_duplicate="skip",
+                    timeout=1,
+                    retries=0,
+                    write_marker=False,
+                )
+            finally:
+                uploader.ensure_remote_dir = original_ensure_remote_dir
+                uploader.remote_entries_by_path = original_remote_entries_by_path
+                uploader.upload_bytes = original_upload_bytes
+                uploader.upload_file = original_upload_file
+
+            self.assertEqual(marker["uploadedFiles"], ["/root/8月20日/简介失败（1集）/第01集.mp4"])
+            self.assertIn("metadataUploadFailures", marker)
 
     def test_upload_drama_plan_keeps_episode_order_with_workers(self):
         with tempfile.TemporaryDirectory() as tmpdir:

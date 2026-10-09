@@ -65,3 +65,6 @@ hg-api-*.json
 hg-new-play-*.json
 ai-cover-dramas-*.tsv
 preview-*.jpg
+
+# Local Baidu Pan credentials and recovery snapshots
+admin/server/docs/baiduyun/baidu_pan_cli_config*.json

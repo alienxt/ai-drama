@@ -29,13 +29,17 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "admin" / "server" / "docs" / "baiduyun" / "baidu_pan_cli_config.json"
 DEFAULT_REMOTE_ROOT = "/drama/真人剧/2026"
 TOKEN_URL = "https://openapi.baidu.com/oauth/2.0/token"
+QUOTA_URL = "https://pan.baidu.com/api/quota"
 XPAN_FILE_URL = "https://pan.baidu.com/rest/2.0/xpan/file"
 PCS_UPLOAD_URL = "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2"
+PCS_FILE_URL = "https://d.pcs.baidu.com/rest/2.0/pcs/file"
 DEFAULT_USER_AGENT = "pan.baidu.com"
 DEFAULT_REFERER = "https://pan.baidu.com/"
+BAIDU_UPLOAD_APP_ID = 250528
 DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_UPLOAD_RETRIES = 6
 CHUNK_SIZE = 4 * 1024 * 1024
+DIRECT_UPLOAD_MAX_SIZE = 2 * 1024 * 1024
 SLICE_MD5_SIZE = 256 * 1024
 MARKER_NAME = ".baidu-uploaded.json"
 OAUTH_REDIRECT_URI = "oob"
@@ -212,6 +216,26 @@ def ensure_access_token(config: dict[str, Any], force_refresh: bool = False, tim
     return str(config["access_token"])
 
 
+def ensure_quota_available(access_token: str, required_bytes: int, *, timeout: float = 30) -> None:
+    response = request_json(
+        f"{QUOTA_URL}?{urlencode({'access_token': access_token, 'checkfree': 1, 'checkexpire': 1})}",
+        timeout=timeout,
+    )
+    errno = response.get("errno")
+    if errno not in (None, 0):
+        log(f"Unable to check Baidu quota before upload: {safe_json(response)}", error=True)
+        return
+    total = int(response.get("total") or 0)
+    used = int(response.get("used") or 0)
+    free = total - used
+    if free < required_bytes:
+        raise UploadError(
+            "Baidu Netdisk quota is not enough for upload: "
+            f"required={format_size(required_bytes)}, free={format_size(free)}, "
+            f"used={format_size(used)}, total={format_size(total)}"
+        )
+
+
 def refresh_token_has_been_used(exc: UploadError) -> bool:
     message = str(exc)
     return "expired_token" in message and "refresh token has been used" in message
@@ -346,6 +370,30 @@ def checked_api_response(response: dict[str, Any], *, accept_exists: bool = Fals
     raise UploadError(f"Baidu API error {errno}: {safe_json(response)}")
 
 
+def is_retryable_upload_error(exc: UploadError) -> bool:
+    message = str(exc)
+    retryable_markers = (
+        "Network error",
+        "timed out",
+        "Timeout",
+        "Connection reset",
+        "ConnectionResetError",
+        "Remote end closed",
+        "temporarily unavailable",
+    )
+    if any(marker.lower() in message.lower() for marker in retryable_markers):
+        return True
+    http_match = re.search(r"HTTP\s+(\d+)", message)
+    if http_match and int(http_match.group(1)) >= 500:
+        return True
+    errno_match = re.search(r"Baidu API error\s+(-?\d+)", message)
+    if not errno_match:
+        return False
+    # Baidu's upload create/precreate can intermittently return path="" with
+    # these codes after a successful slice upload. Retrying is usually enough.
+    return int(errno_match.group(1)) in {-10, 1, 31296, 31500}
+
+
 def list_directory(access_token: str, remote_dir: str, *, timeout: float = 60) -> list[dict[str, Any]]:
     response = api_get_json(
         XPAN_FILE_URL,
@@ -400,6 +448,52 @@ def ensure_remote_dir(access_token: str, remote_dir: str, *, timeout: float = 60
         )
 
 
+def locate_upload_url(access_token: str, remote_path: str, upload_id: str, *, timeout: float = 60) -> str:
+    response = api_get_json(
+        PCS_FILE_URL,
+        {
+            "method": "locateupload",
+            "appid": BAIDU_UPLOAD_APP_ID,
+            "access_token": access_token,
+            "path": remote_path,
+            "uploadid": upload_id,
+            "upload_version": "2.0",
+        },
+        timeout=timeout,
+    )
+    server = first_upload_server(response)
+    if not server:
+        raise UploadError(f"Missing upload server for {remote_path}: {safe_json(response)}")
+    return f"{server.rstrip('/')}/rest/2.0/pcs/superfile2"
+
+
+def first_upload_server(response: dict[str, Any]) -> str | None:
+    for key in ("servers", "bak_servers"):
+        servers = response.get(key)
+        if not isinstance(servers, list):
+            continue
+        for item in servers:
+            if isinstance(item, dict):
+                server = item.get("server") or item.get("host")
+                if server:
+                    return normalize_upload_server(str(server))
+            elif item:
+                return normalize_upload_server(str(item))
+    for key in ("server", "host"):
+        if response.get(key):
+            return normalize_upload_server(str(response[key]))
+    return None
+
+
+def normalize_upload_server(server: str) -> str:
+    server = server.strip()
+    if not server:
+        return server
+    if server.startswith("http://") or server.startswith("https://"):
+        return server
+    return f"https://{server}"
+
+
 def upload_file(
     access_token: str,
     local_path: Path,
@@ -437,23 +531,37 @@ def upload_file(
         md5_info = calculate_md5s(local_path)
         block_list_json = json.dumps(md5_info["block_md5s"], ensure_ascii=False)
         rtype = 3 if on_duplicate == "overwrite" else 1
-        precreate = api_post_form_json(
-            XPAN_FILE_URL,
-            {"method": "precreate", "access_token": access_token, "openapi": "xpansdk"},
-            {
-                "path": remote_path,
-                "size": local_size,
-                "isdir": 0,
-                "autoinit": 1,
-                "rtype": rtype,
-                "block_list": block_list_json,
-                "content-md5": md5_info["content_md5"],
-                "slice-md5": md5_info["slice_md5"],
-                "local_ctime": int(local_path.stat().st_ctime),
-                "local_mtime": int(local_path.stat().st_mtime),
-            },
-            timeout=timeout,
+        precreate = retry_call(
+            lambda: api_post_form_json(
+                XPAN_FILE_URL,
+                {"method": "precreate", "access_token": access_token, "openapi": "xpansdk"},
+                {
+                    "path": remote_path,
+                    "size": local_size,
+                    "isdir": 0,
+                    "autoinit": 1,
+                    "rtype": rtype,
+                    "block_list": block_list_json,
+                    "content-md5": md5_info["content_md5"],
+                    "slice-md5": md5_info["slice_md5"],
+                    "local_ctime": int(local_path.stat().st_ctime),
+                    "local_mtime": int(local_path.stat().st_mtime),
+                },
+                timeout=timeout,
+            ),
+            retries=retries,
+            label=f"{display} precreate",
+            should_retry=is_retryable_upload_error,
         )
+        return_type = int(precreate.get("return_type") or 0)
+        if return_type == 2:
+            result = str(precreate.get("path") or remote_path)
+            elapsed = time.perf_counter() - started_at
+            log(
+                f"  upload finished: {display} -> {result} "
+                f"({format_size(local_size)}, rapid, elapsed={format_duration(elapsed)})"
+            )
+            return result
         upload_id = str(precreate.get("uploadid") or "")
         requested_blocks = precreate.get("block_list")
         if requested_blocks is None:
@@ -461,6 +569,13 @@ def upload_file(
         requested_block_indexes = {int(index) for index in requested_blocks}
         if requested_block_indexes and not upload_id:
             raise UploadError(f"Missing uploadid for {remote_path}: {safe_json(precreate)}")
+
+        upload_url = PCS_UPLOAD_URL
+        if upload_id:
+            try:
+                upload_url = locate_upload_url(access_token, remote_path, upload_id, timeout=timeout)
+            except UploadError as exc:
+                log(f"  locateupload failed; fallback to default upload host: {display}; error={exc}", error=True)
 
         log(f"  upload started: {display} -> {remote_path} ({format_size(local_size)})")
         for index, chunk in iter_file_chunks(local_path):
@@ -474,27 +589,51 @@ def upload_file(
                     index,
                     local_path.name,
                     chunk,
+                    upload_url=upload_url,
                     timeout=timeout,
                 ),
                 retries=retries,
                 label=f"{display} block {index}",
             )
 
-        create = api_post_form_json(
-            XPAN_FILE_URL,
-            {"method": "create", "access_token": access_token, "openapi": "xpansdk"},
-            {
-                "path": remote_path,
-                "size": local_size,
-                "isdir": 0,
-                "rtype": rtype,
-                "uploadid": upload_id,
-                "block_list": block_list_json,
-                "local_ctime": int(local_path.stat().st_ctime),
-                "local_mtime": int(local_path.stat().st_mtime),
-            },
-            timeout=timeout,
-        )
+        try:
+            create = retry_call(
+                lambda: api_post_form_json(
+                    XPAN_FILE_URL,
+                    {"method": "create", "access_token": access_token, "openapi": "xpansdk"},
+                    {
+                        "path": remote_path,
+                        "size": local_size,
+                        "isdir": 0,
+                        "rtype": rtype,
+                        "uploadid": upload_id,
+                        "block_list": block_list_json,
+                        "local_ctime": int(local_path.stat().st_ctime),
+                        "local_mtime": int(local_path.stat().st_mtime),
+                    },
+                    timeout=timeout,
+                    accept_exists=on_duplicate == "skip",
+                ),
+                retries=retries,
+                label=f"{display} create",
+                should_retry=is_retryable_upload_error,
+            )
+        except UploadError as exc:
+            if local_size > DIRECT_UPLOAD_MAX_SIZE or not is_retryable_upload_error(exc):
+                raise
+            log(f"  create failed; retry small file with direct upload: {display}; error={exc}", error=True)
+            create = retry_call(
+                lambda: upload_direct_small_file(
+                    access_token,
+                    local_path,
+                    remote_path,
+                    on_duplicate=on_duplicate,
+                    timeout=timeout,
+                ),
+                retries=retries,
+                label=f"{display} direct upload",
+                should_retry=is_retryable_upload_error,
+            )
         result = str(create.get("path") or remote_path)
         elapsed = time.perf_counter() - started_at
         log(
@@ -547,6 +686,42 @@ def upload_bytes(
             pass
 
 
+def upload_direct_small_file(
+    access_token: str,
+    local_path: Path,
+    remote_path: str,
+    *,
+    on_duplicate: str,
+    timeout: float = 120,
+) -> dict[str, Any]:
+    ondup = "overwrite" if on_duplicate == "overwrite" else "newcopy"
+    body, content_type = multipart_body(
+        {
+            "file": (
+                local_path.name,
+                local_path.read_bytes(),
+                mimetypes.guess_type(local_path.name)[0] or "application/octet-stream",
+            )
+        }
+    )
+    query = urlencode(
+        {
+            "method": "upload",
+            "access_token": access_token,
+            "path": remote_path,
+            "ondup": ondup,
+        }
+    )
+    response = request_json(
+        f"{PCS_FILE_URL}?{query}",
+        method="POST",
+        data=body,
+        headers={"Content-Type": content_type},
+        timeout=timeout,
+    )
+    return checked_api_response(response, accept_exists=on_duplicate == "skip")
+
+
 def upload_block(
     access_token: str,
     remote_path: str,
@@ -555,6 +730,7 @@ def upload_block(
     filename: str,
     chunk: bytes,
     *,
+    upload_url: str = PCS_UPLOAD_URL,
     timeout: float = 120,
 ) -> dict[str, Any]:
     body, content_type = multipart_body(
@@ -577,7 +753,7 @@ def upload_block(
         }
     )
     response = request_json(
-        f"{PCS_UPLOAD_URL}?{query}",
+        f"{upload_url}?{query}",
         method="POST",
         data=body,
         headers={"Content-Type": content_type},
@@ -639,14 +815,14 @@ def iter_file_chunks(path: Path) -> Iterable[tuple[int, bytes]]:
             index += 1
 
 
-def retry_call(callback, *, retries: int, label: str) -> Any:
+def retry_call(callback, *, retries: int, label: str, should_retry=None) -> Any:
     attempt = 0
     while True:
         try:
             return callback()
         except UploadError as exc:
             attempt += 1
-            if attempt > retries:
+            if attempt > retries or (should_retry is not None and not should_retry(exc)):
                 raise
             wait = min(2**attempt, 10)
             log(f"  retry {attempt}/{retries}: {label}; wait {wait}s; error={exc}")
@@ -961,10 +1137,7 @@ def upload_drama_plan(
     upload_workers: int = 1,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
-    total_bytes = len(summary_file_content(plan).encode("utf-8"))
-    if plan.cover_path:
-        total_bytes += plan.cover_path.stat().st_size
-    total_bytes += sum(episode.path.stat().st_size for episode in plan.episodes)
+    total_bytes = plan_upload_size(plan)
     log(
         f"Drama upload started: {plan.title} -> {plan.remote_dir} "
         f"(episodes={len(plan.episodes)}/{plan.episode_count}, files={len(plan.episodes) + 1 + (1 if plan.cover_path else 0)}, total={format_size(total_bytes)})"
@@ -981,34 +1154,46 @@ def upload_drama_plan(
 
         summary_content = summary_file_content(plan).encode("utf-8")
         summary_remote_path = posixpath.join(plan.remote_dir, "简介.txt")
-        uploaded.append(
-            upload_bytes(
-                access_token,
-                summary_content,
-                summary_remote_path,
-                on_duplicate=on_duplicate,
-                timeout=timeout,
-                retries=retries,
-                label="summary: 简介.txt",
-                existing_entry=known_remote_entries.get(summary_remote_path) if known_remote_entries is not None else None,
-                skip_remote_check=known_remote_entries is not None,
-            )
-        )
-        if plan.cover_path and plan.cover_remote_name:
-            cover_remote_path = posixpath.join(plan.remote_dir, plan.cover_remote_name)
+        metadata_failures: list[str] = []
+        try:
             uploaded.append(
-                upload_file(
+                upload_bytes(
                     access_token,
-                    plan.cover_path,
-                    cover_remote_path,
+                    summary_content,
+                    summary_remote_path,
                     on_duplicate=on_duplicate,
                     timeout=timeout,
                     retries=retries,
-                    label=f"cover: {plan.cover_remote_name}",
-                    existing_entry=known_remote_entries.get(cover_remote_path) if known_remote_entries is not None else None,
+                    label="summary: 简介.txt",
+                    existing_entry=known_remote_entries.get(summary_remote_path) if known_remote_entries is not None else None,
                     skip_remote_check=known_remote_entries is not None,
                 )
             )
+        except UploadError as exc:
+            metadata_failures.append(f"summary: {exc}")
+            log(f"  optional metadata upload failed; continue episodes: summary: 简介.txt; error={exc}", error=True)
+        if plan.cover_path and plan.cover_remote_name:
+            cover_remote_path = posixpath.join(plan.remote_dir, plan.cover_remote_name)
+            try:
+                uploaded.append(
+                    upload_file(
+                        access_token,
+                        plan.cover_path,
+                        cover_remote_path,
+                        on_duplicate=on_duplicate,
+                        timeout=timeout,
+                        retries=retries,
+                        label=f"cover: {plan.cover_remote_name}",
+                        existing_entry=known_remote_entries.get(cover_remote_path) if known_remote_entries is not None else None,
+                        skip_remote_check=known_remote_entries is not None,
+                    )
+                )
+            except UploadError as exc:
+                metadata_failures.append(f"cover: {exc}")
+                log(
+                    f"  optional metadata upload failed; continue episodes: cover: {plan.cover_remote_name}; error={exc}",
+                    error=True,
+                )
         episode_workers = max(int(upload_workers), 1)
         episode_results: list[str] = []
         if episode_workers > 1 and len(plan.episodes) > 1:
@@ -1049,6 +1234,8 @@ def upload_drama_plan(
             "uploadedFiles": uploaded,
             "durationSeconds": round(elapsed, 3),
         }
+        if metadata_failures:
+            marker["metadataUploadFailures"] = metadata_failures
         if write_marker:
             marker_path(plan.local_dir).write_text(json.dumps(marker, indent=2, ensure_ascii=False), encoding="utf-8")
         log(
@@ -1060,6 +1247,14 @@ def upload_drama_plan(
         elapsed = time.perf_counter() - started_at
         log(f"Drama upload failed: {plan.title} (elapsed={format_duration(elapsed)}, error={exc})", error=True)
         raise
+
+
+def plan_upload_size(plan: LocalDramaPlan) -> int:
+    total_bytes = len(summary_file_content(plan).encode("utf-8"))
+    if plan.cover_path:
+        total_bytes += plan.cover_path.stat().st_size
+    total_bytes += sum(episode.path.stat().st_size for episode in plan.episodes)
+    return total_bytes
 
 
 def upload_episodes_concurrently(
@@ -1166,6 +1361,7 @@ def scan_once(args: argparse.Namespace, access_token: str | None = None) -> int:
     if access_token is None:
         config = load_config(args.config)
         access_token = ensure_access_token(config, force_refresh=args.refresh_token, timeout=args.timeout)
+    ensure_quota_available(access_token, sum(plan_upload_size(plan) for plan in plans), timeout=min(args.timeout, 30))
 
     failed_count = 0
     for plan in plans:

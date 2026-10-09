@@ -1166,11 +1166,11 @@ class DistributionServiceTest {
         Drama drama = new Drama();
         drama.setId("drama-old");
         drama.setStatus(DramaStatus.READY);
-        ReflectionTestUtils.setField(drama, "createdAt", Instant.now().minusSeconds(8 * 24 * 60 * 60));
+        ReflectionTestUtils.setField(drama, "createdAt", Instant.now().minusSeconds(31 * 24 * 60 * 60));
         when(dramaRepository.findById("drama-old")).thenReturn(Optional.of(drama));
 
         assertThatThrownBy(() -> service.prioritizeDramaForOwner("owner-1", "drama-old"))
-                .hasMessage("短剧不在近 7 天创建剧池内");
+                .hasMessage("短剧不在近 30 天创建剧池内");
         verify(mediaAccountRepository, never()).findByOwnerAccountId("owner-1");
         verify(taskRepository, never()).save(any(DistributionTask.class));
     }
